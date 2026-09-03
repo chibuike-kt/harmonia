@@ -15,6 +15,7 @@ import (
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
+	"github.com/chibuike-kt/harmonia/internal/credentials"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/handoff"
 	"github.com/chibuike-kt/harmonia/internal/room"
@@ -96,6 +97,19 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Use(user.Authenticate(users))
 		pr.Get("/v1/sessions", users.SessionsHandler())
 		pr.Delete("/v1/sessions/{id}", users.RevokeSessionHandler())
+	})
+
+	// cipher is nil when HARMONIA_CREDENTIAL_ENCRYPTION_KEY is unset or
+	// malformed; ConnectHandler then fails cleanly with a 500 rather than
+	// panicking or storing something insecurely — same posture as an
+	// unconfigured GoogleConfig/GitHubConfig.
+	cipher, _ := credentials.NewCipher(os.Getenv("HARMONIA_CREDENTIAL_ENCRYPTION_KEY"))
+	creds := credentials.NewStore(st.Pool, cipher)
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/credentials", creds.ConnectHandler())
+		pr.Get("/v1/credentials", creds.ListHandler())
+		pr.Delete("/v1/credentials/{provider}", creds.DeleteHandler())
 	})
 
 	return r
