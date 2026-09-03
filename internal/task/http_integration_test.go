@@ -15,6 +15,7 @@ import (
 	agentpkg "github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/room"
+	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
 // TestIntegration_TaskLifecycle walks create -> claim -> complete against
@@ -62,9 +63,10 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		t.Fatalf("register outsider: %v", err)
 	}
 
-	createHandler := tasks.CreateHandler(events)
-	claimHandler := tasks.ClaimHandler(events)
-	completeHandler := tasks.CompleteHandler(events)
+	beginner := store.PoolBeginner{Pool: pool}
+	createHandler := tasks.CreateHandler(beginner)
+	claimHandler := tasks.ClaimHandler(beginner)
+	completeHandler := tasks.CompleteHandler(beginner)
 
 	// Create, as the creator.
 	rec := doJSON(t, createHandler, creator, "", `{"objective":"write the report"}`)

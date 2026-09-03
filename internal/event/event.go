@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
 type Event struct {
@@ -24,10 +25,10 @@ type Event struct {
 }
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool store.Querier
 }
 
-func NewStore(pool *pgxpool.Pool) *Store {
+func NewStore(pool store.Querier) *Store {
 	return &Store{pool: pool}
 }
 

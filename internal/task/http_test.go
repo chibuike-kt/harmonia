@@ -12,12 +12,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
-	"github.com/chibuike-kt/harmonia/internal/event"
 )
 
 func TestCreateHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(&event.Store{})
+	h := s.CreateHandler(nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/tasks", strings.NewReader(`{"objective":"x"}`))
 	rec := httptest.NewRecorder()
@@ -28,7 +27,7 @@ func TestCreateHandler_Unauthenticated(t *testing.T) {
 
 func TestCreateHandler_MissingObjective(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(&event.Store{})
+	h := s.CreateHandler(nil)
 
 	req := withAgent(t, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/tasks", strings.NewReader(`{}`)), agent.Agent{ID: uuid.New()})
 	rec := httptest.NewRecorder()
@@ -39,7 +38,7 @@ func TestCreateHandler_MissingObjective(t *testing.T) {
 
 func TestClaimHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.ClaimHandler(&event.Store{})
+	h := s.ClaimHandler(nil)
 
 	rec := doTaskRequest(t, h, uuid.New().String(), false, agent.Agent{})
 	assertJSONError(t, rec, http.StatusUnauthorized)
@@ -47,7 +46,7 @@ func TestClaimHandler_Unauthenticated(t *testing.T) {
 
 func TestClaimHandler_InvalidTaskID(t *testing.T) {
 	s := &Store{}
-	h := s.ClaimHandler(&event.Store{})
+	h := s.ClaimHandler(nil)
 
 	rec := doTaskRequest(t, h, "not-a-uuid", true, agent.Agent{ID: uuid.New()})
 	assertJSONError(t, rec, http.StatusBadRequest)
@@ -55,7 +54,7 @@ func TestClaimHandler_InvalidTaskID(t *testing.T) {
 
 func TestCompleteHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.CompleteHandler(&event.Store{})
+	h := s.CompleteHandler(nil)
 
 	rec := doTaskRequest(t, h, uuid.New().String(), false, agent.Agent{})
 	assertJSONError(t, rec, http.StatusUnauthorized)
@@ -63,7 +62,7 @@ func TestCompleteHandler_Unauthenticated(t *testing.T) {
 
 func TestCompleteHandler_InvalidTaskID(t *testing.T) {
 	s := &Store{}
-	h := s.CompleteHandler(&event.Store{})
+	h := s.CompleteHandler(nil)
 
 	rec := doTaskRequest(t, h, "not-a-uuid", true, agent.Agent{ID: uuid.New()})
 	assertJSONError(t, rec, http.StatusBadRequest)

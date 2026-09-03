@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/protocol"
+	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
 type createRequest struct {
@@ -42,10 +44,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// beginTx starts a transaction and returns a rollback func safe to defer
+// unconditionally — calling it after a successful Commit is a documented
+// no-op (pgx.ErrTxClosed, discarded here), so `defer rollback()` before a
+// possible `tx.Commit` is the standard pgx pattern, not a bug.
+func beginTx(ctx context.Context, pool store.Beginner) (store.Tx, func(), error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tx, func() { _ = tx.Rollback(ctx) }, nil
+}
+
 // CreateHandler returns the handler for POST /v1/tasks. The task's room is
 // the authenticated agent's own room — there is no separate room_id to
 // mismatch, since an agent only ever acts in the room it registered in.
-func (s *Store) CreateHandler(events *event.Store) http.HandlerFunc {
+// The task insert and its TASK_CREATED event are one transaction: either
+// both land or neither does.
+func (s *Store) CreateHandler(pool store.Beginner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -63,7 +79,16 @@ func (s *Store) CreateHandler(events *event.Store) http.HandlerFunc {
 			return
 		}
 
-		t, err := s.Create(r.Context(), a.RoomID, req.Objective, req.ParentTaskID)
+		ctx := r.Context()
+		tx, rollback, err := beginTx(ctx, pool)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+			return
+		}
+		defer rollback()
+
+		txTasks := NewStore(tx)
+		t, err := txTasks.Create(ctx, a.RoomID, req.Objective, req.ParentTaskID)
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation {
@@ -79,8 +104,15 @@ func (s *Store) CreateHandler(events *event.Store) http.HandlerFunc {
 			payload["parent_task_id"] = t.ParentTaskID.String()
 		}
 		env := protocol.NewEnvelope(t.RoomID, protocol.OpTaskCreate, protocol.Participant{AgentID: a.ID}, payload)
-		if err := events.Record(r.Context(), t.RoomID, &t.ID, &a.ID, EventTaskCreated, env.Payload); err != nil {
+
+		txEvents := event.NewStore(tx)
+		if err := txEvents.Record(ctx, t.RoomID, &t.ID, &a.ID, EventTaskCreated, env.Payload); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to record event")
+			return
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
 
@@ -88,8 +120,10 @@ func (s *Store) CreateHandler(events *event.Store) http.HandlerFunc {
 	}
 }
 
-// ClaimHandler returns the handler for POST /v1/tasks/{id}/claim.
-func (s *Store) ClaimHandler(events *event.Store) http.HandlerFunc {
+// ClaimHandler returns the handler for POST /v1/tasks/{id}/claim. The claim
+// and its TASK_CLAIMED event are one transaction: either both land or
+// neither does.
+func (s *Store) ClaimHandler(pool store.Beginner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -103,7 +137,8 @@ func (s *Store) ClaimHandler(events *event.Store) http.HandlerFunc {
 			return
 		}
 
-		t, err := s.GetByID(r.Context(), taskID)
+		ctx := r.Context()
+		t, err := s.GetByID(ctx, taskID)
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "task not found")
 			return
@@ -120,7 +155,15 @@ func (s *Store) ClaimHandler(events *event.Store) http.HandlerFunc {
 			return
 		}
 
-		if err := s.Claim(r.Context(), taskID, a.ID); err != nil {
+		tx, rollback, err := beginTx(ctx, pool)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+			return
+		}
+		defer rollback()
+
+		txTasks := NewStore(tx)
+		if err := txTasks.Claim(ctx, taskID, a.ID); err != nil {
 			if errors.Is(err, ErrAlreadyClaimed) {
 				writeError(w, http.StatusConflict, "task already claimed")
 				return
@@ -129,15 +172,22 @@ func (s *Store) ClaimHandler(events *event.Store) http.HandlerFunc {
 			return
 		}
 
-		claimed, err := s.GetByID(r.Context(), taskID)
+		claimed, err := txTasks.GetByID(ctx, taskID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load claimed task")
 			return
 		}
 
 		env := protocol.NewEnvelope(claimed.RoomID, protocol.OpTaskClaim, protocol.Participant{AgentID: a.ID}, map[string]any{})
-		if err := events.Record(r.Context(), claimed.RoomID, &claimed.ID, &a.ID, EventTaskClaimed, env.Payload); err != nil {
+
+		txEvents := event.NewStore(tx)
+		if err := txEvents.Record(ctx, claimed.RoomID, &claimed.ID, &a.ID, EventTaskClaimed, env.Payload); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to record event")
+			return
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
 
@@ -145,8 +195,10 @@ func (s *Store) ClaimHandler(events *event.Store) http.HandlerFunc {
 	}
 }
 
-// CompleteHandler returns the handler for POST /v1/tasks/{id}/complete.
-func (s *Store) CompleteHandler(events *event.Store) http.HandlerFunc {
+// CompleteHandler returns the handler for POST /v1/tasks/{id}/complete. The
+// completion and its TASK_COMPLETED event are one transaction: either both
+// land or neither does.
+func (s *Store) CompleteHandler(pool store.Beginner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -160,7 +212,8 @@ func (s *Store) CompleteHandler(events *event.Store) http.HandlerFunc {
 			return
 		}
 
-		t, err := s.GetByID(r.Context(), taskID)
+		ctx := r.Context()
+		t, err := s.GetByID(ctx, taskID)
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, http.StatusNotFound, "task not found")
 			return
@@ -180,20 +233,39 @@ func (s *Store) CompleteHandler(events *event.Store) http.HandlerFunc {
 			return
 		}
 
-		if err := s.Complete(r.Context(), taskID); err != nil {
+		tx, rollback, err := beginTx(ctx, pool)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+			return
+		}
+		defer rollback()
+
+		txTasks := NewStore(tx)
+		if err := txTasks.Complete(ctx, taskID); err != nil {
+			if errors.Is(err, ErrNotClaimed) {
+				writeError(w, http.StatusConflict, "task already completed or not claimed")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "failed to complete task")
 			return
 		}
 
-		completed, err := s.GetByID(r.Context(), taskID)
+		completed, err := txTasks.GetByID(ctx, taskID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load completed task")
 			return
 		}
 
 		env := protocol.NewEnvelope(completed.RoomID, protocol.OpTaskComplete, protocol.Participant{AgentID: a.ID}, map[string]any{})
-		if err := events.Record(r.Context(), completed.RoomID, &completed.ID, &a.ID, EventTaskCompleted, env.Payload); err != nil {
+
+		txEvents := event.NewStore(tx)
+		if err := txEvents.Record(ctx, completed.RoomID, &completed.ID, &a.ID, EventTaskCompleted, env.Payload); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to record event")
+			return
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
 

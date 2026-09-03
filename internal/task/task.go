@@ -12,7 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
 type Status string
@@ -28,6 +29,12 @@ const (
 )
 
 var ErrAlreadyClaimed = errors.New("task: already claimed by another agent")
+
+// ErrNotClaimed is returned when Complete is called on a task that isn't
+// currently CLAIMED — already completed, or never claimed. Zero rows
+// affected must mean "reject," never "silently do nothing," or two
+// concurrent completions could both look like they succeeded.
+var ErrNotClaimed = errors.New("task: not currently claimed, cannot complete")
 
 // ErrNotFound is returned when no task matches the given ID.
 var ErrNotFound = errors.New("task: not found")
@@ -55,10 +62,10 @@ type Task struct {
 }
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool store.Querier
 }
 
-func NewStore(pool *pgxpool.Pool) *Store {
+func NewStore(pool store.Querier) *Store {
 	return &Store{pool: pool}
 }
 
@@ -94,14 +101,23 @@ func (s *Store) Claim(ctx context.Context, taskID, agentID uuid.UUID) error {
 	return nil
 }
 
-// Complete transitions a claimed/running task to COMPLETED.
+// Complete atomically transitions a task from CLAIMED to COMPLETED. The
+// WHERE clause on current status is what makes two concurrent completions
+// safe, the same reasoning as Claim's WHERE clause on QUEUED — not
+// application-level locking, and not a read-then-write check beforehand.
 func (s *Store) Complete(ctx context.Context, taskID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE tasks
 		SET status = 'COMPLETED', completed_at = now()
-		WHERE id = $1
+		WHERE id = $1 AND status = 'CLAIMED'
 	`, taskID)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotClaimed
+	}
+	return nil
 }
 
 // GetByID fetches a single task. Returns ErrNotFound if no task matches.
