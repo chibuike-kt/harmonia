@@ -44,6 +44,15 @@ jobs:
         with:
           version: v2.10.1
 
+      - name: apply migrations
+        run: |
+          docker run --rm --network host \
+            -v ${{ github.workspace }}/migrations:/migrations \
+            migrate/migrate:4 \
+            -path=/migrations \
+            -database="postgres://harmonia:harmonia@localhost:5432/harmonia?sslmode=disable" \
+            up
+
       - name: race tests
         run: go test ./... -race
         env:

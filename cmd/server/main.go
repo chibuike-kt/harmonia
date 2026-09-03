@@ -10,6 +10,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/contextengine"
+	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
@@ -60,6 +62,7 @@ func run() error {
 	r.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler())
 
 	tasks := task.NewStore(st.Pool)
+	events := event.NewStore(st.Pool)
 	beginner := store.PoolBeginner{Pool: st.Pool}
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
@@ -68,8 +71,14 @@ func run() error {
 		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner))
 	})
 
-	// TODO: register handoff/context HTTP handlers here as each package's
-	// HTTP layer is built.
+	contexts := contextengine.NewStore(st.Pool)
+	r.Group(func(pr chi.Router) {
+		pr.Use(agent.Authenticate(agents))
+		pr.Get("/v1/context/tasks/{task_id}", contexts.TaskHandler(events))
+	})
+
+	// TODO: register handoff HTTP handlers here as its HTTP layer is
+	// built, and the room event-history handler.
 
 	log.Printf("harmonia listening on %s", addr)
 	return http.ListenAndServe(addr, r)
