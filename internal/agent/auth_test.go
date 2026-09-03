@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,23 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
+
+func assertUnauthorizedJSON(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q, want %q", ct, "application/json")
+	}
+	var body errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error == "" {
+		t.Fatal("expected non-empty error message")
+	}
+}
 
 func TestGenerateAPIKey(t *testing.T) {
 	plaintext, hash, err := GenerateAPIKey()
@@ -43,9 +61,7 @@ func TestAuthenticate_MissingHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
+	assertUnauthorizedJSON(t, rec)
 }
 
 func TestAuthenticate_MalformedHeader(t *testing.T) {
@@ -58,9 +74,7 @@ func TestAuthenticate_MalformedHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
+	assertUnauthorizedJSON(t, rec)
 }
 
 func TestRequireRoom_NoAgentInContext(t *testing.T) {
@@ -72,9 +86,7 @@ func TestRequireRoom_NoAgentInContext(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
+	assertUnauthorizedJSON(t, rec)
 }
 
 func TestRequireRoom_Mismatch(t *testing.T) {
@@ -89,9 +101,7 @@ func TestRequireRoom_Mismatch(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
-	}
+	assertUnauthorizedJSON(t, rec)
 }
 
 func TestRequireRoom_Match(t *testing.T) {
