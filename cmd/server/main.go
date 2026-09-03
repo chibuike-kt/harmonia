@@ -10,13 +10,21 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
-	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// run holds everything that needs to unwind through defers before the
+// process exits — main itself never defers, so its log.Fatal is never in
+// the same frame as a deferred cleanup that would get skipped.
+func run() error {
 	ctx := context.Background()
 
 	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
@@ -28,7 +36,7 @@ func main() {
 
 	st, err := store.New(ctx, dbURL, redisAddr)
 	if err != nil {
-		log.Fatalf("store init: %v", err)
+		return err
 	}
 	defer st.Close()
 
@@ -52,19 +60,17 @@ func main() {
 	r.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler())
 
 	tasks := task.NewStore(st.Pool)
-	events := event.NewStore(st.Pool)
+	beginner := store.PoolBeginner{Pool: st.Pool}
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
-		pr.Post("/v1/tasks", tasks.CreateHandler(events))
-		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(events))
-		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(events))
+		pr.Post("/v1/tasks", tasks.CreateHandler(beginner))
+		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(beginner))
+		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner))
 	})
 
 	// TODO: register handoff/context HTTP handlers here as each package's
 	// HTTP layer is built.
 
 	log.Printf("harmonia listening on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatal(err)
-	}
+	return http.ListenAndServe(addr, r)
 }
