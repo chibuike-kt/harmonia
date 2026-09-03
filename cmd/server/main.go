@@ -12,6 +12,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
 	"github.com/chibuike-kt/harmonia/internal/event"
+	"github.com/chibuike-kt/harmonia/internal/handoff"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
@@ -77,8 +78,18 @@ func run() error {
 		pr.Get("/v1/context/tasks/{task_id}", contexts.TaskHandler(events))
 	})
 
-	// TODO: register handoff HTTP handlers here as its HTTP layer is
-	// built, and the room event-history handler.
+	handoffs := handoff.NewStore(st.Pool)
+	r.Group(func(pr chi.Router) {
+		pr.Use(agent.Authenticate(agents))
+		pr.Post("/v1/handoffs", handoffs.RequestHandler(tasks, agents, beginner))
+		pr.Post("/v1/handoffs/{id}/accept", handoffs.AcceptHandler(beginner))
+	})
+
+	r.Group(func(pr chi.Router) {
+		pr.Use(agent.Authenticate(agents))
+		pr.Use(agent.RequireRoom("id"))
+		pr.Get("/v1/rooms/{id}/events", events.ListByRoomHandler())
+	})
 
 	log.Printf("harmonia listening on %s", addr)
 	return http.ListenAndServe(addr, r)

@@ -15,13 +15,13 @@ import (
 )
 
 type Event struct {
-	ID        int64
-	RoomID    uuid.UUID
-	TaskID    *uuid.UUID
-	AgentID   *uuid.UUID
-	Type      string
-	Payload   map[string]any
-	CreatedAt time.Time
+	ID        int64          `json:"id"`
+	RoomID    uuid.UUID      `json:"room_id"`
+	TaskID    *uuid.UUID     `json:"task_id,omitempty"`
+	AgentID   *uuid.UUID     `json:"agent_id,omitempty"`
+	Type      string         `json:"type"`
+	Payload   map[string]any `json:"payload"`
+	CreatedAt time.Time      `json:"created_at"`
 }
 
 type Store struct {

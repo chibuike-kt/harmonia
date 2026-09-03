@@ -1,7 +1,6 @@
 package task
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -44,18 +43,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// beginTx starts a transaction and returns a rollback func safe to defer
-// unconditionally — calling it after a successful Commit is a documented
-// no-op (pgx.ErrTxClosed, discarded here), so `defer rollback()` before a
-// possible `tx.Commit` is the standard pgx pattern, not a bug.
-func beginTx(ctx context.Context, pool store.Beginner) (store.Tx, func(), error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	return tx, func() { _ = tx.Rollback(ctx) }, nil
-}
-
 // CreateHandler returns the handler for POST /v1/tasks. The task's room is
 // the authenticated agent's own room — there is no separate room_id to
 // mismatch, since an agent only ever acts in the room it registered in.
@@ -80,7 +67,7 @@ func (s *Store) CreateHandler(pool store.Beginner) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		tx, rollback, err := beginTx(ctx, pool)
+		tx, rollback, err := store.BeginTx(ctx, pool)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to start transaction")
 			return
@@ -155,7 +142,7 @@ func (s *Store) ClaimHandler(pool store.Beginner) http.HandlerFunc {
 			return
 		}
 
-		tx, rollback, err := beginTx(ctx, pool)
+		tx, rollback, err := store.BeginTx(ctx, pool)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to start transaction")
 			return
@@ -233,7 +220,7 @@ func (s *Store) CompleteHandler(pool store.Beginner) http.HandlerFunc {
 			return
 		}
 
-		tx, rollback, err := beginTx(ctx, pool)
+		tx, rollback, err := store.BeginTx(ctx, pool)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to start transaction")
 			return

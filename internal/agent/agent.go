@@ -5,9 +5,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -65,4 +68,24 @@ func (s *Store) Register(ctx context.Context, roomID uuid.UUID, name string, pro
 	)
 	a.Capabilities = capabilities
 	return a, err
+}
+
+// GetByID fetches a single agent. Returns ErrNotFound if no agent matches.
+func (s *Store) GetByID(ctx context.Context, agentID uuid.UUID) (Agent, error) {
+	var a Agent
+	var capabilities []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, room_id, name, provider, capabilities, status, created_at
+		FROM agents WHERE id = $1
+	`, agentID).Scan(&a.ID, &a.RoomID, &a.Name, &a.Provider, &capabilities, &a.Status, &a.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, ErrNotFound
+	}
+	if err != nil {
+		return Agent{}, err
+	}
+	if err := json.Unmarshal(capabilities, &a.Capabilities); err != nil {
+		return Agent{}, err
+	}
+	return a, nil
 }

@@ -60,6 +60,20 @@ func (b PoolBeginner) Begin(ctx context.Context) (Tx, error) {
 	return tx, nil
 }
 
+// BeginTx starts a transaction and returns a rollback func safe to defer
+// unconditionally — calling it after a successful Commit is a documented
+// no-op (pgx.ErrTxClosed, discarded here), so `defer rollback()` before a
+// possible `tx.Commit` is the standard pgx pattern, not a bug. Shared here
+// rather than duplicated per package, since every handler pairing a
+// domain write with an event record needs exactly this.
+func BeginTx(ctx context.Context, pool Beginner) (Tx, func(), error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tx, func() { _ = tx.Rollback(ctx) }, nil
+}
+
 func New(ctx context.Context, databaseURL, redisAddr string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
