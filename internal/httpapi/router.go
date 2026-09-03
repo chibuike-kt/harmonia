@@ -37,13 +37,15 @@ func NewRouter(st *store.Store) http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	rooms := room.NewStore(st.Pool)
-	// No auth on room creation yet — needs human-session auth once the OAuth/BYOK phase lands; intentionally open for now, not an oversight.
-	r.Post("/v1/rooms", rooms.CreateHandler())
+	users := user.NewStore(st.Pool)
 
+	rooms := room.NewStore(st.Pool)
 	agents := agent.NewStore(st.Pool)
-	// No auth on agent registration yet — needs human-session auth once the OAuth/BYOK phase lands; intentionally open for now, not an oversight.
-	r.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler())
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/rooms", rooms.CreateHandler())
+		pr.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler(rooms))
+	})
 
 	tasks := task.NewStore(st.Pool)
 	events := event.NewStore(st.Pool)
@@ -74,7 +76,6 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Get("/v1/rooms/{id}/events", events.ListByRoomHandler())
 	})
 
-	users := user.NewStore(st.Pool)
 	githubCfg := user.NewGitHubConfig(
 		os.Getenv("GITHUB_CLIENT_ID"),
 		os.Getenv("GITHUB_CLIENT_SECRET"),
