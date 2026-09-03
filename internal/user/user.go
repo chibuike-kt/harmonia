@@ -49,3 +49,21 @@ func (s *Store) GetByID(ctx context.Context, userID uuid.UUID) (User, error) {
 	}
 	return u, err
 }
+
+// UpsertByGitHubID creates the user identified by githubID on first
+// login, or refreshes their profile fields from GitHub on every
+// subsequent one.
+func (s *Store) UpsertByGitHubID(ctx context.Context, githubID, username string, displayName, avatarURL, email *string) (User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO users (github_id, username, display_name, avatar_url, email)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (github_id) DO UPDATE
+		SET username = EXCLUDED.username, display_name = EXCLUDED.display_name,
+			avatar_url = EXCLUDED.avatar_url, email = EXCLUDED.email
+		RETURNING id, github_id, google_id, username, display_name, avatar_url, email, created_at
+	`, githubID, username, displayName, avatarURL, email).Scan(
+		&u.ID, &u.GitHubID, &u.GoogleID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Email, &u.CreatedAt,
+	)
+	return u, err
+}

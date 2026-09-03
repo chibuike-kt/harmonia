@@ -8,6 +8,7 @@ package httpapi
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -19,6 +20,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 // NewRouter builds the full Milestone 1 HTTP surface bound to st.
@@ -70,6 +72,15 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Use(agent.RequireRoom("id"))
 		pr.Get("/v1/rooms/{id}/events", events.ListByRoomHandler())
 	})
+
+	users := user.NewStore(st.Pool)
+	githubCfg := user.NewGitHubConfig(
+		os.Getenv("GITHUB_CLIENT_ID"),
+		os.Getenv("GITHUB_CLIENT_SECRET"),
+		os.Getenv("GITHUB_REDIRECT_URI"),
+	)
+	r.Get("/v1/auth/github/login", users.GitHubLoginHandler(githubCfg, st.Redis))
+	r.Get("/v1/auth/github/callback", users.GitHubCallbackHandler(githubCfg, st.Redis))
 
 	return r
 }
