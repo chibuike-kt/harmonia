@@ -7,7 +7,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/chibuike-kt/harmonia/internal/room"
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 type registerRequest struct {
@@ -35,20 +37,38 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(errorResponse{Error: message})
 }
 
-// foreignKeyViolation is the Postgres SQLSTATE for a foreign-key
-// constraint failure — used here to tell "room_id doesn't exist" apart
-// from an unexpected server error.
-const foreignKeyViolation = "23503"
-
 // RegisterHandler returns the handler for POST /v1/rooms/{room_id}/agents.
-// It issues the agent's scoped API key (see GenerateAPIKey) and returns
-// the plaintext key in the response body exactly once; only its hash is
-// persisted.
-func (s *Store) RegisterHandler() http.HandlerFunc {
+// Mount it behind user.Authenticate — it also checks that the
+// authenticated user owns the target room (403 on mismatch, 404 if the
+// room doesn't exist at all, the same non-leaking pattern used elsewhere
+// in this API) before registering anything. It issues the agent's scoped
+// API key (see GenerateAPIKey) and returns the plaintext key in the
+// response body exactly once; only its hash is persisted.
+func (s *Store) RegisterHandler(rooms *room.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
 		roomID, err := uuid.Parse(chi.URLParam(r, RoomIDParam))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid room_id")
+			return
+		}
+
+		rm, err := rooms.GetByID(r.Context(), roomID)
+		if err != nil {
+			if errors.Is(err, room.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "room not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to look up room")
+			return
+		}
+		if rm.OwnerID == nil || *rm.OwnerID != u.ID {
+			writeError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 
@@ -78,11 +98,6 @@ func (s *Store) RegisterHandler() http.HandlerFunc {
 
 		a, err := s.Register(r.Context(), roomID, req.Name, Provider(req.Provider), req.Capabilities, hash)
 		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation {
-				writeError(w, http.StatusNotFound, "room not found")
-				return
-			}
 			writeError(w, http.StatusInternalServerError, "failed to register agent")
 			return
 		}

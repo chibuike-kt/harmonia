@@ -32,7 +32,7 @@ func TestIntegration_AuthenticateRoundTrip(t *testing.T) {
 	rooms := room.NewStore(pool)
 	agents := NewStore(pool)
 
-	rm, err := rooms.Create(ctx, "agent-auth-test-room")
+	rm, err := rooms.Create(ctx, nil, "agent-auth-test-room")
 	if err != nil {
 		t.Fatalf("create room: %v", err)
 	}
