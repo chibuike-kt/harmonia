@@ -49,6 +49,12 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // plaintext key to the agent exactly once — it is never stored or logged
 // in plaintext.
 func (s *Store) Register(ctx context.Context, roomID uuid.UUID, name string, provider Provider, capabilities []string, apiKeyHash string) (Agent, error) {
+	if capabilities == nil {
+		// A nil slice marshals to JSON null, which pgx sends as SQL NULL —
+		// the capabilities column is NOT NULL. An agent with no declared
+		// capabilities still needs a valid empty JSON array on insert.
+		capabilities = []string{}
+	}
 	var a Agent
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO agents (room_id, name, provider, capabilities, status, api_key_hash)
