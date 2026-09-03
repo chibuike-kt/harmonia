@@ -10,8 +10,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
+	"github.com/chibuike-kt/harmonia/internal/task"
 )
 
 func main() {
@@ -49,8 +51,17 @@ func main() {
 	// No auth on agent registration yet — needs human-session auth once the OAuth/BYOK phase lands; intentionally open for now, not an oversight.
 	r.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler())
 
-	// TODO: register task/handoff/context HTTP handlers here as each
-	// package's HTTP layer is built.
+	tasks := task.NewStore(st.Pool)
+	events := event.NewStore(st.Pool)
+	r.Group(func(pr chi.Router) {
+		pr.Use(agent.Authenticate(agents))
+		pr.Post("/v1/tasks", tasks.CreateHandler(events))
+		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(events))
+		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(events))
+	})
+
+	// TODO: register handoff/context HTTP handlers here as each package's
+	// HTTP layer is built.
 
 	log.Printf("harmonia listening on %s", addr)
 	if err := http.ListenAndServe(addr, r); err != nil {

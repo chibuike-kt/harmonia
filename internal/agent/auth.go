@@ -73,6 +73,14 @@ func FromContext(ctx context.Context) (Agent, bool) {
 	return a, ok
 }
 
+// NewContext returns a copy of ctx carrying a as the authenticated agent,
+// as Authenticate would set it. The counterpart to FromContext — mainly
+// useful for tests in other packages that need an authenticated request
+// without going through a real bearer token.
+func NewContext(ctx context.Context, a Agent) context.Context {
+	return context.WithValue(ctx, agentCtxKey, a)
+}
+
 // RoomIDParam is the conventional chi URL param name RequireRoom checks
 // the authenticated agent's room against.
 const RoomIDParam = "room_id"
@@ -95,8 +103,7 @@ func Authenticate(store *Store) func(http.Handler) http.Handler {
 				unauthorized(w)
 				return
 			}
-			ctx := context.WithValue(r.Context(), agentCtxKey, a)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(NewContext(r.Context(), a)))
 		})
 	}
 }

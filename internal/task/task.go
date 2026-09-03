@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -28,16 +29,29 @@ const (
 
 var ErrAlreadyClaimed = errors.New("task: already claimed by another agent")
 
+// ErrNotFound is returned when no task matches the given ID.
+var ErrNotFound = errors.New("task: not found")
+
+// Event types recorded to the audit trail for each task lifecycle
+// transition (see internal/event). Distinct from the AACP protocol.Operation
+// constants — these are the events.type values, not the message type on
+// the wire.
+const (
+	EventTaskCreated   = "TASK_CREATED"
+	EventTaskClaimed   = "TASK_CLAIMED"
+	EventTaskCompleted = "TASK_COMPLETED"
+)
+
 type Task struct {
-	ID            uuid.UUID
-	RoomID        uuid.UUID
-	OwnerAgentID  *uuid.UUID
-	ParentTaskID  *uuid.UUID
-	Objective     string
-	Status        Status
-	CreatedAt     time.Time
-	ClaimedAt     *time.Time
-	CompletedAt   *time.Time
+	ID           uuid.UUID  `json:"id"`
+	RoomID       uuid.UUID  `json:"room_id"`
+	OwnerAgentID *uuid.UUID `json:"owner_agent_id,omitempty"`
+	ParentTaskID *uuid.UUID `json:"parent_task_id,omitempty"`
+	Objective    string     `json:"objective"`
+	Status       Status     `json:"status"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ClaimedAt    *time.Time `json:"claimed_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 }
 
 type Store struct {
@@ -88,4 +102,19 @@ func (s *Store) Complete(ctx context.Context, taskID uuid.UUID) error {
 		WHERE id = $1
 	`, taskID)
 	return err
+}
+
+// GetByID fetches a single task. Returns ErrNotFound if no task matches.
+func (s *Store) GetByID(ctx context.Context, taskID uuid.UUID) (Task, error) {
+	var t Task
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, room_id, owner_agent_id, parent_task_id, objective, status, created_at, claimed_at, completed_at
+		FROM tasks WHERE id = $1
+	`, taskID).Scan(
+		&t.ID, &t.RoomID, &t.OwnerAgentID, &t.ParentTaskID, &t.Objective, &t.Status, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Task{}, ErrNotFound
+	}
+	return t, err
 }
