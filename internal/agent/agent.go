@@ -27,13 +27,13 @@ const (
 )
 
 type Agent struct {
-	ID           uuid.UUID
-	RoomID       uuid.UUID
-	Name         string
-	Provider     Provider
-	Capabilities []string
-	Status       Status
-	CreatedAt    time.Time
+	ID           uuid.UUID `json:"id"`
+	RoomID       uuid.UUID `json:"room_id"`
+	Name         string    `json:"name"`
+	Provider     Provider  `json:"provider"`
+	Capabilities []string  `json:"capabilities"`
+	Status       Status    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Store struct {

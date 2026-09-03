@@ -9,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
@@ -39,9 +41,16 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	// TODO: register room/task/agent/handoff/context HTTP handlers here as
-	// each package's HTTP layer is built. Scaffold intentionally stops at
-	// wiring — routes are Milestone 1 build work, not scaffold work.
+	rooms := room.NewStore(st.Pool)
+	// No auth on room creation yet — needs human-session auth once the OAuth/BYOK phase lands; intentionally open for now, not an oversight.
+	r.Post("/v1/rooms", rooms.CreateHandler())
+
+	agents := agent.NewStore(st.Pool)
+	// No auth on agent registration yet — needs human-session auth once the OAuth/BYOK phase lands; intentionally open for now, not an oversight.
+	r.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler())
+
+	// TODO: register task/handoff/context HTTP handlers here as each
+	// package's HTTP layer is built.
 
 	log.Printf("harmonia listening on %s", addr)
 	if err := http.ListenAndServe(addr, r); err != nil {

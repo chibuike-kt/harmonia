@@ -11,10 +11,10 @@ import (
 )
 
 type Room struct {
-	ID        uuid.UUID
-	Name      string
-	Status    string
-	CreatedAt time.Time
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Store struct {
