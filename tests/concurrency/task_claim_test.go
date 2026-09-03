@@ -35,7 +35,7 @@ func TestIntegration_OnlyOneAgentClaimsTask(t *testing.T) {
 	agents := agent.NewStore(pool)
 	tasks := task.NewStore(pool)
 
-	rm, err := rooms.Create(ctx, "concurrency-test-room")
+	rm, err := rooms.Create(ctx, nil, "concurrency-test-room")
 	if err != nil {
 		t.Fatalf("create room: %v", err)
 	}

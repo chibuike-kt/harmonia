@@ -40,11 +40,11 @@ func TestIntegration_TaskHandler(t *testing.T) {
 	events := event.NewStore(pool)
 	contexts := NewStore(pool)
 
-	roomA, err := rooms.Create(ctx, "context-handler-test-room-a")
+	roomA, err := rooms.Create(ctx, nil, "context-handler-test-room-a")
 	if err != nil {
 		t.Fatalf("create room A: %v", err)
 	}
-	roomB, err := rooms.Create(ctx, "context-handler-test-room-b")
+	roomB, err := rooms.Create(ctx, nil, "context-handler-test-room-b")
 	if err != nil {
 		t.Fatalf("create room B: %v", err)
 	}

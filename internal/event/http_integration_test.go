@@ -37,7 +37,7 @@ func TestIntegration_ListByRoomHandler(t *testing.T) {
 	rooms := room.NewStore(pool)
 	events := NewStore(pool)
 
-	rm, err := rooms.Create(ctx, "event-history-handler-test-room")
+	rm, err := rooms.Create(ctx, nil, "event-history-handler-test-room")
 	if err != nil {
 		t.Fatalf("create room: %v", err)
 	}

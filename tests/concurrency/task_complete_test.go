@@ -37,7 +37,7 @@ func TestIntegration_OnlyOneCompletionSucceeds(t *testing.T) {
 	agents := agent.NewStore(pool)
 	tasks := task.NewStore(pool)
 
-	rm, err := rooms.Create(ctx, "concurrency-test-room-complete")
+	rm, err := rooms.Create(ctx, nil, "concurrency-test-room-complete")
 	if err != nil {
 		t.Fatalf("create room: %v", err)
 	}

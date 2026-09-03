@@ -41,11 +41,11 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 	tasks := NewStore(pool)
 	events := event.NewStore(pool)
 
-	roomA, err := rooms.Create(ctx, "task-lifecycle-room-a")
+	roomA, err := rooms.Create(ctx, nil, "task-lifecycle-room-a")
 	if err != nil {
 		t.Fatalf("create room A: %v", err)
 	}
-	roomB, err := rooms.Create(ctx, "task-lifecycle-room-b")
+	roomB, err := rooms.Create(ctx, nil, "task-lifecycle-room-b")
 	if err != nil {
 		t.Fatalf("create room B: %v", err)
 	}

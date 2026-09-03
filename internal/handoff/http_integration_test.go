@@ -44,11 +44,11 @@ func TestIntegration_HandoffLifecycle(t *testing.T) {
 	events := event.NewStore(pool)
 	handoffs := NewStore(pool)
 
-	roomA, err := rooms.Create(ctx, "handoff-lifecycle-room-a")
+	roomA, err := rooms.Create(ctx, nil, "handoff-lifecycle-room-a")
 	if err != nil {
 		t.Fatalf("create room A: %v", err)
 	}
-	roomB, err := rooms.Create(ctx, "handoff-lifecycle-room-b")
+	roomB, err := rooms.Create(ctx, nil, "handoff-lifecycle-room-b")
 	if err != nil {
 		t.Fatalf("create room B: %v", err)
 	}
