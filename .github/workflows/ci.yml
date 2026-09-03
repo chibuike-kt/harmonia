@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: harmonia
+          POSTGRES_PASSWORD: harmonia
+          POSTGRES_DB: harmonia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U harmonia"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: race tests
+        run: go test ./... -race
+        env:
+          HARMONIA_DATABASE_URL: postgres://harmonia:harmonia@localhost:5432/harmonia?sslmode=disable
+          HARMONIA_REDIS_ADDR: localhost:6379

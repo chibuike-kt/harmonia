@@ -1,0 +1,10 @@
+/bin/
+/dist/
+*.env
+.env
+!.env.example
+*.log
+.DS_Store
+/tmp/
+coverage.out
+coverage.html

@@ -1,0 +1,16 @@
+version: "2"
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - unused
+    - gocritic
+    - bodyclose
+    - sqlclosecheck
+    - noctx
+  settings:
+    errcheck:
+      check-type-assertions: true
+run:
+  timeout: 5m
