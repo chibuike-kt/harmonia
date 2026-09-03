@@ -7,13 +7,32 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
+
+func authedContext() context.Context {
+	return user.NewContext(context.Background(), user.User{ID: uuid.New()})
+}
+
+func TestCreateHandler_Unauthenticated(t *testing.T) {
+	s := &Store{}
+	h := s.CreateHandler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/rooms", strings.NewReader(`{"name":"a"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusUnauthorized)
+}
 
 func TestCreateHandler_InvalidBody(t *testing.T) {
 	s := &Store{}
 	h := s.CreateHandler()
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/rooms", strings.NewReader("not json"))
+	req := httptest.NewRequestWithContext(authedContext(), http.MethodPost, "/v1/rooms", strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -24,7 +43,7 @@ func TestCreateHandler_MissingName(t *testing.T) {
 	s := &Store{}
 	h := s.CreateHandler()
 
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/rooms", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(authedContext(), http.MethodPost, "/v1/rooms", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

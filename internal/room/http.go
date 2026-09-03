@@ -3,6 +3,8 @@ package room
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 type createRequest struct {
@@ -21,9 +23,17 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	_ = json.NewEncoder(w).Encode(errorResponse{Error: message})
 }
 
-// CreateHandler returns the handler for POST /v1/rooms.
+// CreateHandler returns the handler for POST /v1/rooms. Mount it behind
+// user.Authenticate — every room created through this endpoint has an
+// owner, set from the session.
 func (s *Store) CreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
 		var req createRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
@@ -34,7 +44,7 @@ func (s *Store) CreateHandler() http.HandlerFunc {
 			return
 		}
 
-		rm, err := s.Create(r.Context(), req.Name)
+		rm, err := s.Create(r.Context(), &u.ID, req.Name)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create room")
 			return
