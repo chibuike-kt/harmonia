@@ -143,6 +143,9 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, true
 }
 
+// unauthorized writes a JSON error body, {"error": "unauthorized"} — the
+// same writeError helper http.go's handlers use, matching the shape
+// user.Authenticate's equivalent 401 uses too.
 func unauthorized(w http.ResponseWriter) {
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	writeError(w, http.StatusUnauthorized, "unauthorized")
 }
