@@ -90,5 +90,13 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Get("/v1/auth/google/login", users.GoogleLoginHandler(googleCfg, st.Redis))
 	r.Get("/v1/auth/google/callback", users.GoogleCallbackHandler(googleCfg, st.Redis))
 
+	r.Post("/v1/auth/logout", users.LogoutHandler())
+
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Get("/v1/sessions", users.SessionsHandler())
+		pr.Delete("/v1/sessions/{id}", users.RevokeSessionHandler())
+	})
+
 	return r
 }

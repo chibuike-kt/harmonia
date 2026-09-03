@@ -95,6 +95,80 @@ func (s *Store) Authenticate(ctx context.Context, tokenHash string) (User, error
 	return u, err
 }
 
+// SessionWithCurrent is a Session annotated with whether it's the one
+// authenticating the request that asked for the list — the "flag on
+// whichever one matches the current request's cookie" the build brief
+// calls for.
+type SessionWithCurrent struct {
+	Session
+	Current bool `json:"current"`
+}
+
+// ListSessions returns userID's active (unrevoked, unexpired) sessions,
+// most recent first, flagging whichever one's token hash matches
+// currentTokenHash.
+func (s *Store) ListSessions(ctx context.Context, userID uuid.UUID, currentTokenHash string) ([]SessionWithCurrent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, user_agent, ip_address, created_at, last_seen_at, expires_at, revoked_at, token_hash = $2
+		FROM sessions
+		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
+		ORDER BY created_at DESC
+	`, userID, currentTokenHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []SessionWithCurrent
+	for rows.Next() {
+		var sess SessionWithCurrent
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.UserAgent, &sess.IPAddress, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.RevokedAt, &sess.Current); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+// RevokeSession revokes sessionID, provided it belongs to userID and
+// isn't already revoked — a conditional write, not read-then-write, so a
+// concurrent double-revoke is a no-op rather than a race. Reports whether
+// a row was actually revoked; false covers "doesn't exist", "belongs to
+// someone else", and "already revoked" alike, the same non-leaking
+// pattern Authenticate uses for its own failure cases. Also reports
+// whether the revoked session is the one identified by currentTokenHash
+// — the caller's own live session — computed in the same query so the
+// caller can decide whether to clear its cookie without a second
+// round trip or a TOCTOU gap.
+func (s *Store) RevokeSession(ctx context.Context, sessionID, userID uuid.UUID, currentTokenHash string) (revoked, wasCurrent bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		UPDATE sessions SET revoked_at = now()
+		WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
+		RETURNING token_hash = $3
+	`, sessionID, userID, currentTokenHash).Scan(&wasCurrent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return true, wasCurrent, nil
+}
+
+// RevokeSessionByTokenHash revokes the session matching tokenHash, if any
+// and not already revoked. Logout identifies the session this way —
+// straight from the request's cookie — rather than by an id in the URL.
+func (s *Store) RevokeSessionByTokenHash(ctx context.Context, tokenHash string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE sessions SET revoked_at = now()
+		WHERE token_hash = $1 AND revoked_at IS NULL
+	`, tokenHash)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 type contextKey struct{}
 
 var userCtxKey = contextKey{}
@@ -173,6 +247,21 @@ func (s *Store) issueSessionAndSetCookie(w http.ResponseWriter, r *http.Request,
 		SameSite: http.SameSiteLaxMode,
 	})
 	return nil
+}
+
+// clearSessionCookie expires the session cookie in the browser. Same
+// attributes as issueSessionAndSetCookie minus Expires/Value — a cookie
+// clear is a cookie set with MaxAge<0, not a different mechanism.
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // clientIP extracts the request's peer address, stripping the port. Falls
