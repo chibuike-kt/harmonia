@@ -82,5 +82,13 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Get("/v1/auth/github/login", users.GitHubLoginHandler(githubCfg, st.Redis))
 	r.Get("/v1/auth/github/callback", users.GitHubCallbackHandler(githubCfg, st.Redis))
 
+	googleCfg := user.NewGoogleConfig(
+		os.Getenv("GOOGLE_CLIENT_ID"),
+		os.Getenv("GOOGLE_CLIENT_SECRET"),
+		os.Getenv("GOOGLE_REDIRECT_URI"),
+	)
+	r.Get("/v1/auth/google/login", users.GoogleLoginHandler(googleCfg, st.Redis))
+	r.Get("/v1/auth/google/callback", users.GoogleCallbackHandler(googleCfg, st.Redis))
+
 	return r
 }
