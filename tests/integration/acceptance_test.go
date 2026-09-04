@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,11 +18,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/credentials"
 	"github.com/chibuike-kt/harmonia/internal/httpapi"
 	"github.com/chibuike-kt/harmonia/internal/provider"
 	"github.com/chibuike-kt/harmonia/internal/provider/anthropic"
 	"github.com/chibuike-kt/harmonia/internal/provider/openai"
 	"github.com/chibuike-kt/harmonia/internal/store"
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 // fromAgentProvider and toAgentProvider are the only two lines that pick
@@ -34,10 +38,32 @@ const (
 	toAgentProvider   = "openai"
 )
 
-// newProviderClient builds the real client for kind, or skips the test if
-// the credential it needs isn't set.
-func newProviderClient(t *testing.T, kind string) provider.Agent {
+// newProviderClient builds the real client for kind: BYOK first — a
+// credential connected via POST /v1/credentials for ownerID, resolved
+// through the same internal/credentials.Store.Resolve the platform would
+// use — and only when none is connected (credentials.ErrNoCredential) or
+// this deployment hasn't configured encryption at all
+// (credentials.ErrEncryptionNotConfigured) does it fall back to the
+// ANTHROPIC_API_KEY/OPENAI_API_KEY env vars this test used exclusively
+// before Phase 2's BYOK credential store existed. That fallback is the
+// expected path here — this environment has no OAuth+BYOK setup, per the
+// Phase 2 build brief's step 9 — and is explicitly a dev/CI-only
+// convenience, never the real credential path this platform ships with
+// (see ADR-002). Skips the test if the fallback's env var isn't set either.
+func newProviderClient(t *testing.T, ctx context.Context, creds *credentials.Store, ownerID uuid.UUID, kind string) provider.Agent {
 	t.Helper()
+
+	providerName := agent.Provider(kind)
+	client, err := creds.Resolve(ctx, &ownerID, providerName)
+	switch {
+	case err == nil:
+		return client
+	case errors.Is(err, credentials.ErrNoCredential), errors.Is(err, credentials.ErrEncryptionNotConfigured):
+		// Fall through to the env var fallback below.
+	default:
+		t.Fatalf("resolve %s credential: %v", kind, err)
+	}
+
 	switch kind {
 	case "anthropic":
 		key := os.Getenv("ANTHROPIC_API_KEY")
@@ -76,9 +102,6 @@ func TestIntegration_MilestoneOneAcceptance(t *testing.T) {
 		t.Skip("HARMONIA_DATABASE_URL not set; skipping acceptance test")
 	}
 
-	fromClient := newProviderClient(t, fromAgentProvider)
-	toClient := newProviderClient(t, toAgentProvider)
-
 	ctx := context.Background()
 	st, err := store.New(ctx, dbURL, os.Getenv("HARMONIA_REDIS_ADDR"))
 	if err != nil {
@@ -86,10 +109,46 @@ func TestIntegration_MilestoneOneAcceptance(t *testing.T) {
 	}
 	defer st.Close()
 
+	// POST /v1/rooms requires a session since Phase 2's step 7 — this
+	// test drives the real HTTP API, so it needs a genuine session the
+	// same way a real human would, not a bypass. Seeding the user and
+	// session directly (rather than through a real OAuth callback) is
+	// the same shortcut this test already took for agent identity: it
+	// exercises the actual room/agent/task/handoff HTTP surface for
+	// real, it just doesn't re-prove the OAuth dance itself, which
+	// github_integration_test.go and google_integration_test.go already
+	// cover.
+	users := user.NewStore(st.Pool)
+	owner, err := users.UpsertByGitHubID(ctx, "acceptance-test-owner-"+uuid.New().String(), "acceptance-test-owner", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed owner user: %v", err)
+	}
+	sessionPlaintext, sessionHash, err := user.GenerateSessionToken()
+	if err != nil {
+		t.Fatalf("GenerateSessionToken: %v", err)
+	}
+	if _, err := users.CreateSession(ctx, owner.ID, sessionHash, nil, nil); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// cipher is nil when HARMONIA_CREDENTIAL_ENCRYPTION_KEY is unset, the
+	// expected state in this environment — Resolve then reports
+	// ErrEncryptionNotConfigured and newProviderClient falls back to the
+	// env vars, exactly as it would with a configured cipher but no
+	// credential connected.
+	cipher, _ := credentials.NewCipher(os.Getenv("HARMONIA_CREDENTIAL_ENCRYPTION_KEY"))
+	creds := credentials.NewStore(st.Pool, cipher)
+
+	fromClient := newProviderClient(t, ctx, creds, owner.ID, fromAgentProvider)
+	toClient := newProviderClient(t, ctx, creds, owner.ID, toAgentProvider)
+
 	srv := httptest.NewServer(httpapi.NewRouter(st))
 	defer srv.Close()
 
-	h := &harness{t: t, baseURL: srv.URL, client: srv.Client()}
+	h := &harness{
+		t: t, baseURL: srv.URL, client: srv.Client(),
+		sessionCookie: &http.Cookie{Name: user.SessionCookieName, Value: sessionPlaintext},
+	}
 
 	// Step 1: room creation.
 	roomID := h.createRoom("milestone-1-acceptance-" + uuid.New().String())
@@ -175,6 +234,11 @@ type harness struct {
 	t       *testing.T
 	baseURL string
 	client  *http.Client
+	// sessionCookie authenticates the one human owner every request in
+	// this test acts as — room/agent-registration endpoints need it,
+	// agent-authenticated ones (task/context/handoff) ignore it entirely,
+	// so attaching it to every request unconditionally is harmless.
+	sessionCookie *http.Cookie
 }
 
 // request makes one HTTP call and, in this same function so the body's
@@ -199,6 +263,9 @@ func (h *harness) request(method, path, bearer string, body any, wantStatus int,
 	}
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if h.sessionCookie != nil {
+		req.AddCookie(h.sessionCookie)
 	}
 
 	resp, err := h.client.Do(req)
