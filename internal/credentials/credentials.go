@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
@@ -23,6 +24,22 @@ var ErrEncryptionNotConfigured = errors.New("credentials: encryption is not conf
 // distinguished from a server-side failure so the handler can 400
 // instead of 500.
 var ErrVerificationFailed = errors.New("credentials: provider verification failed")
+
+// ErrNoCredential is returned by Resolve when the room's owner exists
+// but has never connected a credential for the requested provider — not
+// a bad key, just none stored. This is also what a nil ownerID resolves
+// to: a pre-Phase-2 room with no owner can't have a BYOK credential
+// either, so it collapses into the same case rather than a separate one.
+// Distinguished from a generic failure so a caller can respond with
+// something a human can act on. Not currently wired to any HTTP
+// endpoint — Milestone 1/Phase 2 never added a server-side call site
+// that resolves a provider client for a live request (that's Phase 4's
+// tool execution) — but when one exists, it should map this to 424
+// Failed Dependency ("the request itself was fine; a required upstream
+// dependency — a connected provider credential — is missing"), not a
+// generic 500, with a message telling the caller to connect one via
+// POST /v1/credentials.
+var ErrNoCredential = errors.New("credentials: no credential connected for this provider")
 
 // verificationTimeout bounds the live provider call Connect makes before
 // storing a key — long enough for a real round trip, short enough that
@@ -123,6 +140,46 @@ func (s *Store) Connect(ctx context.Context, userID uuid.UUID, providerName agen
 		return Credential{}, err
 	}
 	return cred, nil
+}
+
+// Resolve returns a working provider.Agent for providerName, built from
+// ownerID's decrypted BYOK credential. This is pure BYOK resolution —
+// it has no idea an env var fallback exists; that's a deployment-time
+// concern for whoever calls Resolve, not this package's job (see
+// ADR-002: the platform is never supposed to fall back to a shared key
+// as its real credential path, only as an explicit, clearly-marked
+// dev/CI convenience at the call site).
+//
+// ownerID is a *uuid.UUID because room.Room.OwnerID is one — nil means
+// a pre-Phase-2 room with no owner, which can't have a BYOK credential
+// any more than an owner who simply never connected one, so both cases
+// return ErrNoCredential. Returns ErrEncryptionNotConfigured if this
+// deployment hasn't set HARMONIA_CREDENTIAL_ENCRYPTION_KEY.
+func (s *Store) Resolve(ctx context.Context, ownerID *uuid.UUID, providerName agent.Provider) (provider.Agent, error) {
+	if ownerID == nil {
+		return nil, ErrNoCredential
+	}
+	if s.cipher == nil {
+		return nil, ErrEncryptionNotConfigured
+	}
+
+	var encryptedKey, nonce []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT encrypted_key, nonce FROM provider_credentials WHERE user_id = $1 AND provider = $2
+	`, *ownerID, string(providerName)).Scan(&encryptedKey, &nonce)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoCredential
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	apiKey, err := s.cipher.Decrypt(encryptedKey, nonce)
+	if err != nil {
+		return nil, fmt.Errorf("credentials: decrypt stored key: %w", err)
+	}
+
+	return s.newProviderClient(providerName, apiKey)
 }
 
 // List returns userID's connected providers, most recent first — hints
