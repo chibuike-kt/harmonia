@@ -83,6 +83,64 @@ func (s *Store) RevokeSessionHandler() http.HandlerFunc {
 	}
 }
 
+// MeHandler returns the handler for GET /v1/users/me. Mount it behind
+// Authenticate — returns the authenticated user's own profile exactly as
+// Authenticate resolved it this request, no extra query needed.
+func (s *Store) MeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(u)
+	}
+}
+
+type updateMeRequest struct {
+	Username    *string `json:"username"`
+	DisplayName *string `json:"display_name"`
+}
+
+// UpdateMeHandler returns the handler for PATCH /v1/users/me. Mount it
+// behind Authenticate. Username and display name only — this phase's
+// entire "settings" surface is this plus the sessions and credentials
+// endpoints, not a new subsystem. A field omitted or null in the request
+// body is left unchanged; a present-but-empty username is rejected
+// rather than silently ignored or blanking out a NOT NULL column.
+func (s *Store) UpdateMeHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		var req updateMeRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Username != nil && *req.Username == "" {
+			writeError(w, http.StatusBadRequest, "username cannot be empty")
+			return
+		}
+
+		updated, err := s.UpdateMe(r.Context(), u.ID, req.Username, req.DisplayName)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update user")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(updated)
+	}
+}
+
 // LogoutHandler returns the handler for POST /v1/auth/logout. Not mounted
 // behind Authenticate: logging out a request whose session already
 // expired should still clear the stale cookie rather than 401, so this

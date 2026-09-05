@@ -113,5 +113,11 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Delete("/v1/credentials/{provider}", creds.DeleteHandler())
 	})
 
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Get("/v1/users/me", users.MeHandler())
+		pr.Patch("/v1/users/me", users.UpdateMeHandler())
+	})
+
 	return r
 }

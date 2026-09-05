@@ -85,3 +85,21 @@ func (s *Store) UpsertByGoogleID(ctx context.Context, googleID, username string,
 	)
 	return u, err
 }
+
+// UpdateMe updates userID's own mutable settings — username and display
+// name, the entirety of "settings" in this phase. A nil argument leaves
+// that field unchanged; username can never be set to empty since the
+// column is NOT NULL and UpdateMeHandler rejects an empty string before
+// this is ever called.
+func (s *Store) UpdateMe(ctx context.Context, userID uuid.UUID, username, displayName *string) (User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		UPDATE users
+		SET username = COALESCE($2, username), display_name = COALESCE($3, display_name)
+		WHERE id = $1
+		RETURNING id, github_id, google_id, username, display_name, avatar_url, email, created_at
+	`, userID, username, displayName).Scan(
+		&u.ID, &u.GitHubID, &u.GoogleID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Email, &u.CreatedAt,
+	)
+	return u, err
+}
