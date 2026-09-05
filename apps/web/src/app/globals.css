@@ -17,6 +17,32 @@
   }
 }
 
+/*
+ * Marketing/login design tokens (docs/design/login-mockup-reference.html).
+ * Deliberately separate from --background/--foreground above: those back
+ * every existing screen's light/dark utility classes, these back Nav,
+ * Footer and the login page's own fixed-dark palette. Referenced via
+ * Tailwind arbitrary values (e.g. bg-[var(--surface)]), not @theme, so
+ * they don't generate global utilities other screens could pick up
+ * unintentionally.
+ */
+:root {
+  --login-bg: #0b0e13;
+  --login-surface: #12161d;
+  --login-surface-2: #171c24;
+  --login-border: #232a34;
+  --login-border-strong: #2e3642;
+  --login-text: #e8eaed;
+  --login-text-secondary: #9aa1ac;
+  --login-text-muted: #5c6470;
+  --login-accent: #4cd3c2;
+  --login-font-sans:
+    var(--font-space-grotesk), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --login-font-mono:
+    var(--font-jetbrains-mono), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
