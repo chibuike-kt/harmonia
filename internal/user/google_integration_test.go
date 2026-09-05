@@ -29,7 +29,10 @@ import (
 // throwaway key, and verifyGoogleIDToken genuinely verifies it against
 // the fake JWKS — this isn't a shortcut around verification, it's
 // verification exercised against a controlled key instead of Google's
-// real one.
+// real one. It also closes the loop per the Phase 2 build brief's step
+// 11: the issued session goes on to authenticate a real HTTP request
+// through user.Authenticate in front of a real production handler, not
+// just Store.Authenticate called directly.
 //
 // It does NOT prove the real Google OAuth integration works — that needs
 // a registered OAuth Client's real client ID/secret/callback URL (see the
@@ -209,6 +212,26 @@ func TestIntegration_GoogleLoginAndCallback(t *testing.T) {
 	}
 	if authenticated.Email == nil || *authenticated.Email != "octocat@example.com" {
 		t.Fatalf("authenticated Email = %v, want %q", authenticated.Email, "octocat@example.com")
+	}
+
+	// The full flow closes the loop through a real authenticated HTTP
+	// request, not just Store.Authenticate directly: user.Authenticate
+	// middleware in front of a real production handler (MeHandler),
+	// driven with the actual cookie the callback issued.
+	protected := Authenticate(s)(s.MeHandler())
+	meReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/users/me", nil)
+	meReq.AddCookie(sessionCookie)
+	meRec := httptest.NewRecorder()
+	protected.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("authenticated GET /v1/users/me status = %d, want %d, body = %s", meRec.Code, http.StatusOK, meRec.Body.String())
+	}
+	var me User
+	if err := json.Unmarshal(meRec.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode /v1/users/me response: %v", err)
+	}
+	if me.ID != authenticated.ID {
+		t.Fatalf("authenticated request user ID = %s, want %s", me.ID, authenticated.ID)
 	}
 }
 

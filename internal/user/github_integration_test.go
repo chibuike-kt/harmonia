@@ -18,8 +18,12 @@ import (
 // fake httptest.Server standing in for GitHub's token and userinfo
 // endpoints — same technique as the Anthropic client's structural test in
 // Milestone 1. This proves the request/response shapes, CSRF state
-// handling (including that a replayed callback fails), and the
-// upsert-by-github_id + session-issuance logic are right.
+// handling (including that a replayed callback fails), the
+// upsert-by-github_id + session-issuance logic, and — closing the loop
+// per the Phase 2 build brief's step 11 — that the issued session
+// actually authenticates a real HTTP request through user.Authenticate
+// in front of a real production handler, not just Store.Authenticate
+// called directly.
 //
 // It does NOT prove the real GitHub OAuth integration works — that needs
 // a registered OAuth App's real client ID/secret/callback URL (see the
@@ -180,5 +184,25 @@ func TestIntegration_GitHubLoginAndCallback(t *testing.T) {
 	}
 	if authenticated.DisplayName == nil || *authenticated.DisplayName != "The Octocat" {
 		t.Fatalf("authenticated DisplayName = %v, want %q", authenticated.DisplayName, "The Octocat")
+	}
+
+	// The full flow closes the loop through a real authenticated HTTP
+	// request, not just Store.Authenticate directly: user.Authenticate
+	// middleware in front of a real production handler (MeHandler),
+	// driven with the actual cookie the callback issued.
+	protected := Authenticate(s)(s.MeHandler())
+	meReq := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/users/me", nil)
+	meReq.AddCookie(sessionCookie)
+	meRec := httptest.NewRecorder()
+	protected.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("authenticated GET /v1/users/me status = %d, want %d, body = %s", meRec.Code, http.StatusOK, meRec.Body.String())
+	}
+	var me User
+	if err := json.Unmarshal(meRec.Body.Bytes(), &me); err != nil {
+		t.Fatalf("decode /v1/users/me response: %v", err)
+	}
+	if me.ID != authenticated.ID {
+		t.Fatalf("authenticated request user ID = %s, want %s", me.ID, authenticated.ID)
 	}
 }
