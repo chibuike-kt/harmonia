@@ -37,23 +37,43 @@ func withHandoffIDParam(req *http.Request, idParam string) *http.Request {
 // row that a type switch alone can't tell apart.
 type fakeHandoffRow struct{ h Handoff }
 
+// scanAssign type-asserts dest to *T and stores v through it, in the
+// checked (comma-ok) form errcheck's check-type-assertions requires —
+// a bare dest[i].(*T) is flagged even though it can't fail here, since
+// dest's shape is fixed by fakeHandoffRow's own column-order contract.
+func scanAssign[T any](dest any, v T) error {
+	p, ok := dest.(*T)
+	if !ok {
+		return fmt.Errorf("fakeHandoffRow: scan target is %T, want *%T", dest, v)
+	}
+	*p = v
+	return nil
+}
+
 func (r fakeHandoffRow) Scan(dest ...any) error {
 	if len(dest) != 13 {
 		return fmt.Errorf("fakeHandoffRow: got %d scan targets, want 13", len(dest))
 	}
-	*dest[0].(*uuid.UUID) = r.h.ID
-	*dest[1].(*uuid.UUID) = r.h.RoomID
-	*dest[2].(*uuid.UUID) = r.h.TaskID
-	*dest[3].(*uuid.UUID) = r.h.FromAgentID
-	*dest[4].(*uuid.UUID) = r.h.ToAgentID
-	*dest[5].(*string) = r.h.Summary
-	*dest[6].(*[]string) = r.h.Completed
-	*dest[7].(*[]string) = r.h.Remaining
-	*dest[8].(*[]string) = r.h.Artifacts
-	*dest[9].(*[]string) = r.h.Decisions
-	*dest[10].(*[]string) = r.h.Risks
-	*dest[11].(*Status) = r.h.Status
-	*dest[12].(*time.Time) = r.h.CreatedAt
+	assignments := [13]error{
+		scanAssign(dest[0], r.h.ID),
+		scanAssign(dest[1], r.h.RoomID),
+		scanAssign(dest[2], r.h.TaskID),
+		scanAssign(dest[3], r.h.FromAgentID),
+		scanAssign(dest[4], r.h.ToAgentID),
+		scanAssign(dest[5], r.h.Summary),
+		scanAssign(dest[6], r.h.Completed),
+		scanAssign(dest[7], r.h.Remaining),
+		scanAssign(dest[8], r.h.Artifacts),
+		scanAssign(dest[9], r.h.Decisions),
+		scanAssign(dest[10], r.h.Risks),
+		scanAssign(dest[11], r.h.Status),
+		scanAssign(dest[12], r.h.CreatedAt),
+	}
+	for _, err := range assignments {
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
