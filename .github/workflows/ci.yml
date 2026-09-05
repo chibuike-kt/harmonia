@@ -58,3 +58,32 @@ jobs:
         env:
           HARMONIA_DATABASE_URL: postgres://harmonia:harmonia@localhost:5432/harmonia?sslmode=disable
           HARMONIA_REDIS_ADDR: localhost:6379
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: lint
+        run: npm run lint
+
+      - name: format check
+        run: npm run format:check
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: build
+        run: npm run build
