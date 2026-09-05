@@ -23,6 +23,9 @@ type Room struct {
 	// room created through CreateHandler has one (see ADR-002).
 	OwnerID   *uuid.UUID `json:"owner_id,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
+	// PinnedAt is nullable — not-null means pinned, same style as
+	// sessions.revoked_at, not a separate boolean column.
+	PinnedAt *time.Time `json:"pinned_at,omitempty"`
 }
 
 type Store struct {
@@ -41,8 +44,8 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO rooms (name, status, owner_id) VALUES ($1, 'active', $2)
-		RETURNING id, name, status, owner_id, created_at
-	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt)
+		RETURNING id, name, status, owner_id, created_at, pinned_at
+	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt)
 	return r, err
 }
 
@@ -50,8 +53,35 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, status, owner_id, created_at FROM rooms WHERE id = $1
-	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt)
+		SELECT id, name, status, owner_id, created_at, pinned_at FROM rooms WHERE id = $1
+	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Room{}, ErrNotFound
+	}
+	return r, err
+}
+
+// Update partially updates a room's name and/or pinned state — nil
+// leaves that field unchanged, same COALESCE pattern as
+// internal/user.Store.UpdateMe. pinned is a bool at this API boundary
+// (what a PATCH body naturally carries) but maps to the nullable
+// pinned_at timestamp underneath: true sets it to now(), false clears
+// it, nil (omitted in the request) leaves it alone. Returns ErrNotFound
+// if no room matches roomID — ownership is the caller's job, same as
+// every other room-scoped handler (see realtime.StreamHandler).
+func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool) (Room, error) {
+	var r Room
+	err := s.pool.QueryRow(ctx, `
+		UPDATE rooms
+		SET name = COALESCE($2, name),
+		    pinned_at = CASE
+		        WHEN $3::boolean IS NULL THEN pinned_at
+		        WHEN $3::boolean THEN now()
+		        ELSE NULL
+		    END
+		WHERE id = $1
+		RETURNING id, name, status, owner_id, created_at, pinned_at
+	`, roomID, name, pinned).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -63,25 +93,27 @@ func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 // own rooms, and status/name are all a dashboard room-list item needs
 // beyond recency and live state).
 type Summary struct {
-	ID              uuid.UUID `json:"id"`
-	Name            string    `json:"name"`
-	LastActivityAt  time.Time `json:"last_activity_at"`
-	HasRunningAgent bool      `json:"has_running_agent"`
+	ID              uuid.UUID  `json:"id"`
+	Name            string     `json:"name"`
+	LastActivityAt  time.Time  `json:"last_activity_at"`
+	HasRunningAgent bool       `json:"has_running_agent"`
+	PinnedAt        *time.Time `json:"pinned_at,omitempty"`
 }
 
-// ListByOwner returns ownerID's rooms, most recently active first. The
-// EXISTS subquery answers "does this room have a running agent right
-// now" per row without a second round-trip per room — one query
-// regardless of how many rooms ownerID has, not N+1.
+// ListByOwner returns ownerID's rooms, pinned first, then most recently
+// active first within each group. The EXISTS subquery answers "does
+// this room have a running agent right now" per row without a second
+// round-trip per room — one query regardless of how many rooms ownerID
+// has, not N+1.
 func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.name, r.last_activity_at,
+		SELECT r.id, r.name, r.last_activity_at, r.pinned_at,
 		       EXISTS (
 		           SELECT 1 FROM agents a WHERE a.room_id = r.id AND a.status = 'running'
 		       ) AS has_running_agent
 		FROM rooms r
 		WHERE r.owner_id = $1
-		ORDER BY r.last_activity_at DESC
+		ORDER BY (r.pinned_at IS NULL), r.last_activity_at DESC
 	`, ownerID)
 	if err != nil {
 		return nil, err
@@ -94,7 +126,7 @@ func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, 
 	summaries := make([]Summary, 0)
 	for rows.Next() {
 		var sm Summary
-		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.HasRunningAgent); err != nil {
+		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.HasRunningAgent); err != nil {
 			return nil, err
 		}
 		summaries = append(summaries, sm)

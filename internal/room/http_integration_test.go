@@ -164,6 +164,163 @@ func TestIntegration_ListHandler(t *testing.T) {
 	}
 }
 
+// TestIntegration_ListHandler_PinnedFirst exercises the sort order
+// itself against real Postgres: a pinned room comes first regardless of
+// how stale its last_activity_at is, and unpinned rooms still sort by
+// last_activity_at among themselves.
+func TestIntegration_ListHandler_PinnedFirst(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	owner := seedRoomTestUser(t, ctx, pool, "room-pin-owner-")
+	s := NewStore(pool)
+	h := s.ListHandler()
+
+	older, err := s.Create(ctx, &owner.ID, "older, unpinned")
+	if err != nil {
+		t.Fatalf("create older room: %v", err)
+	}
+	newer, err := s.Create(ctx, &owner.ID, "newer, unpinned")
+	if err != nil {
+		t.Fatalf("create newer room: %v", err)
+	}
+	stalePinned, err := s.Create(ctx, &owner.ID, "stale, pinned")
+	if err != nil {
+		t.Fatalf("create stale pinned room: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE rooms SET last_activity_at = now() - interval '1 hour' WHERE id = $1`, older.ID); err != nil {
+		t.Fatalf("backdate older room: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE rooms SET last_activity_at = now() - interval '1 week' WHERE id = $1`, stalePinned.ID); err != nil {
+		t.Fatalf("backdate stale room: %v", err)
+	}
+	pinTrue := true
+	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue); err != nil {
+		t.Fatalf("pin stale room: %v", err)
+	}
+
+	rec := doListRequest(h, owner)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 rooms, got %d: %+v", len(got), got)
+	}
+	if got[0].ID != stalePinned.ID {
+		t.Fatalf("got[0].ID = %s, want the pinned room %s first despite being the stalest", got[0].ID, stalePinned.ID)
+	}
+	if got[0].PinnedAt == nil {
+		t.Fatal("expected the pinned room's PinnedAt to be non-nil in the response")
+	}
+	if got[1].ID != newer.ID {
+		t.Fatalf("got[1].ID = %s, want the newer unpinned room %s", got[1].ID, newer.ID)
+	}
+	if got[2].ID != older.ID {
+		t.Fatalf("got[2].ID = %s, want the older unpinned room %s", got[2].ID, older.ID)
+	}
+}
+
+// TestIntegration_UpdateHandler exercises PATCH /v1/rooms/{id} against
+// real Postgres: ownership is enforced the same 404-then-403 way as
+// every other room-scoped route, and name/pinned can be updated
+// independently or together, with an omitted field left unchanged.
+func TestIntegration_UpdateHandler(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	owner := seedRoomTestUser(t, ctx, pool, "room-update-owner-")
+	other := seedRoomTestUser(t, ctx, pool, "room-update-other-")
+
+	s := NewStore(pool)
+	h := s.UpdateHandler()
+
+	rm, err := s.Create(ctx, &owner.ID, "original name")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+
+	doPatch := func(u user.User, roomID, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(
+			user.NewContext(ctx, u), http.MethodPatch, "/v1/rooms/"+roomID, strings.NewReader(body),
+		)
+		req = withRoomIDParam(req, roomID)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := doPatch(owner, uuid.New().String(), `{"name":"x"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("nonexistent room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+
+	if rec := doPatch(other, rm.ID.String(), `{"name":"hijacked"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	rec := doPatch(owner, rm.ID.String(), `{"name":"renamed"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got Room
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode rename response: %v", err)
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("Name = %q, want %q", got.Name, "renamed")
+	}
+	if got.PinnedAt != nil {
+		t.Fatalf("PinnedAt = %v, want nil (not touched by this request)", got.PinnedAt)
+	}
+
+	rec = doPatch(owner, rm.ID.String(), `{"pinned":true}`)
+	// A fresh Room per response, not reused: PinnedAt has "omitempty",
+	// so a nil PinnedAt is an absent key, not a null one — Unmarshal
+	// into a reused struct would leave a prior response's non-nil value
+	// standing instead of actually clearing it.
+	got = Room{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode pin response: %v", err)
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("Name = %q after pin-only update, want unchanged %q", got.Name, "renamed")
+	}
+	if got.PinnedAt == nil {
+		t.Fatal("expected PinnedAt to be set after pinned:true")
+	}
+
+	rec = doPatch(owner, rm.ID.String(), `{"pinned":false}`)
+	got = Room{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode unpin response: %v", err)
+	}
+	if got.PinnedAt != nil {
+		t.Fatalf("PinnedAt = %v after pinned:false, want nil", got.PinnedAt)
+	}
+}
+
 func doListRequest(h http.HandlerFunc, u user.User) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(user.NewContext(context.Background(), u), http.MethodGet, "/v1/rooms", nil)
 	rec := httptest.NewRecorder()

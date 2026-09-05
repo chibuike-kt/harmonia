@@ -2,13 +2,25 @@ package room
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 type createRequest struct {
 	Name string `json:"name"`
+}
+
+// updateRequest fields are pointers so an omitted field in the request
+// body is distinguishable from an explicit false/empty-string — see
+// Store.Update.
+type updateRequest struct {
+	Name   *string `json:"name"`
+	Pinned *bool   `json:"pinned"`
 }
 
 type errorResponse struct {
@@ -76,5 +88,62 @@ func (s *Store) ListHandler() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(rooms)
+	}
+}
+
+// UpdateHandler returns the handler for PATCH /v1/rooms/{id} — partial
+// update of name and/or pinned. Mount it behind user.Authenticate.
+// Ownership is checked the same way as every other room-scoped route
+// (see realtime.StreamHandler): 404 if the room doesn't exist at all,
+// 403 if it exists but isn't the caller's, so a non-owner learns nothing
+// about a room they don't own.
+func (s *Store) UpdateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		roomID, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid room id")
+			return
+		}
+
+		var req updateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Name != nil && *req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name cannot be empty")
+			return
+		}
+
+		ctx := r.Context()
+		rm, err := s.GetByID(ctx, roomID)
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to look up room")
+			return
+		}
+		if rm.OwnerID == nil || *rm.OwnerID != u.ID {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update room")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(updated)
 	}
 }
