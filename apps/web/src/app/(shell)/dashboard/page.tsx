@@ -89,7 +89,7 @@ export default function DashboardPage() {
             theme="dark"
             style={{ width: 45, height: 45 }}
           />
-          
+
           <h1 className="whitespace-nowrap text-[26px] font-medium tracking-[-0.01em] text-[var(--login-text)]">
             {heading ?? " "}
           </h1>
