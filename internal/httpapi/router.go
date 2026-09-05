@@ -32,6 +32,13 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// CORS must wrap every route it applies to, preflight included, so it
+	// goes on before any route is registered — see cors.go for why a
+	// missing HARMONIA_APP_URL means no CORS middleware at all rather
+	// than an insecure default.
+	if corsMiddleware := newCORSMiddleware(); corsMiddleware != nil {
+		r.Use(corsMiddleware)
+	}
 
 	r.Get("/healthz", func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
