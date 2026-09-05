@@ -167,6 +167,90 @@ func TestIntegration_ConnectListDelete(t *testing.T) {
 	}
 }
 
+// TestIntegration_Resolve exercises Resolve's BYOK resolution against
+// real Postgres: no owner and an owner who never connected a credential
+// both report ErrNoCredential (the same case, per Resolve's own doc),
+// resolving after Connect hands the factory the correctly decrypted
+// plaintext key (not the ciphertext or garbage), a different provider
+// for the same owner still reports ErrNoCredential, and an unconfigured
+// cipher reports ErrEncryptionNotConfigured rather than resolving
+// anything. Requires a live Postgres — run via `make test-integration`
+// after `make up`.
+func TestIntegration_Resolve(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	keyBuf := make([]byte, keyBytes)
+	if _, err := rand.Read(keyBuf); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
+	cipher, err := NewCipher(base64.StdEncoding.EncodeToString(keyBuf))
+	if err != nil {
+		t.Fatalf("NewCipher: %v", err)
+	}
+
+	s := NewStore(pool, cipher)
+	owner := seedCredentialsTestUser(t, ctx, pool, "credentials-resolve-owner-")
+
+	// A nil owner (pre-Phase-2 room) can't have a credential.
+	if _, err := s.Resolve(ctx, nil, agent.ProviderAnthropic); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("resolve with nil owner: err = %v, want ErrNoCredential", err)
+	}
+
+	// A real owner who never connected one gets the same error.
+	if _, err := s.Resolve(ctx, &owner.ID, agent.ProviderAnthropic); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("resolve before connecting: err = %v, want ErrNoCredential", err)
+	}
+
+	s.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return fakeProviderAgent{}, nil
+	}
+	const plaintextKey = "sk-resolve-test-1234"
+	if _, err := s.Connect(ctx, owner.ID, agent.ProviderAnthropic, plaintextKey); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Resolve must hand the factory the exact original plaintext,
+	// recovered from the stored ciphertext — not the ciphertext itself,
+	// not a corrupted decryption.
+	var gotAPIKey string
+	s.newProviderClient = func(_ agent.Provider, apiKey string) (provider.Agent, error) {
+		gotAPIKey = apiKey
+		return fakeProviderAgent{}, nil
+	}
+	client, err := s.Resolve(ctx, &owner.ID, agent.ProviderAnthropic)
+	if err != nil {
+		t.Fatalf("resolve after connecting: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected a non-nil client")
+	}
+	if gotAPIKey != plaintextKey {
+		t.Fatalf("factory received apiKey = %q, want %q", gotAPIKey, plaintextKey)
+	}
+
+	// The same owner still has no openai credential.
+	if _, err := s.Resolve(ctx, &owner.ID, agent.ProviderOpenAI); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("resolve unconnected provider: err = %v, want ErrNoCredential", err)
+	}
+
+	// An unconfigured cipher refuses to resolve anything, even a
+	// genuinely connected credential — it can't decrypt without it.
+	unconfigured := NewStore(pool, nil)
+	if _, err := unconfigured.Resolve(ctx, &owner.ID, agent.ProviderAnthropic); !errors.Is(err, ErrEncryptionNotConfigured) {
+		t.Fatalf("resolve with unconfigured cipher: err = %v, want ErrEncryptionNotConfigured", err)
+	}
+}
+
 func seedCredentialsTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, githubIDPrefix string) user.User {
 	t.Helper()
 	var u user.User

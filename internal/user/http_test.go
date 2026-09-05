@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -53,6 +54,50 @@ func TestLogoutHandler_NoCookie(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
 	assertCookieCleared(t, rec)
+}
+
+func TestMeHandler_Unauthenticated(t *testing.T) {
+	s := &Store{}
+	h := s.MeHandler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/users/me", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusUnauthorized)
+}
+
+func TestUpdateMeHandler_Unauthenticated(t *testing.T) {
+	s := &Store{}
+	h := s.UpdateMeHandler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPatch, "/v1/users/me", strings.NewReader(`{"username":"new-name"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusUnauthorized)
+}
+
+func TestUpdateMeHandler_InvalidBody(t *testing.T) {
+	s := &Store{}
+	h := s.UpdateMeHandler()
+
+	req := httptest.NewRequestWithContext(NewContext(context.Background(), User{ID: uuid.New()}), http.MethodPatch, "/v1/users/me", strings.NewReader("not json"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusBadRequest)
+}
+
+func TestUpdateMeHandler_EmptyUsername(t *testing.T) {
+	s := &Store{}
+	h := s.UpdateMeHandler()
+
+	req := httptest.NewRequestWithContext(NewContext(context.Background(), User{ID: uuid.New()}), http.MethodPatch, "/v1/users/me", strings.NewReader(`{"username":""}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusBadRequest)
 }
 
 func doRevokeSession(t *testing.T, h http.HandlerFunc, ctx context.Context, sessionIDParam string) *httptest.ResponseRecorder {
