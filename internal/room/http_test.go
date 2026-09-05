@@ -50,6 +50,17 @@ func TestCreateHandler_MissingName(t *testing.T) {
 	assertJSONError(t, rec, http.StatusBadRequest)
 }
 
+func TestListHandler_Unauthenticated(t *testing.T) {
+	s := &Store{}
+	h := s.ListHandler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/rooms", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusUnauthorized)
+}
+
 func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int) {
 	t.Helper()
 	if rec.Code != wantStatus {

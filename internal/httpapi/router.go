@@ -52,6 +52,7 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
 		pr.Post("/v1/rooms", rooms.CreateHandler())
+		pr.Get("/v1/rooms", rooms.ListHandler())
 		pr.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler(rooms))
 	})
 

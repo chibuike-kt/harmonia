@@ -57,3 +57,47 @@ func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 	}
 	return r, err
 }
+
+// Summary is one row of GET /v1/rooms — deliberately not the full Room
+// shape (no owner_id: this endpoint is already scoped to the caller's
+// own rooms, and status/name are all a dashboard room-list item needs
+// beyond recency and live state).
+type Summary struct {
+	ID              uuid.UUID `json:"id"`
+	Name            string    `json:"name"`
+	LastActivityAt  time.Time `json:"last_activity_at"`
+	HasRunningAgent bool      `json:"has_running_agent"`
+}
+
+// ListByOwner returns ownerID's rooms, most recently active first. The
+// EXISTS subquery answers "does this room have a running agent right
+// now" per row without a second round-trip per room — one query
+// regardless of how many rooms ownerID has, not N+1.
+func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.id, r.name, r.last_activity_at,
+		       EXISTS (
+		           SELECT 1 FROM agents a WHERE a.room_id = r.id AND a.status = 'running'
+		       ) AS has_running_agent
+		FROM rooms r
+		WHERE r.owner_id = $1
+		ORDER BY r.last_activity_at DESC
+	`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// A brand-new user with zero rooms gets [] in the response, not a
+	// JSON null a frontend can't spread — same nil-slice guard as
+	// event.Store.ListByRoom's own handler needed for the same reason.
+	summaries := make([]Summary, 0)
+	for rows.Next() {
+		var sm Summary
+		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.HasRunningAgent); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, sm)
+	}
+	return summaries, rows.Err()
+}

@@ -55,3 +55,26 @@ func (s *Store) CreateHandler() http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(rm)
 	}
 }
+
+// ListHandler returns the handler for GET /v1/rooms — the authenticated
+// user's own rooms, most recently active first. Mount it behind
+// user.Authenticate.
+func (s *Store) ListHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		rooms, err := s.ListByOwner(r.Context(), u.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list rooms")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(rooms)
+	}
+}

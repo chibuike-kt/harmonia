@@ -34,10 +34,31 @@ func NewStore(pool store.Querier) *Store {
 
 // Record appends an event. There is no corresponding Update or Delete —
 // that omission is intentional, not incomplete.
+//
+// It also bumps rooms.last_activity_at for roomID — every real write to
+// this package's callers (task/handoff transactions, the context-engine's
+// standalone call against the bare pool) is exactly what "activity" means
+// for dashboard recency sorting (see docs/design/dashboard-build-brief.md),
+// so this is the one choke point every one of those writes already passes
+// through, rather than a separate call each handler would otherwise need
+// to remember.
+//
+// The two writes are one SQL statement (a data-modifying CTE), not two
+// sequential Exec calls, deliberately: s.pool is store.Querier, which has
+// no Begin — Record cannot open its own transaction, and can't assume its
+// caller opened one either (the context-engine's call passes the bare
+// pool, no ambient transaction at all). A single statement is atomic on
+// its own regardless of which case applies: when s.pool is a transaction
+// it also naturally still commits/rolls back with the rest of that
+// transaction, and when it's the bare pool the event insert and the
+// rooms update can't land as a partial pair.
 func (s *Store) Record(ctx context.Context, roomID uuid.UUID, taskID, agentID *uuid.UUID, eventType string, payload map[string]any) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO events (room_id, task_id, agent_id, type, payload)
-		VALUES ($1, $2, $3, $4, $5)
+		WITH inserted AS (
+			INSERT INTO events (room_id, task_id, agent_id, type, payload)
+			VALUES ($1, $2, $3, $4, $5)
+		)
+		UPDATE rooms SET last_activity_at = now() WHERE id = $1
 	`, roomID, taskID, agentID, eventType, payload)
 	return err
 }
