@@ -60,8 +60,8 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
 		pr.Post("/v1/tasks", tasks.CreateHandler(beginner, hub))
-		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(beginner, hub))
-		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner, hub))
+		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(beginner, hub, st.Redis))
+		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner, hub, st.Redis))
 	})
 
 	contexts := contextengine.NewStore(st.Pool)
@@ -81,6 +81,11 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Use(agent.Authenticate(agents))
 		pr.Use(agent.RequireRoom("id"))
 		pr.Get("/v1/rooms/{id}/events", events.ListByRoomHandler())
+	})
+
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, hub, st.Redis))
 	})
 
 	githubCfg := user.NewGitHubConfig(
