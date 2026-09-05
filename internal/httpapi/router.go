@@ -54,6 +54,7 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/rooms", rooms.CreateHandler())
 		pr.Get("/v1/rooms", rooms.ListHandler())
 		pr.Patch("/v1/rooms/{id}", rooms.UpdateHandler())
+		pr.Delete("/v1/rooms/{id}", rooms.DeleteHandler())
 		pr.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler(rooms))
 	})
 

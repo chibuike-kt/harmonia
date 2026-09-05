@@ -98,24 +98,40 @@ func TestIntegration_Record_AtomicOnBarePool(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
 	}
+	// harmonia_app (what HARMONIA_DATABASE_URL points at since
+	// migrations/0005_harmonia_app_role.up.sql) has no CREATE on the
+	// schema — by design, it's a restricted application role, not an
+	// admin one. This test's own fault-injection trigger needs an admin
+	// connection to create and drop; the actual Record() call under test
+	// still goes through the real, restricted app connection below.
+	adminURL := os.Getenv("HARMONIA_MIGRATE_DATABASE_URL")
+	if adminURL == "" {
+		t.Skip("HARMONIA_MIGRATE_DATABASE_URL not set; skipping integration test")
+	}
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		t.Fatalf("connect: %v", err)
+		t.Fatalf("connect (app role): %v", err)
+	}
+	t.Cleanup(func() { pool.Close() })
+
+	adminPool, err := pgxpool.New(ctx, adminURL)
+	if err != nil {
+		t.Fatalf("connect (admin role): %v", err)
 	}
 	// t.Cleanup, not a plain defer: a local defer in this function runs
 	// as the function itself unwinds, which happens before the testing
 	// package invokes any t.Cleanup callback — a plain `defer
-	// pool.Close()` here would close the pool before the trigger/function
+	// adminPool.Close()` here would close it before the trigger/function
 	// drop below (also registered via t.Cleanup, LIFO) ever got to run
 	// against it. Cost of getting this wrong once already: a stray
 	// trigger left behind on the real dev database, breaking every next
 	// run of this test with "trigger already exists" until removed by hand.
-	t.Cleanup(func() { pool.Close() })
+	t.Cleanup(func() { adminPool.Close() })
 
 	const sentinelName = "atomic-on-bare-pool-test-room-force-fail"
-	if _, err := pool.Exec(ctx, `
+	if _, err := adminPool.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION pg_temp_force_room_update_failure() RETURNS trigger AS $$
 		BEGIN
 			IF OLD.name = '`+sentinelName+`' THEN
@@ -127,26 +143,26 @@ func TestIntegration_Record_AtomicOnBarePool(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create trigger function: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
+	if _, err := adminPool.Exec(ctx, `
 		CREATE TRIGGER test_force_room_update_failure
 		BEFORE UPDATE ON rooms FOR EACH ROW
 		EXECUTE FUNCTION pg_temp_force_room_update_failure()
 	`); err != nil {
 		t.Fatalf("create trigger: %v", err)
 	}
-	// Registered after pool.Close's cleanup above, so LIFO ordering runs
-	// this one first, while the pool is still open.
+	// Registered after adminPool.Close's cleanup above, so LIFO ordering
+	// runs this one first, while the pool is still open.
 	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_force_room_update_failure ON rooms`); err != nil {
+		if _, err := adminPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS test_force_room_update_failure ON rooms`); err != nil {
 			t.Errorf("drop test trigger (left behind on the real database — remove by hand): %v", err)
 		}
-		if _, err := pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS pg_temp_force_room_update_failure()`); err != nil {
+		if _, err := adminPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS pg_temp_force_room_update_failure()`); err != nil {
 			t.Errorf("drop test trigger function (left behind on the real database — remove by hand): %v", err)
 		}
 	})
 
 	rooms := room.NewStore(pool)
-	events := NewStore(pool) // bare pool — no transaction, on purpose
+	events := NewStore(pool) // bare pool, restricted app role — no transaction, on purpose
 
 	rm, err := rooms.Create(ctx, nil, sentinelName)
 	if err != nil {

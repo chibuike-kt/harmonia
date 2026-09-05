@@ -108,6 +108,31 @@ func TestUpdateHandler_EmptyName(t *testing.T) {
 	assertJSONError(t, rec, http.StatusBadRequest)
 }
 
+func TestDeleteHandler_Unauthenticated(t *testing.T) {
+	s := &Store{}
+	h := s.DeleteHandler()
+
+	roomID := uuid.New().String()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/v1/rooms/"+roomID, nil)
+	req = withRoomIDParam(req, roomID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusUnauthorized)
+}
+
+func TestDeleteHandler_InvalidRoomID(t *testing.T) {
+	s := &Store{}
+	h := s.DeleteHandler()
+
+	req := httptest.NewRequestWithContext(authedContext(), http.MethodDelete, "/v1/rooms/not-a-uuid", nil)
+	req = withRoomIDParam(req, "not-a-uuid")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertJSONError(t, rec, http.StatusBadRequest)
+}
+
 func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int) {
 	t.Helper()
 	if rec.Code != wantStatus {

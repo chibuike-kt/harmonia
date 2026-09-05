@@ -20,11 +20,15 @@ test-race:
 lint:
 	golangci-lint run ./...
 
+# Uses HARMONIA_MIGRATE_DATABASE_URL (the superuser role), not
+# HARMONIA_DATABASE_URL (the restricted harmonia_app role the server
+# runs as) — migrations need DDL/role-management privileges harmonia_app
+# deliberately doesn't have. See .env.example.
 migrate-up:
-	migrate -database "$${HARMONIA_DATABASE_URL}" -path migrations up
+	migrate -database "$${HARMONIA_MIGRATE_DATABASE_URL}" -path migrations up
 
 migrate-down:
-	migrate -database "$${HARMONIA_DATABASE_URL}" -path migrations down 1
+	migrate -database "$${HARMONIA_MIGRATE_DATABASE_URL}" -path migrations down 1
 
 up:
 	docker compose up -d

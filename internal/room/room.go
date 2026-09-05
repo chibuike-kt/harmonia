@@ -133,3 +133,24 @@ func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, 
 	}
 	return summaries, rows.Err()
 }
+
+// DeleteCascade permanently deletes roomID and everything that cascades
+// from it (agents, tasks, events, handoffs — see 0001_init.up.sql's
+// ON DELETE CASCADE chain), via the delete_room_cascade SQL function
+// added in migrations/0005_harmonia_app_role.up.sql.
+//
+// This goes through that function rather than a plain
+// "DELETE FROM rooms" because the application's own database role
+// (harmonia_app) has no DELETE on events — by design, events are
+// append-only at the database level, not just by application
+// convention (see that migration's own comments). delete_room_cascade
+// is SECURITY DEFINER, so it runs this one specific, narrow delete with
+// the elevated privilege it needs, without the application role ever
+// holding a general DELETE grant on events itself.
+//
+// Ownership is the caller's job, same as every other room-scoped
+// write — this performs no authorization check of its own.
+func (s *Store) DeleteCascade(ctx context.Context, roomID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `SELECT delete_room_cascade($1)`, roomID)
+	return err
+}

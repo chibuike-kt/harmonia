@@ -321,6 +321,117 @@ func TestIntegration_UpdateHandler(t *testing.T) {
 	}
 }
 
+// TestIntegration_DeleteHandler exercises DELETE /v1/rooms/{id} against
+// real Postgres: ownership is enforced the same 404-then-403 way as
+// every other room-scoped route, and a successful delete genuinely
+// removes the room and everything that cascades from it — agent, task,
+// event, and handoff rows included, not just the rooms row itself. This
+// is the one path in the application that ever removes an events row;
+// see Store.DeleteCascade and migrations/0005_harmonia_app_role.up.sql
+// for why it goes through a SECURITY DEFINER function rather than a
+// plain DELETE FROM rooms.
+func TestIntegration_DeleteHandler(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	owner := seedRoomTestUser(t, ctx, pool, "room-delete-owner-")
+	other := seedRoomTestUser(t, ctx, pool, "room-delete-other-")
+
+	s := NewStore(pool)
+	h := s.DeleteHandler()
+
+	rm, err := s.Create(ctx, &owner.ID, "room to delete")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+
+	// Seeded directly, not via internal/agent's or internal/task's own
+	// Store: both packages import this one (agent.RegisterHandler takes
+	// a *room.Store), so importing them back here would be an import
+	// cycle — same reasoning as ListHandler's own integration test.
+	var agentID, otherAgentID, taskID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agents (room_id, name, provider, capabilities, status, api_key_hash)
+		VALUES ($1, 'a1', 'anthropic', '[]', 'available', 'hash1') RETURNING id
+	`, rm.ID).Scan(&agentID); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agents (room_id, name, provider, capabilities, status, api_key_hash)
+		VALUES ($1, 'a2', 'anthropic', '[]', 'available', 'hash2') RETURNING id
+	`, rm.ID).Scan(&otherAgentID); err != nil {
+		t.Fatalf("seed second agent: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO tasks (room_id, owner_agent_id, objective, status)
+		VALUES ($1, $2, 'test objective', 'CLAIMED') RETURNING id
+	`, rm.ID, agentID).Scan(&taskID); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO events (room_id, task_id, agent_id, type, payload)
+		VALUES ($1, $2, $3, 'TEST_EVENT', '{}')
+	`, rm.ID, taskID, agentID); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO handoffs (room_id, task_id, from_agent_id, to_agent_id, summary)
+		VALUES ($1, $2, $3, $4, 'handoff summary')
+	`, rm.ID, taskID, agentID, otherAgentID); err != nil {
+		t.Fatalf("seed handoff: %v", err)
+	}
+
+	doDelete := func(u user.User, roomID string) *httptest.ResponseRecorder {
+		req := httptest.NewRequestWithContext(user.NewContext(ctx, u), http.MethodDelete, "/v1/rooms/"+roomID, nil)
+		req = withRoomIDParam(req, roomID)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := doDelete(owner, uuid.New().String()); rec.Code != http.StatusNotFound {
+		t.Fatalf("nonexistent room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if rec := doDelete(other, rm.ID.String()); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	rec := doDelete(owner, rm.ID.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want %d, body = %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+
+	var roomCount, agentCount, taskCount, eventCount, handoffCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rooms WHERE id = $1`, rm.ID).Scan(&roomCount); err != nil {
+		t.Fatalf("count rooms: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agents WHERE room_id = $1`, rm.ID).Scan(&agentCount); err != nil {
+		t.Fatalf("count agents: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE room_id = $1`, rm.ID).Scan(&taskCount); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = $1`, rm.ID).Scan(&eventCount); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM handoffs WHERE room_id = $1`, rm.ID).Scan(&handoffCount); err != nil {
+		t.Fatalf("count handoffs: %v", err)
+	}
+	if roomCount != 0 || agentCount != 0 || taskCount != 0 || eventCount != 0 || handoffCount != 0 {
+		t.Fatalf("expected full cascade delete, got rooms=%d agents=%d tasks=%d events=%d handoffs=%d",
+			roomCount, agentCount, taskCount, eventCount, handoffCount)
+	}
+}
+
 func doListRequest(h http.HandlerFunc, u user.User) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(user.NewContext(context.Background(), u), http.MethodGet, "/v1/rooms", nil)
 	rec := httptest.NewRecorder()

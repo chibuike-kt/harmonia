@@ -56,7 +56,17 @@ jobs:
       - name: race tests
         run: go test ./... -race
         env:
-          HARMONIA_DATABASE_URL: postgres://harmonia:harmonia@localhost:5432/harmonia?sslmode=disable
+          # harmonia_app, not the harmonia superuser used to apply
+          # migrations above — the whole point of
+          # migrations/0005_harmonia_app_role.up.sql is that the
+          # application (and its tests) run under the restricted role,
+          # not the one that owns the database.
+          HARMONIA_DATABASE_URL: postgres://harmonia_app:harmonia_app@localhost:5432/harmonia?sslmode=disable
+          # Superuser connection for the handful of tests that need to
+          # create their own test-only schema objects (e.g. a fault-
+          # injection trigger) — harmonia_app has no CREATE on the
+          # schema, by design.
+          HARMONIA_MIGRATE_DATABASE_URL: postgres://harmonia:harmonia@localhost:5432/harmonia?sslmode=disable
           HARMONIA_REDIS_ADDR: localhost:6379
 
   web:

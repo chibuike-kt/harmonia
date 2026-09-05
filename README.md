@@ -37,6 +37,20 @@ docker compose down -v                     # stop and wipe the Postgres volume t
 
 A `Makefile` also exists as an optional shortcut for these (`make up`, `make migrate-up`, `make run` runs the server on the host instead of in a container) — use whichever you prefer; both point at the same `docker-compose.yml`.
 
+**Real environment change, not just a code one:** the application connects
+to Postgres as `harmonia_app`, a restricted role created by
+`migrations/0005_harmonia_app_role.up.sql` — not the `harmonia` superuser
+that owns the database. `harmonia_app` has no DDL or role-management
+privileges, and no `UPDATE`/`DELETE` on `events` at all (append-only,
+enforced at the database level now, not just by application convention).
+Migrations still run as the superuser (`docker compose run --rm migrate`,
+or `make migrate-up`/`make migrate-down` via `HARMONIA_MIGRATE_DATABASE_URL`)
+— that role split is deliberate and permanent, not a temporary state.
+Running `docker compose run --rm migrate up` against an existing database
+created before this migration creates `harmonia_app` and applies the
+grants/revokes for the first time; the `api` service (and `HARMONIA_DATABASE_URL`
+in `.env`) must point at `harmonia_app` afterward, not the superuser.
+
 ## Verify before building on top of this
 
 `go vet`/lint/test run on the host, not in the `api` container — its final

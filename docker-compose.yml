@@ -28,6 +28,11 @@ services:
   # One-shot migration runner — not part of the default `up`. Invoke with:
   #   docker compose run --rm migrate up
   #   docker compose run --rm migrate down 1
+  # Deliberately connects as the "harmonia" superuser below, not
+  # harmonia_app: migrations need DDL and role-management privileges
+  # (creating harmonia_app itself, among other things) that the
+  # restricted application role must never have. The api service below
+  # connects as harmonia_app instead.
   migrate:
     image: migrate/migrate:4
     profiles: ["tools"]
@@ -50,7 +55,9 @@ services:
     environment:
       # Overrides .env's localhost values with in-network service names —
       # the api container talks to "postgres"/"redis", not "localhost".
-      HARMONIA_DATABASE_URL: postgres://harmonia:harmonia@postgres:5432/harmonia?sslmode=disable
+      # Connects as harmonia_app (restricted role, no DDL, no
+      # UPDATE/DELETE on events) — never the migrate service's superuser.
+      HARMONIA_DATABASE_URL: postgres://harmonia_app:harmonia_app@postgres:5432/harmonia?sslmode=disable
       HARMONIA_REDIS_ADDR: "redis:6379"
       HARMONIA_HTTP_ADDR: ":8080"
     ports:

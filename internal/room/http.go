@@ -147,3 +147,52 @@ func (s *Store) UpdateHandler() http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(updated)
 	}
 }
+
+// DeleteHandler returns the handler for DELETE /v1/rooms/{id} — real,
+// hard deletion of the room and everything that cascades from it
+// (agents, tasks, events, handoffs). Mount it behind user.Authenticate.
+// Ownership is checked the same 404-then-403 way as UpdateHandler.
+//
+// Irreversible: this is the one path in the whole application that
+// removes rows from events, via Store.DeleteCascade's SECURITY DEFINER
+// function — see that method's own comment and
+// migrations/0005_harmonia_app_role.up.sql for why a plain
+// "DELETE FROM rooms" isn't available to the application's own database
+// role.
+func (s *Store) DeleteHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		roomID, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid room id")
+			return
+		}
+
+		ctx := r.Context()
+		rm, err := s.GetByID(ctx, roomID)
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to look up room")
+			return
+		}
+		if rm.OwnerID == nil || *rm.OwnerID != u.ID {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		if err := s.DeleteCascade(ctx, roomID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to delete room")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
