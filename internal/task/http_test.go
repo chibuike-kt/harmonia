@@ -16,7 +16,7 @@ import (
 
 func TestCreateHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(nil)
+	h := s.CreateHandler(nil, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/tasks", strings.NewReader(`{"objective":"x"}`))
 	rec := httptest.NewRecorder()
@@ -27,7 +27,7 @@ func TestCreateHandler_Unauthenticated(t *testing.T) {
 
 func TestCreateHandler_MissingObjective(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(nil)
+	h := s.CreateHandler(nil, nil)
 
 	req := withAgent(t, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/tasks", strings.NewReader(`{}`)), agent.Agent{ID: uuid.New()})
 	rec := httptest.NewRecorder()
@@ -38,7 +38,7 @@ func TestCreateHandler_MissingObjective(t *testing.T) {
 
 func TestClaimHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.ClaimHandler(nil)
+	h := s.ClaimHandler(nil, nil)
 
 	rec := doTaskRequest(t, h, uuid.New().String(), false, agent.Agent{})
 	assertJSONError(t, rec, http.StatusUnauthorized)
@@ -46,7 +46,7 @@ func TestClaimHandler_Unauthenticated(t *testing.T) {
 
 func TestClaimHandler_InvalidTaskID(t *testing.T) {
 	s := &Store{}
-	h := s.ClaimHandler(nil)
+	h := s.ClaimHandler(nil, nil)
 
 	rec := doTaskRequest(t, h, "not-a-uuid", true, agent.Agent{ID: uuid.New()})
 	assertJSONError(t, rec, http.StatusBadRequest)
@@ -54,7 +54,7 @@ func TestClaimHandler_InvalidTaskID(t *testing.T) {
 
 func TestCompleteHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.CompleteHandler(nil)
+	h := s.CompleteHandler(nil, nil)
 
 	rec := doTaskRequest(t, h, uuid.New().String(), false, agent.Agent{})
 	assertJSONError(t, rec, http.StatusUnauthorized)
@@ -62,7 +62,7 @@ func TestCompleteHandler_Unauthenticated(t *testing.T) {
 
 func TestCompleteHandler_InvalidTaskID(t *testing.T) {
 	s := &Store{}
-	h := s.CompleteHandler(nil)
+	h := s.CompleteHandler(nil, nil)
 
 	rec := doTaskRequest(t, h, "not-a-uuid", true, agent.Agent{ID: uuid.New()})
 	assertJSONError(t, rec, http.StatusBadRequest)

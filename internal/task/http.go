@@ -12,6 +12,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/protocol"
+	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
@@ -47,8 +48,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // the authenticated agent's own room — there is no separate room_id to
 // mismatch, since an agent only ever acts in the room it registered in.
 // The task insert and its TASK_CREATED event are one transaction: either
-// both land or neither does.
-func (s *Store) CreateHandler(pool store.Beginner) http.HandlerFunc {
+// both land or neither does. The same event is published to hub strictly
+// after commit — a rolled-back write must never reach a subscriber.
+func (s *Store) CreateHandler(pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -102,6 +104,7 @@ func (s *Store) CreateHandler(pool store.Beginner) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
+		hub.Publish(t.RoomID, realtime.NewEventMessage(env))
 
 		writeJSON(w, http.StatusCreated, t)
 	}
@@ -109,8 +112,8 @@ func (s *Store) CreateHandler(pool store.Beginner) http.HandlerFunc {
 
 // ClaimHandler returns the handler for POST /v1/tasks/{id}/claim. The claim
 // and its TASK_CLAIMED event are one transaction: either both land or
-// neither does.
-func (s *Store) ClaimHandler(pool store.Beginner) http.HandlerFunc {
+// neither does. The same event is published to hub strictly after commit.
+func (s *Store) ClaimHandler(pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -177,6 +180,7 @@ func (s *Store) ClaimHandler(pool store.Beginner) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
+		hub.Publish(claimed.RoomID, realtime.NewEventMessage(env))
 
 		writeJSON(w, http.StatusOK, claimed)
 	}
@@ -184,8 +188,9 @@ func (s *Store) ClaimHandler(pool store.Beginner) http.HandlerFunc {
 
 // CompleteHandler returns the handler for POST /v1/tasks/{id}/complete. The
 // completion and its TASK_COMPLETED event are one transaction: either both
-// land or neither does.
-func (s *Store) CompleteHandler(pool store.Beginner) http.HandlerFunc {
+// land or neither does. The same event is published to hub strictly after
+// commit.
+func (s *Store) CompleteHandler(pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -255,6 +260,7 @@ func (s *Store) CompleteHandler(pool store.Beginner) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
+		hub.Publish(completed.RoomID, realtime.NewEventMessage(env))
 
 		writeJSON(w, http.StatusOK, completed)
 	}

@@ -23,6 +23,17 @@ type Hub struct {
 	subs map[uuid.UUID]map[chan Message]struct{}
 }
 
+// Publisher is the narrow interface a handler needs to publish a
+// Message — satisfied by *Hub in production. Handlers depend on this,
+// not *Hub directly, so a test can substitute a fake that only records
+// calls, e.g. to prove a rolled-back transaction never publishes at all
+// without needing a real Hub or live Postgres.
+type Publisher interface {
+	Publish(roomID uuid.UUID, msg Message)
+}
+
+var _ Publisher = (*Hub)(nil)
+
 // NewHub builds an empty Hub.
 func NewHub() *Hub {
 	return &Hub{subs: make(map[uuid.UUID]map[chan Message]struct{})}

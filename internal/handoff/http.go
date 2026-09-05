@@ -11,6 +11,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/protocol"
+	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
 )
@@ -54,8 +55,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // to_agent_id are each checked against that same room before the insert —
 // nothing here lets one room's handoff reference another room's task or
 // agent, even though the schema's FKs alone wouldn't catch that. The
-// handoff insert and its HANDOFF_REQUESTED event are one transaction.
-func (s *Store) RequestHandler(tasks *task.Store, agents *agent.Store, pool store.Beginner) http.HandlerFunc {
+// handoff insert and its HANDOFF_REQUESTED event are one transaction. The
+// same event is published to hub strictly after commit — a rolled-back
+// write must never reach a subscriber.
+func (s *Store) RequestHandler(tasks *task.Store, agents *agent.Store, pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -149,6 +152,7 @@ func (s *Store) RequestHandler(tasks *task.Store, agents *agent.Store, pool stor
 			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
+		hub.Publish(a.RoomID, realtime.NewEventMessage(env))
 
 		writeJSON(w, http.StatusCreated, h)
 	}
@@ -156,8 +160,9 @@ func (s *Store) RequestHandler(tasks *task.Store, agents *agent.Store, pool stor
 
 // AcceptHandler returns the handler for POST /v1/handoffs/{id}/accept.
 // Only the agent the handoff is addressed to may accept it. The status
-// update and its HANDOFF_ACCEPTED event are one transaction.
-func (s *Store) AcceptHandler(pool store.Beginner) http.HandlerFunc {
+// update and its HANDOFF_ACCEPTED event are one transaction. The same
+// event is published to hub strictly after commit.
+func (s *Store) AcceptHandler(pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -225,6 +230,7 @@ func (s *Store) AcceptHandler(pool store.Beginner) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "failed to commit transaction")
 			return
 		}
+		hub.Publish(accepted.RoomID, realtime.NewEventMessage(env))
 
 		writeJSON(w, http.StatusOK, accepted)
 	}

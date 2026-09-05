@@ -8,12 +8,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	agentpkg "github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
+	"github.com/chibuike-kt/harmonia/internal/protocol"
+	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
@@ -75,9 +78,13 @@ func TestIntegration_HandoffLifecycle(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
+	hub := realtime.NewHub()
+	sub, unsubscribe := hub.Subscribe(roomA.ID)
+	defer unsubscribe()
+
 	beginner := store.PoolBeginner{Pool: pool}
-	requestHandler := handoffs.RequestHandler(tasks, agents, beginner)
-	acceptHandler := handoffs.AcceptHandler(beginner)
+	requestHandler := handoffs.RequestHandler(tasks, agents, beginner, hub)
+	acceptHandler := handoffs.AcceptHandler(beginner, hub)
 
 	// Requesting a handoff for a task in another room 404s.
 	rec := doRequest(t, requestHandler, from, `{"task_id":"`+outsiderTask.ID.String()+`","to_agent_id":"`+to.ID.String()+`","summary":"s"}`)
@@ -147,6 +154,33 @@ func TestIntegration_HandoffLifecycle(t *testing.T) {
 		if gotTypes[i] != want {
 			t.Fatalf("event[%d] = %q, want %q", i, gotTypes[i], want)
 		}
+	}
+
+	// Each committed transition also reached the hub's subscriber, in the
+	// same order, through the real production handlers — not a fake. The
+	// two rejected cross-room requests never got this far, so they must
+	// not have published anything either.
+	wantOps := []protocol.Operation{protocol.OpHandoffRequest, protocol.OpHandoffAccept}
+	for _, wantOp := range wantOps {
+		select {
+		case msg := <-sub:
+			if msg.Kind != realtime.KindEvent || msg.Event == nil {
+				t.Fatalf("published message = %+v, want a KindEvent envelope", msg)
+			}
+			if msg.Event.Type != wantOp {
+				t.Fatalf("published envelope Type = %q, want %q", msg.Event.Type, wantOp)
+			}
+			if msg.Event.RoomID != roomA.ID {
+				t.Fatalf("published envelope RoomID = %s, want %s", msg.Event.RoomID, roomA.ID)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected a hub publish for %q, got none", wantOp)
+		}
+	}
+	select {
+	case extra := <-sub:
+		t.Fatalf("unexpected extra hub publish: %+v", extra)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

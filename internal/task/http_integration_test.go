@@ -8,12 +8,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	agentpkg "github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
+	"github.com/chibuike-kt/harmonia/internal/protocol"
+	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 )
@@ -63,10 +66,14 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		t.Fatalf("register outsider: %v", err)
 	}
 
+	hub := realtime.NewHub()
+	sub, unsubscribe := hub.Subscribe(roomA.ID)
+	defer unsubscribe()
+
 	beginner := store.PoolBeginner{Pool: pool}
-	createHandler := tasks.CreateHandler(beginner)
-	claimHandler := tasks.ClaimHandler(beginner)
-	completeHandler := tasks.CompleteHandler(beginner)
+	createHandler := tasks.CreateHandler(beginner, hub)
+	claimHandler := tasks.ClaimHandler(beginner, hub)
+	completeHandler := tasks.CompleteHandler(beginner, hub)
 
 	// Create, as the creator.
 	rec := doJSON(t, createHandler, creator, "", `{"objective":"write the report"}`)
@@ -147,6 +154,31 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		if gotTypes[i] != want {
 			t.Fatalf("event[%d] = %q, want %q", i, gotTypes[i], want)
 		}
+	}
+
+	// Each committed transition also reached the hub's subscriber, in the
+	// same order, through the real production handlers — not a fake.
+	wantOps := []protocol.Operation{protocol.OpTaskCreate, protocol.OpTaskClaim, protocol.OpTaskComplete}
+	for _, wantOp := range wantOps {
+		select {
+		case msg := <-sub:
+			if msg.Kind != realtime.KindEvent || msg.Event == nil {
+				t.Fatalf("published message = %+v, want a KindEvent envelope", msg)
+			}
+			if msg.Event.Type != wantOp {
+				t.Fatalf("published envelope Type = %q, want %q", msg.Event.Type, wantOp)
+			}
+			if msg.Event.RoomID != roomA.ID {
+				t.Fatalf("published envelope RoomID = %s, want %s", msg.Event.RoomID, roomA.ID)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("expected a hub publish for %q, got none", wantOp)
+		}
+	}
+	select {
+	case extra := <-sub:
+		t.Fatalf("unexpected extra hub publish: %+v", extra)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

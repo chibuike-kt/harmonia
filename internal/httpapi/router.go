@@ -18,6 +18,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/credentials"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/handoff"
+	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
 	"github.com/chibuike-kt/harmonia/internal/task"
@@ -47,14 +48,20 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler(rooms))
 	})
 
+	// hub is the single in-process realtime fan-out point for this server —
+	// see ADR-003. Shared across every handler below that publishes an
+	// event or presence transition, and by the SSE endpoint that
+	// subscribes to it.
+	hub := realtime.NewHub()
+
 	tasks := task.NewStore(st.Pool)
 	events := event.NewStore(st.Pool)
 	beginner := store.PoolBeginner{Pool: st.Pool}
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
-		pr.Post("/v1/tasks", tasks.CreateHandler(beginner))
-		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(beginner))
-		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner))
+		pr.Post("/v1/tasks", tasks.CreateHandler(beginner, hub))
+		pr.Post("/v1/tasks/{id}/claim", tasks.ClaimHandler(beginner, hub))
+		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner, hub))
 	})
 
 	contexts := contextengine.NewStore(st.Pool)
@@ -66,8 +73,8 @@ func NewRouter(st *store.Store) http.Handler {
 	handoffs := handoff.NewStore(st.Pool)
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
-		pr.Post("/v1/handoffs", handoffs.RequestHandler(tasks, agents, beginner))
-		pr.Post("/v1/handoffs/{id}/accept", handoffs.AcceptHandler(beginner))
+		pr.Post("/v1/handoffs", handoffs.RequestHandler(tasks, agents, beginner, hub))
+		pr.Post("/v1/handoffs/{id}/accept", handoffs.AcceptHandler(beginner, hub))
 	})
 
 	r.Group(func(pr chi.Router) {

@@ -16,7 +16,7 @@ import (
 
 func TestRequestHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.RequestHandler(&task.Store{}, &agent.Store{}, nil)
+	h := s.RequestHandler(&task.Store{}, &agent.Store{}, nil, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/handoffs", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
@@ -27,7 +27,7 @@ func TestRequestHandler_Unauthenticated(t *testing.T) {
 
 func TestRequestHandler_InvalidBody(t *testing.T) {
 	s := &Store{}
-	h := s.RequestHandler(&task.Store{}, &agent.Store{}, nil)
+	h := s.RequestHandler(&task.Store{}, &agent.Store{}, nil, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/handoffs", strings.NewReader("not json"))
 	req = req.WithContext(agent.NewContext(req.Context(), agent.Agent{ID: uuid.New(), RoomID: uuid.New()}))
@@ -39,7 +39,7 @@ func TestRequestHandler_InvalidBody(t *testing.T) {
 
 func TestRequestHandler_MissingSummary(t *testing.T) {
 	s := &Store{}
-	h := s.RequestHandler(&task.Store{}, &agent.Store{}, nil)
+	h := s.RequestHandler(&task.Store{}, &agent.Store{}, nil, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/handoffs", strings.NewReader(`{"task_id":"`+uuid.New().String()+`","to_agent_id":"`+uuid.New().String()+`"}`))
 	req = req.WithContext(agent.NewContext(req.Context(), agent.Agent{ID: uuid.New(), RoomID: uuid.New()}))
@@ -51,7 +51,7 @@ func TestRequestHandler_MissingSummary(t *testing.T) {
 
 func TestAcceptHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.AcceptHandler(nil)
+	h := s.AcceptHandler(nil, nil)
 
 	rec := doAcceptRequest(t, h, uuid.New().String(), false)
 	assertJSONError(t, rec, http.StatusUnauthorized)
@@ -59,7 +59,7 @@ func TestAcceptHandler_Unauthenticated(t *testing.T) {
 
 func TestAcceptHandler_InvalidHandoffID(t *testing.T) {
 	s := &Store{}
-	h := s.AcceptHandler(nil)
+	h := s.AcceptHandler(nil, nil)
 
 	rec := doAcceptRequest(t, h, "not-a-uuid", true)
 	assertJSONError(t, rec, http.StatusBadRequest)
