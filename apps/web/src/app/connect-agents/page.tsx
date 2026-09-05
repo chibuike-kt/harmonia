@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useRequireAuth } from "@/lib/useRequireAuth";
 
 interface Credential {
   id: string;
@@ -29,6 +30,7 @@ function errorMessage(err: unknown, fallback: string): string {
 }
 
 export default function ConnectAgentsPage() {
+  useRequireAuth();
   const [credentials, setCredentials] = useState<Credential[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 

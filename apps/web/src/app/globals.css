@@ -28,6 +28,14 @@
  */
 :root {
   --login-bg: #0b0e13;
+  /* Dashboard sidebar's own background, distinct from --login-surface —
+     from docs/design/dashboard-mockup.html's --sidebar-bg. Kept in this
+     same "--login-*" token block rather than a new "--dashboard-*" one:
+     every other value here (bg/surface/border/text/accent) is identical
+     between the login and dashboard mockups, and Nav/Footer are already
+     shared across pages per the login-page-build-brief's own scope note
+     — this is that same shared design system, not a second one. */
+  --login-sidebar-bg: #0e1116;
   --login-surface: #12161d;
   --login-surface-2: #171c24;
   --login-border: #232a34;

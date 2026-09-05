@@ -1,18 +1,38 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
 import { GitHubIcon, GoogleIcon } from "@/components/icons";
-import { apiUrl } from "@/lib/api";
-import { jetbrainsMono, pirataOne, spaceGrotesk } from "@/lib/fonts";
+import { apiFetch, apiUrl } from "@/lib/api";
 
 // Plain anchors, not next/link: these are full-page navigations to the
 // Go backend's own redirect (GET /v1/auth/{provider}/login), which then
 // 302s on to the real provider — not client-side routing within this
 // app, so next/link's prefetch/soft-navigation behavior doesn't apply.
+//
+// The --font-* variables this page's font-[family-name:...] utilities
+// resolve through are defined globally on <html> in the root layout, not
+// re-declared here — see that layout's own comment for why.
 export default function LoginPage() {
+  const router = useRouter();
+
+  useEffect(() => {
+    // middleware.ts already redirects a request to /login away when a
+    // session cookie is present, before this component ever mounts —
+    // this check is for the case middleware's request-time redirect
+    // can't cover: a tab that already had /login open, where a session
+    // became valid in the meantime (e.g. finishing OAuth in another
+    // tab). GET /v1/users/me succeeding means a genuinely valid session,
+    // not just a cookie, so redirect away instead of showing the form.
+    apiFetch("/v1/users/me")
+      .then(() => router.push("/dashboard"))
+      .catch(() => {});
+  }, [router]);
+
   return (
-    <div
-      className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} ${pirataOne.variable} flex min-h-screen flex-col bg-[var(--login-bg)] text-[var(--login-text)] font-[family-name:var(--login-font-sans)]`}
-    >
+    <div className="flex min-h-screen flex-col bg-[var(--login-bg)] text-[var(--login-text)] font-[family-name:var(--login-font-sans)]">
       <Nav />
 
       <main className="flex flex-1 flex-col items-center justify-center px-5 py-16 sm:px-8">

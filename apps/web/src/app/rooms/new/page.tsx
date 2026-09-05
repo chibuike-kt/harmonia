@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useRequireAuth } from "@/lib/useRequireAuth";
 
 interface Room {
   id: string;
@@ -12,6 +13,7 @@ interface Room {
 }
 
 export default function NewRoomPage() {
+  useRequireAuth();
   const router = useRouter();
   const [name, setName] = useState("");
   const [pending, setPending] = useState(false);
