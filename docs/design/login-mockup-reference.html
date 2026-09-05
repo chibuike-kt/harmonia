@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Harmonia — Sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0B0E13;
+    --surface: #12161D;
+    --surface-2: #171C24;
+    --border: #232A34;
+    --border-strong: #2E3642;
+    --text: #E8EAED;
+    --text-secondary: #9AA1AC;
+    --text-muted: #5C6470;
+    --accent: #4CD3C2;
+    --font-sans: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 17px;
+  }
+  body { display: flex; flex-direction: column; }
+
+  nav {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand span { font-size: 19px; font-weight: 500; letter-spacing: -0.01em; }
+
+  .nav-links { display: flex; align-items: center; gap: 30px; }
+  .nav-right { display: flex; align-items: center; gap: 44px; }
+  .nav-trigger, .nav-links a {
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 16px;
+    background: none;
+    border: none;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0;
+  }
+  .nav-trigger:hover, .nav-links a:hover { color: var(--text); }
+  .nav-trigger svg { transition: transform 0.15s ease; }
+
+  .nav-actions { display: flex; align-items: center; gap: 12px; }
+  .btn-outline, .btn-solid {
+    height: 40px;
+    padding: 0 18px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+  }
+  .btn-outline { background: none; border: 1px solid var(--border-strong); color: var(--text); }
+  .btn-outline:hover { background: var(--surface-2); }
+  .btn-solid { background: var(--text); border: none; color: var(--bg); }
+  .btn-solid:hover { background: #D5D8DC; }
+
+  .mega-menu {
+    position: absolute;
+    top: calc(100% + 14px);
+    left: 0;
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    z-index: 10;
+    white-space: nowrap;
+  }
+  .nav-item { position: relative; }
+  .nav-item:hover .mega-menu,
+  .nav-item:focus-within .mega-menu { display: flex; }
+  .nav-item:hover .nav-trigger svg,
+  .nav-item:focus-within .nav-trigger svg { transform: rotate(180deg); }
+  .nav-item:hover .nav-trigger,
+  .nav-item:focus-within .nav-trigger { color: var(--text); }
+  .mega-menu-inner { display: flex; gap: 48px; }
+  .mega-col { display: flex; flex-direction: column; gap: 14px; }
+  .mega-col-label { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+  .mega-col a { color: var(--text); text-decoration: none; font-size: 14px; }
+  .mega-col a:hover { color: var(--accent); }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px 40px;
+  }
+
+  .hero { text-align: center; margin-bottom: 40px; max-width: 640px; }
+  .hero canvas { display: block; margin: 0 auto 24px; }
+  .hero h1 {
+    font-family: var(--font-sans);
+    font-size: 58px;
+    font-weight: 500;
+    margin: 0 0 16px;
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+  }
+  .hero p {
+    font-family: var(--font-sans);
+    font-size: 19px;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+
+  .card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 32px 28px;
+  }
+  .oauth-buttons { display: flex; flex-direction: column; gap: 10px; }
+  .oauth-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    height: 48px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .oauth-btn:hover { background: #1C222B; border-color: #3A4453; }
+  .oauth-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+  .oauth-btn svg { flex-shrink: 0; }
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  .email-input {
+    width: 100%;
+    height: 44px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 14px;
+    font-family: var(--font-sans);
+    padding: 0 14px;
+    margin-bottom: 10px;
+  }
+  .email-input::placeholder { color: var(--text-muted); }
+  .email-input:focus { outline: none; border-color: var(--accent); }
+
+  .btn-email {
+    width: 100%;
+    height: 44px;
+    background: var(--text);
+    color: var(--bg);
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+  }
+  .btn-email:hover { background: #D5D8DC; }
+
+  .card-footnote {
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 16px 0 0;
+    line-height: 1.5;
+  }
+  .card-footnote a { color: var(--text-secondary); }
+
+  .site-footer { border-top: 1px solid var(--border); padding: 56px 32px 32px; }
+  .footer-columns {
+    display: flex;
+    gap: 56px;
+    max-width: 1100px;
+    margin: 0 auto;
+    flex-wrap: wrap;
+  }
+  .footer-col { display: flex; flex-direction: column; gap: 12px; min-width: 150px; }
+  .footer-col-label { font-size: 13px; color: var(--text-muted); font-family: var(--font-mono); }
+  .footer-col a { color: var(--text); text-decoration: none; font-size: 15px; }
+  .footer-col a:hover { color: var(--accent); }
+  .footer-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 1100px;
+    margin: 48px auto 0;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+  .footer-brand { display: flex; align-items: center; gap: 8px; }
+  .footer-brand span { font-size: 13px; color: var(--text-muted); }
+  .footer-bottom p { font-size: 12px; color: var(--text-muted); margin: 0; font-family: var(--font-mono); }
+
+  .footer-social { display: flex; align-items: center; gap: 18px; }
+  .footer-social a { color: var(--text-secondary); display: flex; }
+  .footer-social a:hover { color: var(--text); }
+  .footer-legal { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); }
+  .footer-legal a { color: var(--text-muted); text-decoration: underline; }
+  .footer-region {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 6px 12px;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="brand">
+    <canvas id="navOrb" width="20" height="20"></canvas>
+    <span>Harmonia</span>
+  </div>
+
+  <div class="nav-right">
+    <div class="nav-links">
+      <div class="nav-item">
+        <button class="nav-trigger">
+          Meet Harmonia
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="mega-menu">
+          <div class="mega-menu-inner">
+            <div class="mega-col">
+              <span class="mega-col-label">Product</span>
+              <a href="#">Rooms</a>
+              <a href="#">Agent registry</a>
+              <a href="#">Handoffs</a>
+              <a href="#">Live activity</a>
+            </div>
+            <div class="mega-col">
+              <span class="mega-col-label">Developers</span>
+              <a href="#">Documentation</a>
+              <a href="#">API reference</a>
+              <a href="#">Protocol (AACP)</a>
+            </div>
+            <div class="mega-col">
+              <span class="mega-col-label">Company</span>
+              <a href="#">Pricing</a>
+              <a href="#">Blog</a>
+              <a href="#">Changelog</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-item">
+        <button class="nav-trigger">
+          Platform
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="mega-menu">
+          <div class="mega-menu-inner">
+            <div class="mega-col">
+              <span class="mega-col-label">Core</span>
+              <a href="#">Task orchestration</a>
+              <a href="#">Event log</a>
+              <a href="#">Realtime presence</a>
+            </div>
+            <div class="mega-col">
+              <span class="mega-col-label">Security</span>
+              <a href="#">Encryption</a>
+              <a href="#">Audit trail</a>
+              <a href="#">Permissions</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-item">
+        <button class="nav-trigger">
+          Solutions
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="mega-menu">
+          <div class="mega-menu-inner">
+            <div class="mega-col">
+              <span class="mega-col-label">By use case</span>
+              <a href="#">Software development</a>
+              <a href="#">Research workflows</a>
+              <a href="#">Customer operations</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <a href="#">Pricing</a>
+
+      <div class="nav-item">
+        <button class="nav-trigger">
+          Resources
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <div class="mega-menu">
+          <div class="mega-menu-inner">
+            <div class="mega-col">
+              <span class="mega-col-label">Resources</span>
+              <a href="#">Documentation</a>
+              <a href="#">Blog</a>
+              <a href="#">Changelog</a>
+              <a href="#">Community</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <button class="btn-solid">Try Harmonia</button>
+    </div>
+  </div>
+</nav>
+
+<main>
+  <div class="hero">
+    <h1>Coordinate what's next</h1>
+    <p>Agents that work together on your behalf</p>
+  </div>
+
+  <div class="card">
+    <div class="oauth-buttons">
+      <button class="oauth-btn">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        Continue with GitHub
+      </button>
+
+      <div class="divider">OR</div>
+
+      <button class="oauth-btn">
+        <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/><path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/><path fill="#FBBC05" d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9s.348 2.827.957 4.042l3.007-2.332z"/><path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 6.29C4.672 4.163 6.656 2.58 9 2.58z"/></svg>
+        Continue with Google
+      </button>
+    </div>
+
+    <p class="card-footnote">By continuing, you acknowledge Harmonia's <a href="#">Privacy Policy</a>.</p>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="footer-columns">
+    <div class="footer-col">
+      <span class="footer-col-label">Product</span>
+      <a href="#">Rooms</a>
+      <a href="#">Agent registry</a>
+      <a href="#">Handoffs</a>
+      <a href="#">Live activity</a>
+      <a href="#">Task orchestration</a>
+      <span class="footer-col-label" style="margin-top: 10px;">Coming soon</span>
+      <a href="#">Tool execution</a>
+      <a href="#">Agent marketplace</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-col-label">Developers</span>
+      <a href="#">Documentation</a>
+      <a href="#">API reference</a>
+      <a href="#">Protocol (AACP)</a>
+      <a href="#">SDKs</a>
+      <a href="#">Developer forum</a>
+      <a href="#">Status</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-col-label">Solutions</span>
+      <a href="#">Software development</a>
+      <a href="#">Research workflows</a>
+      <a href="#">Customer operations</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-col-label">Company</span>
+      <a href="#">About us</a>
+      <a href="#">Careers</a>
+      <a href="#">Blog</a>
+      <a href="#">News</a>
+      <a href="#">Contact sales</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-col-label">Resources</span>
+      <a href="#">Changelog</a>
+      <a href="#">Community</a>
+      <a href="#">Support</a>
+      <a href="#">Help center</a>
+    </div>
+    <div class="footer-col">
+      <span class="footer-col-label">Legal</span>
+      <a href="#">Terms of use</a>
+      <a href="#">Privacy policy</a>
+      <a href="#">Security</a>
+      <a href="#">Other policies</a>
+    </div>
+  </div>
+
+  <div class="footer-bottom">
+    <div class="footer-social">
+      <a href="#" aria-label="X"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.6 8.7L23.3 22h-7l-5.5-7.2L4.5 22H1.4l8.1-9.3L.7 2h7.2l5 6.6L18.9 2zm-1.2 18h1.7L7.4 4h-1.8l12.1 16z"/></svg></a>
+      <a href="#" aria-label="GitHub"><svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+      <a href="#" aria-label="LinkedIn"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.03-1.85-3.03-1.86 0-2.14 1.45-2.14 2.94v5.66H9.36V9h3.41v1.56h.05c.47-.9 1.63-1.85 3.36-1.85 3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.06 2.06 0 11.02-4.12 2.06 2.06 0 01-.02 4.12zM7.11 20.45H3.56V9h3.55v11.45z"/></svg></a>
+      <a href="#" aria-label="Discord"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M20.32 4.37a19.8 19.8 0 00-4.9-1.52.07.07 0 00-.08.04c-.21.38-.45.87-.61 1.26a18.3 18.3 0 00-5.48 0 12.6 12.6 0 00-.63-1.26.08.08 0 00-.08-.04 19.7 19.7 0 00-4.9 1.52.07.07 0 00-.03.03C1.2 8.9.4 13.3.79 17.64a.08.08 0 00.03.06 19.9 19.9 0 006 3.03.08.08 0 00.08-.03c.46-.63.87-1.3 1.22-2a.08.08 0 00-.04-.11 13 13 0 01-1.88-.9.08.08 0 01-.01-.13c.13-.09.25-.19.37-.29a.07.07 0 01.08-.01c3.93 1.8 8.18 1.8 12.06 0a.07.07 0 01.08.01c.12.1.24.2.37.29a.08.08 0 010 .13c-.6.35-1.23.65-1.89.9a.08.08 0 00-.04.12c.36.69.77 1.36 1.22 1.99a.08.08 0 00.09.03 19.8 19.8 0 006.01-3.03.08.08 0 00.03-.05c.46-5-.77-9.36-3.26-13.24a.06.06 0 00-.03-.03z"/></svg></a>
+    </div>
+    <div class="footer-legal">
+      <p>© 2026 harmonia</p>
+      <a href="#">Manage cookies</a>
+    </div>
+    <div class="footer-region">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13M8 1.5c1.8 1.8 2.8 4.1 2.8 6.5s-1 4.7-2.8 6.5c-1.8-1.8-2.8-4.1-2.8-6.5S6.2 3.3 8 1.5z"/></svg>
+      English
+    </div>
+  </div>
+</footer>
+
+<script>
+  function drawOrb(canvas, dotCount, radius, dotSize) {
+    const ctx = canvas.getContext('2d');
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const dots = Array.from({ length: dotCount }, (_, i) => ({
+      angle: (i / dotCount) * Math.PI * 2,
+      tilt: 0.4 + (i % 3) * 0.15,
+      speed: 0.015 + (i % 4) * 0.004,
+      r: radius * (0.6 + (i % 3) * 0.2)
+    }));
+    function frame() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      dots.forEach(d => {
+        d.angle += d.speed;
+        const x = cx + Math.cos(d.angle) * d.r;
+        const y = cy + Math.sin(d.angle) * d.r * d.tilt;
+        const depth = (Math.sin(d.angle) * d.tilt + 1) / 2;
+        ctx.beginPath();
+        ctx.arc(x, y, dotSize * (0.5 + depth * 0.5), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(76, 211, 194, ${0.4 + depth * 0.55})`;
+        ctx.fill();
+      });
+      requestAnimationFrame(frame);
+    }
+    frame();
+  }
+  drawOrb(document.getElementById('navOrb'), 7, 7, 1.1);
+</script>
+
+</body>
+</html>
