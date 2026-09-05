@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	agentpkg "github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
@@ -22,14 +23,22 @@ import (
 )
 
 // TestIntegration_TaskLifecycle walks create -> claim -> complete against
-// real Postgres, checking the room- and ownership-scoping the handlers add
-// on top of the bare Store methods, and that each transition records the
-// matching event. Requires a live Postgres — run via `make test-integration`
-// after `make up`.
+// real Postgres and real Redis, checking the room- and ownership-scoping
+// the handlers add on top of the bare Store methods, that each
+// transition records the matching event, that claiming/completing
+// actually flips the claiming agent's status in Postgres (running, then
+// back to available) and mirrors it into Redis, and that every one of
+// those transitions reaches a real hub subscriber in order through the
+// real production handlers. Requires live Postgres and Redis — run via
+// `make test-integration` after `make up`.
 func TestIntegration_TaskLifecycle(t *testing.T) {
 	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+	redisAddr := os.Getenv("HARMONIA_REDIS_ADDR")
+	if redisAddr == "" {
+		t.Skip("HARMONIA_REDIS_ADDR not set; skipping integration test")
 	}
 
 	ctx := context.Background()
@@ -38,6 +47,9 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	defer pool.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer func() { _ = rdb.Close() }()
 
 	rooms := room.NewStore(pool)
 	agents := agentpkg.NewStore(pool)
@@ -72,8 +84,8 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 
 	beginner := store.PoolBeginner{Pool: pool}
 	createHandler := tasks.CreateHandler(beginner, hub)
-	claimHandler := tasks.ClaimHandler(beginner, hub)
-	completeHandler := tasks.CompleteHandler(beginner, hub)
+	claimHandler := tasks.ClaimHandler(beginner, hub, rdb)
+	completeHandler := tasks.CompleteHandler(beginner, hub, rdb)
 
 	// Create, as the creator.
 	rec := doJSON(t, createHandler, creator, "", `{"objective":"write the report"}`)
@@ -110,6 +122,23 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		t.Fatalf("claimed OwnerAgentID = %v, want %s", claimed.OwnerAgentID, claimer.ID)
 	}
 
+	// The claim actually flipped the claimer's status in Postgres, in the
+	// same transaction as the task write — not a side channel that could
+	// silently drift from it.
+	claimerAfterClaim, err := agents.GetByID(ctx, claimer.ID)
+	if err != nil {
+		t.Fatalf("GetByID claimer after claim: %v", err)
+	}
+	if claimerAfterClaim.Status != agentpkg.StatusRunning {
+		t.Fatalf("claimer Status after claim = %q, want %q", claimerAfterClaim.Status, agentpkg.StatusRunning)
+	}
+	// ...and mirrored the same status into Redis.
+	if got, err := realtime.GetPresence(ctx, rdb, claimer.ID); err != nil {
+		t.Fatalf("GetPresence after claim: %v", err)
+	} else if got != string(agentpkg.StatusRunning) {
+		t.Fatalf("Redis presence after claim = %q, want %q", got, agentpkg.StatusRunning)
+	}
+
 	// Claiming again loses the race — already claimed.
 	rec = doJSON(t, claimHandler, creator, created.ID.String(), "")
 	if rec.Code != http.StatusConflict {
@@ -135,6 +164,21 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		t.Fatalf("completed Status = %q, want %q", completed.Status, StatusCompleted)
 	}
 
+	// The completion flipped the claimer's status back to available, in
+	// Postgres and mirrored in Redis, the same way the claim did.
+	claimerAfterComplete, err := agents.GetByID(ctx, claimer.ID)
+	if err != nil {
+		t.Fatalf("GetByID claimer after complete: %v", err)
+	}
+	if claimerAfterComplete.Status != agentpkg.StatusAvailable {
+		t.Fatalf("claimer Status after complete = %q, want %q", claimerAfterComplete.Status, agentpkg.StatusAvailable)
+	}
+	if got, err := realtime.GetPresence(ctx, rdb, claimer.ID); err != nil {
+		t.Fatalf("GetPresence after complete: %v", err)
+	} else if got != string(agentpkg.StatusAvailable) {
+		t.Fatalf("Redis presence after complete = %q, want %q", got, agentpkg.StatusAvailable)
+	}
+
 	// Every transition recorded its event, in order.
 	roomEvents, err := events.ListByRoom(ctx, roomA.ID)
 	if err != nil {
@@ -156,23 +200,44 @@ func TestIntegration_TaskLifecycle(t *testing.T) {
 		}
 	}
 
-	// Each committed transition also reached the hub's subscriber, in the
-	// same order, through the real production handlers — not a fake.
-	wantOps := []protocol.Operation{protocol.OpTaskCreate, protocol.OpTaskClaim, protocol.OpTaskComplete}
-	for _, wantOp := range wantOps {
+	// Each committed transition also reached the hub's subscriber, in
+	// order, through the real production handlers — not a fake. Claim and
+	// Complete each publish two messages (the event, then the presence
+	// transition); the rejected attempts (cross-room claim, re-claim,
+	// non-owner complete) published nothing, so they don't appear here.
+	type wantMsg struct {
+		kind   realtime.Kind
+		op     protocol.Operation
+		status agentpkg.Status
+	}
+	wantMsgs := []wantMsg{
+		{kind: realtime.KindEvent, op: protocol.OpTaskCreate},
+		{kind: realtime.KindEvent, op: protocol.OpTaskClaim},
+		{kind: realtime.KindPresence, status: agentpkg.StatusRunning},
+		{kind: realtime.KindEvent, op: protocol.OpTaskComplete},
+		{kind: realtime.KindPresence, status: agentpkg.StatusAvailable},
+	}
+	for i, want := range wantMsgs {
 		select {
 		case msg := <-sub:
-			if msg.Kind != realtime.KindEvent || msg.Event == nil {
-				t.Fatalf("published message = %+v, want a KindEvent envelope", msg)
+			if msg.Kind != want.kind {
+				t.Fatalf("message[%d] Kind = %q, want %q (msg = %+v)", i, msg.Kind, want.kind, msg)
 			}
-			if msg.Event.Type != wantOp {
-				t.Fatalf("published envelope Type = %q, want %q", msg.Event.Type, wantOp)
-			}
-			if msg.Event.RoomID != roomA.ID {
-				t.Fatalf("published envelope RoomID = %s, want %s", msg.Event.RoomID, roomA.ID)
+			switch want.kind {
+			case realtime.KindEvent:
+				if msg.Event == nil || msg.Event.Type != want.op {
+					t.Fatalf("message[%d] = %+v, want event type %q", i, msg, want.op)
+				}
+				if msg.Event.RoomID != roomA.ID {
+					t.Fatalf("message[%d] RoomID = %s, want %s", i, msg.Event.RoomID, roomA.ID)
+				}
+			case realtime.KindPresence:
+				if msg.Presence == nil || msg.Presence.AgentID != claimer.ID || msg.Presence.Status != string(want.status) {
+					t.Fatalf("message[%d] = %+v, want presence agent=%s status=%s", i, msg, claimer.ID, want.status)
+				}
 			}
 		case <-time.After(time.Second):
-			t.Fatalf("expected a hub publish for %q, got none", wantOp)
+			t.Fatalf("expected message[%d] (%+v), got none", i, want)
 		}
 	}
 	select {

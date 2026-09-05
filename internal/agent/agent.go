@@ -11,7 +11,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
 type Status string
@@ -40,10 +41,15 @@ type Agent struct {
 }
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool store.Querier
 }
 
-func NewStore(pool *pgxpool.Pool) *Store {
+// NewStore accepts store.Querier rather than *pgxpool.Pool so a caller
+// can bind a Store to a transaction in progress (store.BeginTx's Tx also
+// satisfies Querier) — needed so an agent's status transition lands in
+// the same transaction as the task write that causes it (task/http.go's
+// Claim/Complete handlers), not a second one.
+func NewStore(pool store.Querier) *Store {
 	return &Store{pool: pool}
 }
 
@@ -88,4 +94,43 @@ func (s *Store) GetByID(ctx context.Context, agentID uuid.UUID) (Agent, error) {
 		return Agent{}, err
 	}
 	return a, nil
+}
+
+// SetStatus transitions agentID to status — running on task claim,
+// available on task complete (see task/http.go). No conditional WHERE
+// here the way task/handoff status transitions have one: unlike a task
+// claim or handoff accept, an agent's presence has no "someone already
+// changed it, reject" race to guard against — the caller always knows
+// the exact status it's setting and it's always safe to overwrite.
+func (s *Store) SetStatus(ctx context.Context, agentID uuid.UUID, status Status) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET status = $1 WHERE id = $2`, status, agentID)
+	return err
+}
+
+// ListByRoom returns every agent registered in roomID — the SSE stream's
+// initial snapshot uses this to know whose Redis presence key to read
+// (internal/realtime.StreamHandler).
+func (s *Store) ListByRoom(ctx context.Context, roomID uuid.UUID) ([]Agent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, room_id, name, provider, capabilities, status, created_at
+		FROM agents WHERE room_id = $1
+	`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var agents []Agent
+	for rows.Next() {
+		var a Agent
+		var capabilities []byte
+		if err := rows.Scan(&a.ID, &a.RoomID, &a.Name, &a.Provider, &capabilities, &a.Status, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(capabilities, &a.Capabilities); err != nil {
+			return nil, err
+		}
+		agents = append(agents, a)
+	}
+	return agents, rows.Err()
 }

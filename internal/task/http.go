@@ -1,13 +1,16 @@
 package task
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/event"
@@ -42,6 +45,28 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// publishPresence fans agentID's new status out over hub and mirrors it
+// into Redis, strictly after the transaction that changed it has
+// committed — same ordering rule as the event publish. Both are
+// best-effort, ephemeral side effects of an already-durable write (see
+// ADR-003): a Redis hiccup here must never turn an already-successful,
+// already-committed claim/complete into an error response, so a mirror
+// failure is logged, not returned — the hub publish already reached any
+// currently-connected subscriber regardless.
+//
+// The ERROR prefix is deliberate: this codebase's logging is plain
+// stdlib log with no level support at all (see cmd/server/main.go's own
+// log.Printf for routine startup output) — without a text marker, a real
+// Redis outage here would read identically to routine noise in the log
+// stream. This isn't a real leveled-logging fix, just the cheapest way
+// to make the line grep-able until this codebase adopts one.
+func publishPresence(ctx context.Context, hub realtime.Publisher, rdb *redis.Client, roomID, agentID uuid.UUID, status agent.Status) {
+	hub.Publish(roomID, realtime.NewPresenceMessage(agentID, string(status)))
+	if err := realtime.SetPresence(ctx, rdb, agentID, string(status)); err != nil {
+		log.Printf("ERROR realtime: mirror presence for agent %s: %v", agentID, err)
+	}
 }
 
 // CreateHandler returns the handler for POST /v1/tasks. The task's room is
@@ -110,10 +135,12 @@ func (s *Store) CreateHandler(pool store.Beginner, hub realtime.Publisher) http.
 	}
 }
 
-// ClaimHandler returns the handler for POST /v1/tasks/{id}/claim. The claim
-// and its TASK_CLAIMED event are one transaction: either both land or
-// neither does. The same event is published to hub strictly after commit.
-func (s *Store) ClaimHandler(pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
+// ClaimHandler returns the handler for POST /v1/tasks/{id}/claim. The
+// claim, the claiming agent's transition to running, and the TASK_CLAIMED
+// event are one transaction: either all three land or none does. The
+// event and the presence transition are each published to hub strictly
+// after commit.
+func (s *Store) ClaimHandler(pool store.Beginner, hub realtime.Publisher, rdb *redis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -162,6 +189,12 @@ func (s *Store) ClaimHandler(pool store.Beginner, hub realtime.Publisher) http.H
 			return
 		}
 
+		txAgents := agent.NewStore(tx)
+		if err := txAgents.SetStatus(ctx, a.ID, agent.StatusRunning); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update agent status")
+			return
+		}
+
 		claimed, err := txTasks.GetByID(ctx, taskID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load claimed task")
@@ -181,16 +214,18 @@ func (s *Store) ClaimHandler(pool store.Beginner, hub realtime.Publisher) http.H
 			return
 		}
 		hub.Publish(claimed.RoomID, realtime.NewEventMessage(env))
+		publishPresence(ctx, hub, rdb, claimed.RoomID, a.ID, agent.StatusRunning)
 
 		writeJSON(w, http.StatusOK, claimed)
 	}
 }
 
-// CompleteHandler returns the handler for POST /v1/tasks/{id}/complete. The
-// completion and its TASK_COMPLETED event are one transaction: either both
-// land or neither does. The same event is published to hub strictly after
-// commit.
-func (s *Store) CompleteHandler(pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
+// CompleteHandler returns the handler for POST /v1/tasks/{id}/complete.
+// The completion, the completing agent's transition back to available,
+// and the TASK_COMPLETED event are one transaction: either all three land
+// or none does. The event and the presence transition are each published
+// to hub strictly after commit.
+func (s *Store) CompleteHandler(pool store.Beginner, hub realtime.Publisher, rdb *redis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		a, ok := agent.FromContext(r.Context())
 		if !ok {
@@ -242,6 +277,12 @@ func (s *Store) CompleteHandler(pool store.Beginner, hub realtime.Publisher) htt
 			return
 		}
 
+		txAgents := agent.NewStore(tx)
+		if err := txAgents.SetStatus(ctx, a.ID, agent.StatusAvailable); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update agent status")
+			return
+		}
+
 		completed, err := txTasks.GetByID(ctx, taskID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to load completed task")
@@ -261,6 +302,7 @@ func (s *Store) CompleteHandler(pool store.Beginner, hub realtime.Publisher) htt
 			return
 		}
 		hub.Publish(completed.RoomID, realtime.NewEventMessage(env))
+		publishPresence(ctx, hub, rdb, completed.RoomID, a.ID, agent.StatusAvailable)
 
 		writeJSON(w, http.StatusOK, completed)
 	}
