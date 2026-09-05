@@ -70,3 +70,12 @@ opposed to per-user), or a move away from cookie sessions toward
 API-token-based programmatic access for the eventual SDK (section 57 of
 the original product overview) would each be a real reason to revisit
 this ADR — not before.
+
+`credentials.Store.Resolve` (BYOK credential lookup, decrypt, and client
+construction for `(room.owner_id, agent.provider)`) is built, tested, and
+correct as of this phase, but has no production caller yet — nothing in
+the codebase decides to invoke a provider on an agent's behalf today.
+That decision belongs to the orchestration engine, which doesn't exist
+until a later phase (Phase 4's tool execution). Wiring `Resolve` into a
+real call site, once that engine exists, is expected — not itself a
+reason to revisit this ADR's decisions.
