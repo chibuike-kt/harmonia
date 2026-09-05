@@ -276,10 +276,30 @@ func TestIntegration_StreamHandler_RoomOwnershipAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read data line: %v", err)
 	}
+	rawData := strings.TrimPrefix(strings.TrimSuffix(dataLine, "\n"), "data: ")
+
+	// This room has no task/handoff activity, so its events list is
+	// empty — and Go's json.Unmarshal happily accepts JSON null into a
+	// nil []event.Event without complaint, which is exactly why this
+	// specific regression (event.Store.ListByRoom's nil slice encoding
+	// as "events":null instead of "events":[]) was invisible to Go-only
+	// tests and only surfaced against a real browser: JavaScript's
+	// `[...null]` throws, breaking the room-view page outright for any
+	// brand-new room. Asserting on the raw wire bytes here, before
+	// unmarshaling erases the distinction, is what actually catches it.
+	if strings.Contains(rawData, `"events":null`) {
+		t.Fatalf("snapshot JSON has \"events\":null, want \"events\":[] — raw = %s", rawData)
+	}
 
 	var got snapshot
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSuffix(dataLine, "\n"), "data: ")), &got); err != nil {
+	if err := json.Unmarshal([]byte(rawData), &got); err != nil {
 		t.Fatalf("decode snapshot data: %v", err)
+	}
+	if got.Events == nil {
+		t.Fatal("snapshot Events must never be nil, even for a room with no events yet")
+	}
+	if len(got.Events) != 0 {
+		t.Fatalf("snapshot Events = %+v, want empty (this room has no task/handoff activity)", got.Events)
 	}
 	if len(got.Presence) != 1 || got.Presence[0].AgentID != registered.ID || got.Presence[0].Status != string(agent.StatusRunning) {
 		t.Fatalf("snapshot Presence = %+v, want one entry for agent=%s status=%s", got.Presence, registered.ID, agent.StatusRunning)

@@ -144,6 +144,15 @@ func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, 
 			writeError(w, http.StatusInternalServerError, "failed to list events")
 			return
 		}
+		if recentEvents == nil {
+			// event.Store.ListByRoom returns a nil slice for a room with
+			// no events yet, which encodes as JSON null — the same
+			// nil-to-empty-slice guard event.ListByRoomHandler already
+			// applies for its own response, needed here too so a brand
+			// new room's snapshot carries [] and a frontend can spread it
+			// unconditionally.
+			recentEvents = []event.Event{}
+		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
