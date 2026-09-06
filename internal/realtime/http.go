@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,14 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
+
+// MessageLister returns roomID's recent chat messages for the stream's
+// initial snapshot. A function type rather than a dependency on
+// internal/message's concrete Store: that package already imports
+// realtime (for Publisher and ChatMessage), so realtime importing back
+// would be a cycle — the same reasoning ChatMessage itself is defined in
+// this package rather than imported from internal/message.
+type MessageLister func(ctx context.Context, roomID uuid.UUID) ([]ChatMessage, error)
 
 type errorResponse struct {
 	Error string `json:"error"`
@@ -47,6 +56,7 @@ type agentPresence struct {
 type snapshot struct {
 	Events   []event.Event   `json:"events"`
 	Presence []agentPresence `json:"presence"`
+	Messages []ChatMessage   `json:"messages"`
 }
 
 // StreamHandler returns the handler for GET /v1/rooms/{room_id}/stream.
@@ -56,9 +66,11 @@ type snapshot struct {
 //
 // On connect it subscribes to hub first, then writes one "snapshot"
 // event (recent room events from Postgres, current agent presence read
-// from each agent's Redis key), then streams every further Message the
-// hub publishes for this room as its own SSE event, until the request
-// context is done.
+// from each agent's Redis key, and recent chat messages per ADR-004 —
+// so a client connecting mid-conversation sees history, not just
+// whatever arrives after it connects), then streams every further
+// Message the hub publishes for this room as its own SSE event, until
+// the request context is done.
 //
 // Disconnect handling: a client-initiated close (tab closed, EventSource
 // explicitly closed, navigating away) sends a real TCP close, which
@@ -75,7 +87,7 @@ type snapshot struct {
 // far longer. It narrows the gap; it doesn't eliminate it — a fully
 // robust bound on that needs an application-level ping/pong (WebSocket),
 // which ADR-003 explicitly defers.
-func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, hub *Hub, rdb *redis.Client) http.HandlerFunc {
+func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, listMessages MessageLister, hub *Hub, rdb *redis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := user.FromContext(r.Context())
 		if !ok {
@@ -154,12 +166,21 @@ func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, 
 			recentEvents = []event.Event{}
 		}
 
+		recentMessages, err := listMessages(ctx, roomID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list messages")
+			return
+		}
+		if recentMessages == nil {
+			recentMessages = []ChatMessage{}
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
 
-		if !writeSSEEvent(w, flusher, "snapshot", snapshot{Events: recentEvents, Presence: presence}) {
+		if !writeSSEEvent(w, flusher, "snapshot", snapshot{Events: recentEvents, Presence: presence, Messages: recentMessages}) {
 			return
 		}
 

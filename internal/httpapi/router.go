@@ -7,17 +7,20 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
 	"github.com/chibuike-kt/harmonia/internal/credentials"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/handoff"
+	"github.com/chibuike-kt/harmonia/internal/message"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
@@ -74,6 +77,21 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/tasks/{id}/complete", tasks.CompleteHandler(beginner, hub, st.Redis))
 	})
 
+	// cipher is nil when HARMONIA_CREDENTIAL_ENCRYPTION_KEY is unset or
+	// malformed; built here (rather than down by the /v1/credentials
+	// routes) since the message orchestrator needs the same creds store
+	// to resolve a mentioned agent's provider client via Resolve —
+	// credentials.Store.Resolve's first real production caller.
+	cipher, _ := credentials.NewCipher(os.Getenv("HARMONIA_CREDENTIAL_ENCRYPTION_KEY"))
+	creds := credentials.NewStore(st.Pool, cipher)
+
+	messages := message.NewStore(st.Pool)
+	orchestrator := message.NewOrchestrator(messages, agents, creds, hub, st.Redis)
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator))
+	})
+
 	contexts := contextengine.NewStore(st.Pool)
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
@@ -93,9 +111,34 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Get("/v1/rooms/{id}/events", events.ListByRoomHandler())
 	})
 
+	// listMessages adapts message.Store.ListByRoom to realtime.MessageLister
+	// so the SSE snapshot can include recent chat history without
+	// realtime importing internal/message back (see MessageLister's own
+	// doc comment for why that would be a cycle).
+	listMessages := func(ctx context.Context, roomID uuid.UUID) ([]realtime.ChatMessage, error) {
+		msgs, err := messages.ListByRoom(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]realtime.ChatMessage, len(msgs))
+		for i, m := range msgs {
+			out[i] = realtime.ChatMessage{
+				ID:               m.ID,
+				RoomID:           m.RoomID,
+				SenderKind:       string(m.SenderKind),
+				UserID:           m.UserID,
+				AgentID:          m.AgentID,
+				MentionedAgentID: m.MentionedAgentID,
+				ReplyToMessageID: m.ReplyToMessageID,
+				Content:          m.Content,
+				CreatedAt:        m.CreatedAt,
+			}
+		}
+		return out, nil
+	}
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
-		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, hub, st.Redis))
+		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, listMessages, hub, st.Redis))
 	})
 
 	githubCfg := user.NewGitHubConfig(
@@ -122,12 +165,10 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Delete("/v1/sessions/{id}", users.RevokeSessionHandler())
 	})
 
-	// cipher is nil when HARMONIA_CREDENTIAL_ENCRYPTION_KEY is unset or
-	// malformed; ConnectHandler then fails cleanly with a 500 rather than
-	// panicking or storing something insecurely — same posture as an
+	// creds (built above, alongside the message orchestrator) fails
+	// cleanly with a 500 rather than panicking or storing something
+	// insecurely when its cipher is nil — same posture as an
 	// unconfigured GoogleConfig/GitHubConfig.
-	cipher, _ := credentials.NewCipher(os.Getenv("HARMONIA_CREDENTIAL_ENCRYPTION_KEY"))
-	creds := credentials.NewStore(st.Pool, cipher)
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
 		pr.Post("/v1/credentials", creds.ConnectHandler())

@@ -1,0 +1,1 @@
+REVOKE SELECT, INSERT, UPDATE, DELETE ON messages FROM harmonia_app;

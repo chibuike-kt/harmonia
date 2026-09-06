@@ -14,7 +14,7 @@ import (
 )
 
 func TestStreamHandler_Unauthenticated(t *testing.T) {
-	h := StreamHandler(nil, nil, nil, nil, nil)
+	h := StreamHandler(nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/rooms/"+uuid.New().String()+"/stream", nil)
 	rec := httptest.NewRecorder()
@@ -24,7 +24,7 @@ func TestStreamHandler_Unauthenticated(t *testing.T) {
 }
 
 func TestStreamHandler_InvalidRoomID(t *testing.T) {
-	h := StreamHandler(nil, nil, nil, nil, nil)
+	h := StreamHandler(nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequestWithContext(user.NewContext(context.Background(), user.User{ID: uuid.New()}), http.MethodGet, "/v1/rooms/not-a-uuid/stream", nil)
 	rctx := chi.NewRouteContext()

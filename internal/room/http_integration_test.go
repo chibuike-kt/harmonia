@@ -325,11 +325,17 @@ func TestIntegration_UpdateHandler(t *testing.T) {
 // real Postgres: ownership is enforced the same 404-then-403 way as
 // every other room-scoped route, and a successful delete genuinely
 // removes the room and everything that cascades from it — agent, task,
-// event, and handoff rows included, not just the rooms row itself. This
-// is the one path in the application that ever removes an events row;
-// see Store.DeleteCascade and migrations/0005_harmonia_app_role.up.sql
-// for why it goes through a SECURITY DEFINER function rather than a
-// plain DELETE FROM rooms.
+// event, handoff, and message rows included, not just the rooms row
+// itself. This is the one path in the application that ever removes an
+// events row; see Store.DeleteCascade and
+// migrations/0005_harmonia_app_role.up.sql for why it goes through a
+// SECURITY DEFINER function rather than a plain DELETE FROM rooms. It
+// also seeds a mention-and-reply message pair specifically to verify
+// messages.reply_to_message_id — a self-referencing FK with no explicit
+// ON DELETE action (see migrations/0006_messages.up.sql) — survives the
+// cascade rather than assuming it does (ADR-004's build brief calls
+// this out by name, given this project's history with unverified
+// permission/constraint assumptions).
 func TestIntegration_DeleteHandler(t *testing.T) {
 	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
 	if dbURL == "" {
@@ -390,6 +396,33 @@ func TestIntegration_DeleteHandler(t *testing.T) {
 		t.Fatalf("seed handoff: %v", err)
 	}
 
+	// A mention-and-reply pair, so reply_to_message_id (a self-referencing
+	// FK onto messages, with no explicit ON DELETE action — see
+	// migrations/0006_messages.up.sql) is actually populated before the
+	// cascade runs. "Should be fine because all of a room's messages are
+	// removed together in one statement, and Postgres checks FK
+	// constraints at statement end, not row-by-row" is exactly the kind
+	// of unverified assumption this project has been burned by twice
+	// before (the events REVOKE that was never applied, the
+	// superuser-instead-of-harmonia_app discovery) — checked directly
+	// here instead. Seeded via raw SQL, not internal/message's own
+	// Store: that package imports this one (message/http.go takes a
+	// *room.Store), so importing it back here would be a cycle, same
+	// reasoning as the agent/task/event/handoff seeding above.
+	var mentionMsgID, replyMsgID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO messages (room_id, sender_kind, user_id, mentioned_agent_id, content)
+		VALUES ($1, 'human', $2, $3, 'mentioning the agent') RETURNING id
+	`, rm.ID, owner.ID, agentID).Scan(&mentionMsgID); err != nil {
+		t.Fatalf("seed mention message: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO messages (room_id, sender_kind, agent_id, reply_to_message_id, content)
+		VALUES ($1, 'agent', $2, $3, 'the generated reply') RETURNING id
+	`, rm.ID, agentID, mentionMsgID).Scan(&replyMsgID); err != nil {
+		t.Fatalf("seed reply message: %v", err)
+	}
+
 	doDelete := func(u user.User, roomID string) *httptest.ResponseRecorder {
 		req := httptest.NewRequestWithContext(user.NewContext(ctx, u), http.MethodDelete, "/v1/rooms/"+roomID, nil)
 		req = withRoomIDParam(req, roomID)
@@ -410,7 +443,7 @@ func TestIntegration_DeleteHandler(t *testing.T) {
 		t.Fatalf("delete status = %d, want %d, body = %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 
-	var roomCount, agentCount, taskCount, eventCount, handoffCount int
+	var roomCount, agentCount, taskCount, eventCount, handoffCount, messageCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rooms WHERE id = $1`, rm.ID).Scan(&roomCount); err != nil {
 		t.Fatalf("count rooms: %v", err)
 	}
@@ -426,9 +459,17 @@ func TestIntegration_DeleteHandler(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM handoffs WHERE room_id = $1`, rm.ID).Scan(&handoffCount); err != nil {
 		t.Fatalf("count handoffs: %v", err)
 	}
-	if roomCount != 0 || agentCount != 0 || taskCount != 0 || eventCount != 0 || handoffCount != 0 {
-		t.Fatalf("expected full cascade delete, got rooms=%d agents=%d tasks=%d events=%d handoffs=%d",
-			roomCount, agentCount, taskCount, eventCount, handoffCount)
+	// The real point of seeding these two: proving the self-referencing
+	// reply_to_message_id FK (mentionMsgID <- replyMsgID) survives the
+	// cascade — both rows removed together in the one DELETE FROM rooms
+	// that messages.room_id's ON DELETE CASCADE triggers, so Postgres's
+	// end-of-statement constraint check never sees a dangling reference.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE room_id = $1`, rm.ID).Scan(&messageCount); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if roomCount != 0 || agentCount != 0 || taskCount != 0 || eventCount != 0 || handoffCount != 0 || messageCount != 0 {
+		t.Fatalf("expected full cascade delete, got rooms=%d agents=%d tasks=%d events=%d handoffs=%d messages=%d",
+			roomCount, agentCount, taskCount, eventCount, handoffCount, messageCount)
 	}
 }
 

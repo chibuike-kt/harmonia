@@ -22,6 +22,13 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
+// noMessages is a MessageLister stub for tests that don't exercise chat
+// history — internal/message (the real implementation's home) imports
+// this package, so a test here can't import it back without a cycle.
+func noMessages(context.Context, uuid.UUID) ([]ChatMessage, error) {
+	return []ChatMessage{}, nil
+}
+
 // subscriberCount reads h's internal subscriber count for roomID
 // directly — the most reliable way to assert "the leak is gone" is to
 // look at the exact state a leak would corrupt, not an indirect proxy
@@ -94,7 +101,7 @@ func TestIntegration_StreamHandler_DisconnectUnsubscribes(t *testing.T) {
 	}
 
 	hub := NewHub()
-	streamHandler := StreamHandler(rooms, agents, events, hub, rdb)
+	streamHandler := StreamHandler(rooms, agents, events, noMessages, hub, rdb)
 
 	// StreamHandler reads chi.URLParam("room_id") — inject a route
 	// context directly rather than standing up a full chi.Router, since
@@ -206,7 +213,7 @@ func TestIntegration_StreamHandler_RoomOwnershipAndSnapshot(t *testing.T) {
 	}
 
 	hub := NewHub()
-	h := StreamHandler(rooms, agents, events, hub, rdb)
+	h := StreamHandler(rooms, agents, events, noMessages, hub, rdb)
 
 	withRoomIDParam := func(roomID uuid.UUID, next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

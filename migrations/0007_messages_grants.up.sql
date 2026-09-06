@@ -1,0 +1,19 @@
+-- 0006_messages.up.sql created the messages table after
+-- 0005_harmonia_app_role.up.sql's one-time "GRANT ... ON ALL TABLES IN
+-- SCHEMA public" already ran — that grant only covers tables that existed
+-- at the time it ran, not ones a later migration creates. Left alone,
+-- harmonia_app (the application's real runtime role) has zero privileges
+-- on messages at all: confirmed live, before this migration, via
+-- `psql -U harmonia_app -c "SELECT count(*) FROM messages"` failing with
+-- "permission denied for table messages". Exactly the kind of permission
+-- gap this project has been burned by twice before (the events REVOKE
+-- that was never applied, and the superuser-instead-of-harmonia_app
+-- discovery) — checked directly here rather than assumed.
+--
+-- Unlike events, messages carries no ADR-level requirement to be
+-- append-only at the database level — ADR-004 defers message
+-- editing/deletion as real, later application-level work, not a
+-- permanent database guarantee the way events' append-only property is.
+-- So this grants the same full SELECT/INSERT/UPDATE/DELETE every other
+-- table already has, with no narrower carve-out.
+GRANT SELECT, INSERT, UPDATE, DELETE ON messages TO harmonia_app;
