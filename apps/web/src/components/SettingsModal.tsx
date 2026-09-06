@@ -673,6 +673,15 @@ function ProviderRow({
           </button>
         </form>
       )}
+
+      {!loading && !credential && connecting && (
+        <p className="mt-2.5 text-[12px] leading-[1.5] text-[var(--login-text)]">
+          Your key is encrypted before it&apos;s stored, decrypted only in
+          memory at the moment we make a request to {provider.label} on your
+          behalf, and never shown again or logged in plaintext after you
+          enter it.
+        </p>
+      )}
     </div>
   );
 }
