@@ -395,3 +395,69 @@ export function MenuIcon() {
     </svg>
   );
 }
+
+// Three vertical dots — the row-hover "more actions" trigger, same glyph
+// Claude's own history sidebar uses for this exact pattern.
+export function MoreIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <circle cx="7" cy="2.5" r="1.4" />
+      <circle cx="7" cy="7" r="1.4" />
+      <circle cx="7" cy="11.5" r="1.4" />
+    </svg>
+  );
+}
+
+export function PinIcon({ filled = false }: { filled?: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill={filled ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="1.3"
+      aria-hidden="true"
+    >
+      <path d="M8 14.5s5-4.2 5-8a5 5 0 10-10 0c0 3.8 5 8 5 8z" />
+    </svg>
+  );
+}
+
+export function RenameIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <path d="M11 2l3 3-8 8-3.5 1 1-3.5 8-8z" />
+    </svg>
+  );
+}
+
+export function TrashIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <path d="M2.5 4h11M6 4V2.5h4V4M4.5 4l.5 9.5h6l.5-9.5" />
+    </svg>
+  );
+}

@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
+import { useIsTruncated } from "@/lib/useIsTruncated";
+import { Tooltip } from "./Tooltip";
 import {
   AgentsIcon,
   ActivityIcon,
@@ -14,12 +16,16 @@ import {
   GridIcon,
   HelpIcon,
   LogoutIcon,
+  MoreIcon,
+  PinIcon,
   PlusIcon,
+  RenameIcon,
   SearchIcon,
   SecurityIcon,
   SettingsIcon,
   SortIcon,
   TeamIcon,
+  TrashIcon,
 } from "./icons";
 
 interface RoomSummary {
@@ -27,6 +33,7 @@ interface RoomSummary {
   name: string;
   last_activity_at: string;
   has_running_agent: boolean;
+  pinned_at?: string;
 }
 
 interface Me {
@@ -85,6 +92,213 @@ function initials(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+interface RoomRowProps {
+  room: RoomSummary;
+  active: boolean;
+  isRenaming: boolean;
+  menuOpen: boolean;
+  confirmingDelete: boolean;
+  actionPending: boolean;
+  actionError: string | null;
+  onOpenMenu: () => void;
+  onCloseMenu: () => void;
+  onTogglePin: () => void;
+  onStartRename: () => void;
+  onCommitRename: (name: string) => void;
+  onCancelRename: () => void;
+  onRequestDelete: () => void;
+  onCancelDelete: () => void;
+  onConfirmDelete: () => void;
+}
+
+// One row of the rooms list. Presentational — Sidebar owns which row (if
+// any) has its menu open, is renaming, or is mid-delete-confirmation,
+// since only one of each can be active across the whole list at a time
+// and that's much simpler to guarantee from one place than to coordinate
+// across N independent row components.
+function RoomRow({
+  room,
+  active,
+  isRenaming,
+  menuOpen,
+  confirmingDelete,
+  actionPending,
+  actionError,
+  onOpenMenu,
+  onCloseMenu,
+  onTogglePin,
+  onStartRename,
+  onCommitRename,
+  onCancelRename,
+  onRequestDelete,
+  onCancelDelete,
+  onConfirmDelete,
+}: RoomRowProps) {
+  const { ref: nameRef, truncated } = useIsTruncated<HTMLSpanElement>(
+    room.name,
+  );
+  const skipBlurCommitRef = useRef(false);
+
+  if (isRenaming) {
+    return (
+      <div className="flex items-center gap-2.5 rounded-lg bg-[var(--login-surface-2)] px-2.5 py-2">
+        {room.has_running_agent && (
+          <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_0_3px_rgba(76,211,194,0.15)]" />
+        )}
+        <input
+          autoFocus
+          defaultValue={room.name}
+          onFocus={(e) => e.currentTarget.select()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") {
+              skipBlurCommitRef.current = true;
+              onCancelRename();
+            }
+          }}
+          onBlur={(e) => {
+            if (skipBlurCommitRef.current) {
+              skipBlurCommitRef.current = false;
+              return;
+            }
+            onCommitRename(e.currentTarget.value);
+          }}
+          className="min-w-0 flex-1 border-b border-[var(--login-accent)] bg-transparent text-sm text-[var(--login-text)] outline-none"
+        />
+      </div>
+    );
+  }
+
+  return (
+    // z-20 only while this row's own menu is open: `data-room-menu`'s
+    // -translate-y-1/2 (a real `translate` value, not "none") gives it
+    // its own stacking context, so the open dropdown's z-10 is trapped
+    // inside that context and can't outrank *other rows* — those are
+    // plain position:relative with z-index:auto, which stack by DOM
+    // order, so a later row paints over an earlier row's open menu.
+    // Promoting the whole row (not the dropdown) is what actually wins
+    // that comparison, since it's the row-to-row ordering that's broken.
+    <div className={`group/room relative ${menuOpen ? "z-20" : ""}`}>
+      <Link
+        href={`/rooms/${room.id}`}
+        className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg py-2 pl-2.5 pr-8 ${
+          active
+            ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+            : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)]"
+        }`}
+      >
+        {room.pinned_at && <PinIcon filled />}
+        {room.has_running_agent && (
+          <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_0_3px_rgba(76,211,194,0.15)]" />
+        )}
+        <Tooltip
+          label={room.name}
+          disabled={!truncated}
+          className="min-w-0 flex-1"
+        >
+          <span
+            ref={nameRef}
+            className={`block w-full overflow-hidden text-ellipsis text-sm ${active ? "text-[var(--login-text)]" : ""}`}
+          >
+            {room.name}
+          </span>
+        </Tooltip>
+        <span
+          className={`shrink-0 font-[family-name:var(--login-font-mono)] text-[11px] text-[var(--login-text-muted)] ${
+            menuOpen ? "hidden" : "group-hover/room:hidden"
+          }`}
+        >
+          {formatRelativeTime(room.last_activity_at)}
+        </span>
+      </Link>
+
+      <div
+        data-room-menu={room.id}
+        className={`absolute right-1 top-1/2 -translate-y-1/2 ${
+          menuOpen ? "flex" : "hidden group-hover/room:flex"
+        }`}
+      >
+        <Tooltip label="More">
+          <button
+            type="button"
+            aria-label="Room actions"
+            onClick={() => (menuOpen ? onCloseMenu() : onOpenMenu())}
+            className="flex h-6 w-6 items-center justify-center rounded text-[var(--login-text-muted)] hover:bg-[var(--login-border-strong)] hover:text-[var(--login-text)]"
+          >
+            <MoreIcon />
+          </button>
+        </Tooltip>
+
+        {menuOpen && (
+          <div className="absolute right-0 top-full z-10 mt-1 flex w-48 flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+            {!confirmingDelete ? (
+              <>
+                <button
+                  type="button"
+                  disabled={actionPending}
+                  onClick={onTogglePin}
+                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] disabled:opacity-50"
+                >
+                  <PinIcon filled={!!room.pinned_at} />
+                  {room.pinned_at ? "Unpin" : "Pin"}
+                </button>
+                <button
+                  type="button"
+                  disabled={actionPending}
+                  onClick={onStartRename}
+                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] disabled:opacity-50"
+                >
+                  <RenameIcon />
+                  Rename
+                </button>
+                <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
+                <button
+                  type="button"
+                  disabled={actionPending}
+                  onClick={onRequestDelete}
+                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-red-400 hover:bg-[var(--login-surface-2)] hover:text-red-300 disabled:opacity-50"
+                >
+                  <TrashIcon />
+                  Delete
+                </button>
+              </>
+            ) : (
+              <div className="flex flex-col gap-2 px-2 py-1.5">
+                <p className="text-[13px] text-[var(--login-text)]">
+                  Delete this room? This can&apos;t be undone.
+                </p>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    disabled={actionPending}
+                    onClick={onCancelDelete}
+                    className="flex-1 rounded-lg border border-[var(--login-border-strong)] px-2 py-1.5 text-[13px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={actionPending}
+                    onClick={onConfirmDelete}
+                    className="flex-1 rounded-lg bg-red-500/90 px-2 py-1.5 text-[13px] font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                  >
+                    {actionPending ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+              </div>
+            )}
+            {actionError && (
+              <p className="px-2.5 pt-1 text-[12px] text-red-400">
+                {actionError}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Persistent app shell sidebar — port of docs/design/dashboard-mockup.html.
 // Rendered once by the (shell) route group's layout, so it isn't
 // remounted (and its collapse/width/rooms state isn't lost) as the user
@@ -102,16 +316,26 @@ export function Sidebar() {
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null);
   const [me, setMe] = useState<Me | null>(null);
 
+  const [openMenuFor, setOpenMenuFor] = useState<string | null>(null);
+  const [confirmDeleteFor, setConfirmDeleteFor] = useState<string | null>(null);
+  const [renamingRoomId, setRenamingRoomId] = useState<string | null>(null);
+  const [actionPending, setActionPending] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const profileRef = useRef<HTMLDivElement>(null);
+
+  const loadRooms = useCallback(() => {
+    return apiFetch<RoomSummary[]>("/v1/rooms")
+      .then(setRooms)
+      .catch(() => setRooms([]));
+  }, []);
 
   useEffect(() => {
     // Same fetch-on-mount pattern as connect-agents' own load: a plain
     // client fetch, since auth here is a same-origin browser cookie the
     // Go backend reads directly — see that page's own comment for why a
     // Server Component fetch would need to forward it manually instead.
-    void apiFetch<RoomSummary[]>("/v1/rooms")
-      .then(setRooms)
-      .catch(() => setRooms([]));
+    void loadRooms();
     // This doubles as the (shell) layout's auth guard: Sidebar is
     // rendered on every page inside the shell, so an expired/missing
     // session surfaces here first, the same client-fetch way every other
@@ -130,7 +354,7 @@ export function Sidebar() {
           router.push("/login");
         }
       });
-  }, [router]);
+  }, [router, loadRooms]);
 
   useEffect(() => {
     function onDocumentClick(event: MouseEvent) {
@@ -139,6 +363,21 @@ export function Sidebar() {
         !profileRef.current.contains(event.target as Node)
       ) {
         setProfileOpen(false);
+      }
+    }
+    document.addEventListener("click", onDocumentClick);
+    return () => document.removeEventListener("click", onDocumentClick);
+  }, []);
+
+  useEffect(() => {
+    // Same "ref must cover the trigger too, not just the panel" fix the
+    // profile menu above needed — but with N rows instead of one fixed
+    // element, a data-attribute query is simpler than juggling N refs.
+    function onDocumentClick(event: MouseEvent) {
+      const target = event.target as HTMLElement;
+      if (!target.closest("[data-room-menu]")) {
+        setOpenMenuFor(null);
+        setConfirmDeleteFor(null);
       }
     }
     document.addEventListener("click", onDocumentClick);
@@ -172,6 +411,78 @@ export function Sidebar() {
     }
   };
 
+  const handleOpenMenu = (roomId: string) => {
+    setActionError(null);
+    setConfirmDeleteFor(null);
+    setOpenMenuFor(roomId);
+  };
+  const handleCloseMenu = () => {
+    setOpenMenuFor(null);
+    setConfirmDeleteFor(null);
+    setActionError(null);
+  };
+
+  const handleTogglePin = async (room: RoomSummary) => {
+    setActionPending(true);
+    setActionError(null);
+    try {
+      await apiFetch(`/v1/rooms/${room.id}`, {
+        method: "PATCH",
+        body: { pinned: !room.pinned_at },
+      });
+      await loadRooms();
+      setOpenMenuFor(null);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "Failed to update room.",
+      );
+    } finally {
+      setActionPending(false);
+    }
+  };
+
+  const handleStartRename = (roomId: string) => {
+    setOpenMenuFor(null);
+    setRenamingRoomId(roomId);
+  };
+
+  const handleCommitRename = async (room: RoomSummary, rawValue: string) => {
+    const name = rawValue.trim();
+    setRenamingRoomId(null);
+    if (!name || name === room.name) return;
+    try {
+      await apiFetch(`/v1/rooms/${room.id}`, {
+        method: "PATCH",
+        body: { name },
+      });
+      await loadRooms();
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "Failed to rename room.",
+      );
+    }
+  };
+
+  const handleConfirmDelete = async (roomId: string) => {
+    setActionPending(true);
+    setActionError(null);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}`, { method: "DELETE" });
+      await loadRooms();
+      setOpenMenuFor(null);
+      setConfirmDeleteFor(null);
+      if (pathname === `/rooms/${roomId}`) {
+        router.push("/dashboard");
+      }
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : "Failed to delete room.",
+      );
+    } finally {
+      setActionPending(false);
+    }
+  };
+
   const displayName = me?.display_name || me?.username || "";
 
   return (
@@ -183,22 +494,41 @@ export function Sidebar() {
         ["--peek-width" as string]: `${width}px`,
       }}
     >
+      {/* Positioning lives on this outer div, not passed into Tooltip's
+          own className: Tooltip's wrapper hardcodes position:relative
+          (it's the anchor for the floating label), and concatenating an
+          "absolute" utility into that same class list is a real
+          position-property conflict — whichever wins depends on
+          Tailwind's generated stylesheet order, not JSX order, and here
+          it silently broke the whole sidebar's layout (relative won,
+          the h-full resize handle occupied real flow space instead of
+          being taken out of it, pushing everything below it down by a
+          full viewport height). Keeping Tooltip itself simple and doing
+          absolute positioning one level up avoids the conflict entirely. */}
       {!collapsed && (
-        <div
-          onMouseDown={handleResizeStart}
-          className="absolute -right-[3px] top-0 z-30 h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
-        />
+        <div className="absolute -right-[3px] top-0 z-30 h-full">
+          <Tooltip label="Resize sidebar" className="h-full">
+            <div
+              onMouseDown={handleResizeStart}
+              className="h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
+            />
+          </Tooltip>
+        </div>
       )}
 
       {collapsed && (
-        <button
-          type="button"
-          aria-label="Show sidebar"
-          onClick={() => setCollapsed(false)}
-          className="absolute left-2.5 top-[18px] z-40 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[var(--login-text-secondary)] hover:bg-[#1C222B] hover:text-[var(--login-text)]"
-        >
-          <ChevronRightIcon />
-        </button>
+        <div className="absolute left-2.5 top-[18px] z-40">
+          <Tooltip label="Show sidebar">
+            <button
+              type="button"
+              aria-label="Show sidebar"
+              onClick={() => setCollapsed(false)}
+              className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[var(--login-text-secondary)] hover:bg-[#1C222B] hover:text-[var(--login-text)]"
+            >
+              <ChevronRightIcon />
+            </button>
+          </Tooltip>
+        </div>
       )}
 
       {/* Collapsed: zero width, clipped, and absolutely positioned so it
@@ -216,14 +546,16 @@ export function Sidebar() {
           <span className="whitespace-nowrap text-[17px] font-semibold tracking-[-0.01em] text-[var(--login-text)]">
             Harmonia
           </span>
-          <button
-            type="button"
-            aria-label="Collapse sidebar"
-            onClick={() => setCollapsed(true)}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
-          >
-            <ChevronLeftIcon />
-          </button>
+          <Tooltip label="Collapse sidebar">
+            <button
+              type="button"
+              aria-label="Collapse sidebar"
+              onClick={() => setCollapsed(true)}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+            >
+              <ChevronLeftIcon />
+            </button>
+          </Tooltip>
         </div>
 
         <nav className="flex flex-col gap-0.5 px-2.5">
@@ -253,28 +585,42 @@ export function Sidebar() {
             Rooms
           </span>
           <div className="flex items-center gap-0.5">
-            <button
-              type="button"
-              aria-label="Collapse room history"
-              onClick={() => setRoomsCollapsed((c) => !c)}
-              className="flex rounded p-[3px] text-[var(--login-text-muted)] opacity-0 transition-opacity hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] group-hover/sidebar:opacity-100"
-            >
-              <ChevronDownIcon
-                className={roomsCollapsed ? "-rotate-90" : undefined}
-              />
-            </button>
-            <button
-              type="button"
-              aria-label="Sort rooms"
-              className="flex rounded p-[3px] text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
-            >
-              <SortIcon />
-            </button>
+            <Tooltip label={roomsCollapsed ? "Expand rooms" : "Collapse rooms"}>
+              <button
+                type="button"
+                aria-label="Collapse room history"
+                onClick={() => setRoomsCollapsed((c) => !c)}
+                className="flex rounded p-[3px] text-[var(--login-text-muted)] opacity-0 transition-opacity hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] group-hover/sidebar:opacity-100"
+              >
+                <ChevronDownIcon
+                  className={roomsCollapsed ? "-rotate-90" : undefined}
+                />
+              </button>
+            </Tooltip>
+            <Tooltip label="Sort rooms">
+              <button
+                type="button"
+                aria-label="Sort rooms"
+                className="flex rounded p-[3px] text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+              >
+                <SortIcon />
+              </button>
+            </Tooltip>
           </div>
         </div>
 
         {!roomsCollapsed && (
-          <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5">
+          // overflow-x-hidden is load-bearing, not decorative: a room
+          // name's Tooltip renders its floating label at full,
+          // untruncated width even while invisible (opacity-0, not
+          // hovered), positioned via absolute + centered transform on a
+          // ~180px anchor. With only overflow-y-auto set, the CSS
+          // interop rule that promotes a lone axis's overflow to "auto"
+          // makes this container the nearest scroll boundary, and that
+          // always-present hidden label's width becomes real horizontal
+          // scroll content — the sidebar scrolls sideways for a long
+          // name even though the name span itself truncates correctly.
+          <div className="flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2.5">
             {rooms === null &&
               Array.from({ length: 3 }).map((_, i) => (
                 <div
@@ -293,32 +639,27 @@ export function Sidebar() {
                 </Link>
               </div>
             )}
-            {rooms?.map((room) => {
-              const active = pathname === `/rooms/${room.id}`;
-              return (
-                <Link
-                  key={room.id}
-                  href={`/rooms/${room.id}`}
-                  className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 ${
-                    active
-                      ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-                      : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)]"
-                  }`}
-                >
-                  {room.has_running_agent && (
-                    <span className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_0_3px_rgba(76,211,194,0.15)]" />
-                  )}
-                  <span
-                    className={`flex-1 overflow-hidden text-ellipsis text-sm ${active ? "text-[var(--login-text)]" : ""}`}
-                  >
-                    {room.name}
-                  </span>
-                  <span className="shrink-0 font-[family-name:var(--login-font-mono)] text-[11px] text-[var(--login-text-muted)]">
-                    {formatRelativeTime(room.last_activity_at)}
-                  </span>
-                </Link>
-              );
-            })}
+            {rooms?.map((room) => (
+              <RoomRow
+                key={room.id}
+                room={room}
+                active={pathname === `/rooms/${room.id}`}
+                isRenaming={renamingRoomId === room.id}
+                menuOpen={openMenuFor === room.id}
+                confirmingDelete={confirmDeleteFor === room.id}
+                actionPending={actionPending}
+                actionError={openMenuFor === room.id ? actionError : null}
+                onOpenMenu={() => handleOpenMenu(room.id)}
+                onCloseMenu={handleCloseMenu}
+                onTogglePin={() => void handleTogglePin(room)}
+                onStartRename={() => handleStartRename(room.id)}
+                onCommitRename={(name) => void handleCommitRename(room, name)}
+                onCancelRename={() => setRenamingRoomId(null)}
+                onRequestDelete={() => setConfirmDeleteFor(room.id)}
+                onCancelDelete={() => setConfirmDeleteFor(null)}
+                onConfirmDelete={() => void handleConfirmDelete(room.id)}
+              />
+            ))}
           </div>
         )}
         {roomsCollapsed && <div className="flex-1" />}
@@ -329,6 +670,11 @@ export function Sidebar() {
         >
           {profileOpen && (
             <div className="absolute bottom-[calc(100%+6px)] left-2.5 right-2.5 flex flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+              {me?.email && (
+                <div className="truncate border-b border-[var(--login-border)] px-2.5 pb-2 pt-1 text-[12px] text-[var(--login-text-muted)]">
+                  {me.email}
+                </div>
+              )}
               {PROFILE_PLACEHOLDER_ITEMS.map(({ label, Icon }) => (
                 <a
                   key={label}

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +101,39 @@ func TestNewCORSMiddleware_Preflight(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Methods"); got == "" {
 		t.Fatal("expected a non-empty Access-Control-Allow-Methods on the preflight response")
+	}
+}
+
+// TestNewCORSMiddleware_PreflightAllowsPatch exercises a preflight for
+// PATCH specifically — go-chi/cors answers Access-Control-Allow-Methods
+// with the one method actually requested (via Access-Control-Request-
+// Method), not the full configured list, so a generic "is this header
+// non-empty" check (TestNewCORSMiddleware_Preflight above) can't catch a
+// missing method on its own. PATCH was missing from corsAllowedMethods
+// until this test was added: PATCH /v1/rooms/{id} (pin/rename) worked
+// fine from a direct curl or httptest call, since neither goes through a
+// browser's own CORS preflight — every real PATCH from the frontend was
+// silently blocked by the browser itself, with the server never even
+// seeing the request, until corsAllowedMethods included it.
+func TestNewCORSMiddleware_PreflightAllowsPatch(t *testing.T) {
+	t.Setenv("HARMONIA_APP_URL", "http://localhost:3000")
+	mw := newCORSMiddleware()
+
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("a preflight OPTIONS request must not reach the wrapped handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/rooms/00000000-0000-0000-0000-000000000000", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPatch)
+	req.Header.Set("Access-Control-Request-Headers", "Content-Type")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preflight status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPatch) {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want it to include %q", got, http.MethodPatch)
 	}
 }

@@ -81,7 +81,7 @@ export default function DashboardPage() {
 
   return (
     <main className="flex h-full flex-col items-center justify-center p-10">
-      <div className="max-w-[480px] text-center">
+      <div className="max-w-[520px] text-center">
         <div className="mb-7 flex items-center justify-center gap-3.5">
           <ThinkingOrb
             state="working"
@@ -90,7 +90,7 @@ export default function DashboardPage() {
             style={{ width: 45, height: 45 }}
           />
 
-          <h1 className="whitespace-nowrap text-[26px] font-medium tracking-[-0.01em] text-[var(--login-text)]">
+          <h1 className="whitespace-nowrap text-[30px] font-medium tracking-[-0.01em] text-[var(--login-text)]">
             {heading ?? " "}
           </h1>
         </div>
@@ -98,16 +98,16 @@ export default function DashboardPage() {
         <div className="flex items-center justify-center gap-3">
           <Link
             href="/rooms/new"
-            className="flex h-[46px] items-center gap-2 rounded-full bg-[var(--login-accent)] px-[22px] text-[14.5px] font-medium text-[var(--login-bg)] hover:bg-[#63e0d1]"
+            className="flex h-[48px] items-center gap-2 rounded-full bg-[var(--login-accent)] px-6 text-[15.5px] font-medium text-[var(--login-bg)] hover:bg-[#63e0d1]"
           >
-            <PlusIcon size={15} strokeWidth={1.8} />
+            <PlusIcon size={16} strokeWidth={1.8} />
             Create a new room
           </Link>
           <Link
             href="/connect-agents"
-            className="flex h-[46px] items-center gap-2 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-[22px] text-[14.5px] font-medium text-[var(--login-text)] hover:border-[#3A4453] hover:bg-[#1C222B]"
+            className="flex h-[48px] items-center gap-2 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-6 text-[15.5px] font-medium text-[var(--login-text)] hover:border-[#3A4453] hover:bg-[#1C222B]"
           >
-            <AgentsIcon />
+            <AgentsIcon size={17} />
             Connect an agent
           </Link>
         </div>
@@ -117,7 +117,7 @@ export default function DashboardPage() {
             <a
               key={label}
               href="#"
-              className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              className="flex items-center gap-2.5 rounded-lg px-3 py-3 text-[14.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
             >
               <Icon />
               {label}

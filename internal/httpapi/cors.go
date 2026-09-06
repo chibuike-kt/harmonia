@@ -9,12 +9,15 @@ import (
 )
 
 // corsAllowedMethods and corsAllowedHeaders are scoped to exactly what
-// the frontend's cross-origin fetch calls need as of Phase 3 step 7
-// (the connect-agents screen: GET/POST/DELETE /v1/credentials, JSON
-// bodies). Extend them when a later step's frontend work actually needs
+// the frontend's cross-origin fetch calls need. PATCH was added for
+// PATCH /v1/rooms/{id} (pin/rename) — the sidebar's row menu calling it
+// is what surfaced this being missing in the first place: the
+// server-side handler was correct, but the browser's own CORS preflight
+// silently blocked every real PATCH request before it left the browser.
+// Extend further only when a later step's frontend work actually needs
 // more — not preemptively.
 var (
-	corsAllowedMethods = []string{http.MethodGet, http.MethodPost, http.MethodDelete}
+	corsAllowedMethods = []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete}
 	corsAllowedHeaders = []string{"Content-Type"}
 )
 
