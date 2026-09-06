@@ -44,6 +44,13 @@
   --login-text-secondary: #9aa1ac;
   --login-text-muted: #5c6470;
   --login-accent: #4cd3c2;
+  /* Room view only (docs/design/room-mockup.html): task/handoff card
+     accents and the "not alarming, still distinguishable" failure-
+     message tone. Not part of the shared login/dashboard palette above,
+     so kept as their own names rather than folded into --login-*. */
+  --room-task-blue: #5b9df5;
+  --room-handoff-purple: #b08ff0;
+  --room-warn: #e8a33d;
   --login-font-sans:
     var(--font-space-grotesk), -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -55,4 +62,65 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+/*
+ * Scrollable but no visible scrollbar track/thumb — same technique as
+ * docs/design/room-mockup.html's own .no-scrollbar class. Used by the
+ * room timeline and the composer's textarea (components/Composer.tsx,
+ * app/(shell)/rooms/[id]/page.tsx); referenced by name in both before
+ * this rule existed here, which meant it silently did nothing — a real
+ * bug, not a design choice, until this definition was added.
+ */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/*
+ * highlight.js token colors for the artifact side panel
+ * (components/ArtifactPanel.tsx). Mapped onto this app's own dark
+ * palette rather than importing one of highlight.js's off-the-shelf
+ * themes — real tokenization from highlight.js, but colors that
+ * actually match the rest of Harmonia instead of a mismatched
+ * off-palette theme.
+ */
+.hljs {
+  color: var(--login-text-secondary);
+  background: transparent;
+}
+.hljs-keyword,
+.hljs-literal,
+.hljs-type,
+.hljs-built_in {
+  color: var(--room-handoff-purple);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: var(--room-task-blue);
+}
+.hljs-comment,
+.hljs-quote {
+  color: var(--login-text-muted);
+  font-style: italic;
+}
+.hljs-string,
+.hljs-attr,
+.hljs-symbol,
+.hljs-regexp {
+  color: var(--login-accent);
+}
+.hljs-number {
+  color: var(--room-warn);
+}
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-tag,
+.hljs-name {
+  color: var(--login-text);
 }

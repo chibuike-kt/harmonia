@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
 import {
   AgentsIcon,
@@ -10,7 +11,8 @@ import {
   TeamIcon,
   WatchIcon,
 } from "@/components/icons";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
+import { createRoom } from "@/lib/createRoom";
 
 interface Me {
   display_name?: string;
@@ -42,9 +44,27 @@ const SUGGESTIONS = [
 ] as const;
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [meLoaded, setMeLoaded] = useState(false);
   const [heading, setHeading] = useState<string | null>(null);
+  const [creatingRoom, setCreatingRoom] = useState(false);
+  const [createRoomError, setCreateRoomError] = useState<string | null>(null);
+
+  const handleCreateRoom = async () => {
+    if (creatingRoom) return;
+    setCreatingRoom(true);
+    setCreateRoomError(null);
+    try {
+      const room = await createRoom();
+      router.push(`/rooms/${room.id}`);
+    } catch (err) {
+      setCreateRoomError(
+        err instanceof ApiError ? err.message : "Failed to create room.",
+      );
+      setCreatingRoom(false);
+    }
+  };
 
   useEffect(() => {
     void apiFetch<Me>("/v1/users/me")
@@ -96,13 +116,15 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center justify-center gap-3">
-          <Link
-            href="/rooms/new"
-            className="flex h-[48px] items-center gap-2 rounded-full bg-[var(--login-accent)] px-6 text-[15.5px] font-medium text-[var(--login-bg)] hover:bg-[#63e0d1]"
+          <button
+            type="button"
+            onClick={() => void handleCreateRoom()}
+            disabled={creatingRoom}
+            className="flex h-[48px] items-center gap-2 rounded-full bg-[var(--login-accent)] px-6 text-[15.5px] font-medium text-[var(--login-bg)] hover:bg-[#63e0d1] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <PlusIcon size={16} strokeWidth={1.8} />
-            Create a new room
-          </Link>
+            {creatingRoom ? "Creating…" : "Create a new room"}
+          </button>
           <Link
             href="/connect-agents"
             className="flex h-[48px] items-center gap-2 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-6 text-[15.5px] font-medium text-[var(--login-text)] hover:border-[#3A4453] hover:bg-[#1C222B]"
@@ -111,6 +133,9 @@ export default function DashboardPage() {
             Connect an agent
           </Link>
         </div>
+        {createRoomError && (
+          <p className="mt-3 text-[13px] text-red-400">{createRoomError}</p>
+        )}
 
         <div className="mt-8 flex flex-col gap-0.5 text-left">
           {SUGGESTIONS.map(({ Icon, label }) => (

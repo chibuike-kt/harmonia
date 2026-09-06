@@ -163,3 +163,55 @@ reply containing a fenced code block offers a working side panel view.
 The `+` menu's two items are visible and honestly labeled as not-yet-
 wired, not fake-functional. `go vet`/`test` and frontend lint/typecheck/
 build all clean.
+
+## Addendum (2026-09-06): fixes and additions found after steps 1-9 landed
+
+Two small frontend fixes, already real bugs, not new scope:
+
+10. **Hide the timeline's scrollbar** — same technique as the mockup's
+    `.no-scrollbar` class (`scrollbar-width: none` plus
+    `::-webkit-scrollbar { display: none }`). Scrolling still works,
+    just no visible track/thumb.
+
+11. **"New messages" scroll-to-latest button** — a small centered pill
+    above the composer, shown whenever the user isn't at the bottom of
+    the timeline (scrolled up, or a new message arrived while scrolled
+    up), hidden when already at the bottom. Clicking it scrolls smoothly
+    to the latest entry.
+
+One real feature, per ADR-004's new addendum — room creation without a
+name, auto-titled from the first message:
+
+12. **Backend: `POST /v1/rooms`'s `name` becomes optional.** Omitted or
+    empty defaults to the literal placeholder `"New room"`. Creation
+    responds immediately as before — no other behavior changes here.
+
+13. **Backend: async auto-title job.** After the first message in a room
+    is stored (reuse the existing publish-after-commit hook point — this
+    fires once per room, on whichever message lands first, not on every
+    message), resolve one of the room owner's connected BYOK credentials
+    (platform-level, not tied to a room-scoped agent — a fresh room may
+    have none registered yet; your call which provider to prefer if the
+    owner has more than one connected, state what you chose), generate a
+    short title from that message's content, then update the room's name
+    — **but only if it's still the placeholder.** Re-read the current
+    name immediately before writing; if a human already renamed it, skip
+    silently. This guards a real race between a slow generation job and
+    a fast manual rename. Publish the new name over the realtime hub (a
+    new message kind) so the sidebar and header update live.
+
+14. **Frontend: remove the `/rooms/new` naming form entirely.** Clicking
+    "New room" in the sidebar calls the create endpoint directly (no
+    name) and navigates straight into the new room — no intermediate
+    page. When the generated title arrives live, reveal it with a
+    simulated character-by-character typing animation over the complete
+    string already returned — not real token streaming, consistent with
+    how reply generation already works.
+
+15. **Date dividers** in the timeline, grouping entries by calendar day
+    — small, standard, frontend-only.
+
+**Explicitly not in this addendum** — the room decisions/info panel, a
+real cost/token indicator, and the approval-required card type. Each
+needs its own design pass before it's buildable (see ADR-004's second
+new addendum for why); none are scope here.

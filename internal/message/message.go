@@ -125,3 +125,15 @@ func (s *Store) ListByRoom(ctx context.Context, roomID uuid.UUID) ([]Message, er
 	}
 	return messages, rows.Err()
 }
+
+// CountByRoom returns how many messages exist in roomID — used to
+// detect "this insert was the room's very first message," the trigger
+// for the async auto-title job (ADR-004's addendum). A plain count
+// rather than reusing ListByRoom's result length: the caller only needs
+// the number, not the rows, and a room's message count is unbounded by
+// recencyLimit in a way ListByRoom deliberately isn't.
+func (s *Store) CountByRoom(ctx context.Context, roomID uuid.UUID) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE room_id = $1`, roomID).Scan(&count)
+	return count, err
+}

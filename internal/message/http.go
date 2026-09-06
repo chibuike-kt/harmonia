@@ -3,6 +3,7 @@ package message
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -55,7 +56,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // triggered asynchronously after the human message has committed and
 // published: this handler returns as soon as the human message is
 // durable, never blocking on a live provider call (ADR-004).
-func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store.Beginner, hub realtime.Publisher, orch *Orchestrator) http.HandlerFunc {
+func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store.Beginner, hub realtime.Publisher, orch *Orchestrator, titleGen *TitleGenerator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := user.FromContext(r.Context())
 		if !ok {
@@ -138,6 +139,19 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 
 		if mentioned != nil {
 			orch.TriggerReply(mentioned.ID, rm.OwnerID, m)
+		}
+
+		// Auto-title trigger (ADR-004's nameless-room-creation addendum):
+		// fires once per room, on whichever message lands first — not on
+		// every message. A count query after commit, not a value derived
+		// from the transaction itself, since "how many messages does this
+		// room have now" is exactly what answers "was this the first,"
+		// and a fresh count is simpler and just as correct as threading
+		// that fact out of CreateHuman's own insert.
+		if count, err := s.CountByRoom(ctx, roomID); err != nil {
+			log.Printf("ERROR message: count messages for room %s to check auto-title trigger: %v", roomID, err)
+		} else if count == 1 {
+			titleGen.GenerateTitle(roomID, rm.OwnerID, m.Content)
 		}
 
 		writeJSON(w, http.StatusCreated, m)

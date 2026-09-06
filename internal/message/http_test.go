@@ -44,7 +44,7 @@ func assertJSONError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus in
 
 func TestCreateHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(nil, nil, nil, nil, nil)
+	h := s.CreateHandler(nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/rooms/"+uuid.New().String()+"/messages", strings.NewReader(`{"content":"hi"}`))
 	req = withRoomIDParam(req, uuid.New().String())
@@ -56,7 +56,7 @@ func TestCreateHandler_Unauthenticated(t *testing.T) {
 
 func TestCreateHandler_InvalidRoomID(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(nil, nil, nil, nil, nil)
+	h := s.CreateHandler(nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequestWithContext(authedContext(), http.MethodPost, "/v1/rooms/not-a-uuid/messages", strings.NewReader(`{"content":"hi"}`))
 	req = withRoomIDParam(req, "not-a-uuid")
@@ -68,7 +68,7 @@ func TestCreateHandler_InvalidRoomID(t *testing.T) {
 
 func TestCreateHandler_InvalidBody(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(nil, nil, nil, nil, nil)
+	h := s.CreateHandler(nil, nil, nil, nil, nil, nil)
 
 	roomID := uuid.New().String()
 	req := httptest.NewRequestWithContext(authedContext(), http.MethodPost, "/v1/rooms/"+roomID+"/messages", strings.NewReader(`not json`))
@@ -81,7 +81,7 @@ func TestCreateHandler_InvalidBody(t *testing.T) {
 
 func TestCreateHandler_EmptyContent(t *testing.T) {
 	s := &Store{}
-	h := s.CreateHandler(nil, nil, nil, nil, nil)
+	h := s.CreateHandler(nil, nil, nil, nil, nil, nil)
 
 	roomID := uuid.New().String()
 	req := httptest.NewRequestWithContext(authedContext(), http.MethodPost, "/v1/rooms/"+roomID+"/messages", strings.NewReader(`{"content":"   "}`))

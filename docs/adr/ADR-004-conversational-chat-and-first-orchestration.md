@@ -106,3 +106,68 @@ already in use.
 exactly as already decided — no tool wiring here. Native web search
 and simple file attachment are the very next phase once this one is
 built and reviewed, not an indefinite "someday."
+
+## Addendum (2026-09-06): rooms are created nameless, named from their first message
+
+Creating a room used to mean typing a name before anything could
+happen — a real point of friction once chat exists, and inconsistent
+with how every LLM chat product actually works (you start typing, the
+title appears on its own). Changing this:
+
+**Room creation no longer requires a name.** `POST /v1/rooms` accepts
+`name` as optional; when omitted, the room is created with a literal
+placeholder ("New room") and the person lands directly in the empty
+room — no intermediate form.
+
+**The title is generated from the room's first message, once it
+exists.** After the first message in a room is stored (human or
+agent — whichever happens to land first), an async job (same shape as
+the reply-invocation orchestrator, not the same code path) resolves
+one of the room owner's own connected BYOK credentials — this is a
+platform-level utility call, not tied to any room-scoped agent, since
+a fresh room may not have one registered yet — and generates a short
+title from that message's content.
+
+**The generated title never overwrites a real rename.** Before writing
+the generated name, the job re-reads the room's current name and only
+applies the generated title if it's still the placeholder. A human who
+manually renamed the room in the meantime wins, unconditionally — this
+guards a real race between a slow title-generation job and a fast
+manual rename.
+
+**The reveal is a frontend animation over a complete string, not real
+token streaming.** Consistent with the reply-generation decision
+earlier in this document (post the complete reply, don't stream
+tokens) — the backend returns the finished title in one piece; the
+"typing" effect is a simulated character-by-character reveal on the
+frontend, not a live stream from the model.
+
+**This is a real, if small, API call, same as everything else on a
+BYOK account.** Worth being honest about it existing rather than
+treating it as free — it's one short completion per room, not
+per-message.
+
+## Addendum (2026-09-06): what's explicitly NOT part of this update
+
+Three things from the room mockup's later design pass are real,
+worthwhile, and each bigger than a UI addition — none are in scope
+here:
+
+- **The room decisions/info panel** needs an actual capture
+  mechanism (how does a "decision" get created — manual pinning by a
+  human, or agent-proposed and human-approved per the original product
+  doc's ADR concept?) before it can be more than static mockup content.
+  Undesigned, not just unbuilt.
+- **The cost/token pill** needs real usage tracking — capturing
+  token counts from every `Generate` response and persisting them
+  (the original product doc's `usage_records` table was named years
+  ago and never built). A real, contained piece of backend work, but
+  its own piece.
+- **The approval-required card** has nothing to approve yet — it
+  illustrated a future capability (an agent proposing an action) that
+  doesn't exist, since chat still doesn't trigger structured actions
+  per this document's own existing decision. Building the card without
+  the underlying capability would be UI theater, not a feature.
+
+Each is real future work, each deserves its own design pass when its
+time comes — not a quiet, partial version bundled into this update.

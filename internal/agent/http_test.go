@@ -47,6 +47,35 @@ func TestRegisterHandler_InvalidRoomID(t *testing.T) {
 	assertJSONError(t, rec, http.StatusBadRequest)
 }
 
+func TestListByRoomHandler_Unauthenticated(t *testing.T) {
+	s := &Store{}
+	rooms := &room.Store{}
+	h := s.ListByRoomHandler(rooms)
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(RoomIDParam, uuid.New().String())
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/rooms/x/agents", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assertJSONError(t, rec, http.StatusUnauthorized)
+}
+
+func TestListByRoomHandler_InvalidRoomID(t *testing.T) {
+	s := &Store{}
+	h := s.ListByRoomHandler(&room.Store{})
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(RoomIDParam, "not-a-uuid")
+	req := httptest.NewRequestWithContext(authedContext(), http.MethodGet, "/v1/rooms/not-a-uuid/agents", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assertJSONError(t, rec, http.StatusBadRequest)
+}
+
 // doRegister drives RegisterHandler with an authenticated context.
 func doRegister(t *testing.T, s *Store, rooms *room.Store, roomIDParam, body string) *httptest.ResponseRecorder {
 	t.Helper()

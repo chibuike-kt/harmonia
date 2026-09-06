@@ -107,3 +107,58 @@ func (s *Store) RegisterHandler(rooms *room.Store) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(registerResponse{Agent: a, APIKey: plaintext})
 	}
 }
+
+// ListByRoomHandler returns the handler for GET /v1/rooms/{room_id}/agents
+// — the room's registered agents (name, provider, capabilities, status),
+// for the human's own view of a room: the message composer's @-picker
+// and the timeline both need an agent's name, not just its id, and
+// neither the SSE snapshot's presence list nor any other endpoint
+// currently exposes that to a user-authenticated request (RegisterHandler
+// only ever returns the one agent it just created, to the caller that
+// created it). Mount it behind user.Authenticate — same room-ownership
+// check as RegisterHandler (404 if the room doesn't exist, 403 if it
+// isn't the caller's), not agent.Authenticate: this is the human owner
+// looking at their own room, not an agent acting as itself.
+func (s *Store) ListByRoomHandler(rooms *room.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		roomID, err := uuid.Parse(chi.URLParam(r, RoomIDParam))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid room_id")
+			return
+		}
+
+		ctx := r.Context()
+		rm, err := rooms.GetByID(ctx, roomID)
+		if err != nil {
+			if errors.Is(err, room.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "room not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to look up room")
+			return
+		}
+		if rm.OwnerID == nil || *rm.OwnerID != u.ID {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		agents, err := s.ListByRoom(ctx, roomID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list agents")
+			return
+		}
+		if agents == nil {
+			agents = []Agent{}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(agents)
+	}
+}

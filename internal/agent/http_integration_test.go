@@ -150,6 +150,77 @@ func TestIntegration_RegisterHandler_ValidationOrder(t *testing.T) {
 	}
 }
 
+// TestIntegration_ListByRoomHandler exercises GET /v1/rooms/{room_id}/agents
+// end to end against real Postgres: the room's owner sees the agents
+// actually registered in it (names included, not just ids — this is the
+// whole reason the endpoint exists: neither the SSE snapshot's presence
+// list nor anything else exposes agent names to a user-authenticated
+// request), a different user gets 403, and an unknown room_id 404s.
+// Requires a live Postgres — run via `make test-integration` after
+// `make up`.
+func TestIntegration_ListByRoomHandler(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	rooms := room.NewStore(pool)
+	agents := NewStore(pool)
+
+	owner := seedAgentTestUser(t, ctx, pool, "agent-list-owner-")
+	other := seedAgentTestUser(t, ctx, pool, "agent-list-other-")
+
+	rm, err := rooms.Create(ctx, &owner.ID, "agent-list-handler-test-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	registered, err := agents.Register(ctx, rm.ID, "Claude", ProviderAnthropic, []string{"coding"}, "hash-list-1")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+
+	h := agents.ListByRoomHandler(rooms)
+
+	rec := listAgentsViaHandler(t, h, owner, rm.ID.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []Agent
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != registered.ID || got[0].Name != "Claude" {
+		t.Fatalf("agents = %+v, want exactly the registered agent %s named Claude", got, registered.ID)
+	}
+
+	if rec := listAgentsViaHandler(t, h, other, rm.ID.String()); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if rec := listAgentsViaHandler(t, h, owner, uuid.New().String()); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func listAgentsViaHandler(t *testing.T, h http.HandlerFunc, caller user.User, roomIDParam string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add(RoomIDParam, roomIDParam)
+	ctx := context.WithValue(user.NewContext(context.Background(), caller), chi.RouteCtxKey, rctx)
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/rooms/"+roomIDParam+"/agents", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 func seedAgentTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, githubIDPrefix string) user.User {
 	t.Helper()
 	var u user.User

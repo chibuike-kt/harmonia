@@ -35,9 +35,18 @@ type fakeProviderAgent struct {
 	content     string
 	err         error
 	shouldPanic bool
+	// beforeReturn, if set, runs synchronously inside Generate before it
+	// returns — the deterministic way to simulate "something else
+	// happens concurrently while a slow generation call is in flight"
+	// (see TestIntegration_TitleGenerator_RaceGuardSkipsManualRename)
+	// without relying on a real sleep/timing race.
+	beforeReturn func()
 }
 
 func (f *fakeProviderAgent) Generate(context.Context, provider.GenerateRequest) (provider.GenerateResponse, error) {
+	if f.beforeReturn != nil {
+		f.beforeReturn()
+	}
 	if f.shouldPanic {
 		panic("fakeProviderAgent: simulated panic")
 	}
@@ -140,7 +149,8 @@ func TestIntegration_CreateHandler_HumanOnly(t *testing.T) {
 
 	s := NewStore(pool)
 	orch := NewOrchestrator(s, agents, creds, realtime.NewHub(), rdb)
-	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch)
+	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	rec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"just a note, no mention"}`)
 	if rec.Code != http.StatusCreated {
@@ -191,7 +201,8 @@ func TestIntegration_CreateHandler_RoomOwnership(t *testing.T) {
 
 	s := NewStore(pool)
 	orch := NewOrchestrator(s, agents, creds, realtime.NewHub(), rdb)
-	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch)
+	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	if rec := doCreateMessage(h, owner, uuid.New().String(), `{"content":"x"}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("nonexistent room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
@@ -231,7 +242,8 @@ func TestIntegration_CreateHandler_MentionedAgentNotFound(t *testing.T) {
 
 	s := NewStore(pool)
 	orch := NewOrchestrator(s, agents, creds, realtime.NewHub(), rdb)
-	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch)
+	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	nonexistentID := uuid.New()
 	body := fmt.Sprintf(`{"content":"hi","mentioned_agent_id":%q}`, nonexistentID)
@@ -284,7 +296,17 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Hello — this is the generated reply."}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch)
+	// A separate Hub for the title generator, deliberately not rec: this
+	// is the room's first message, so the auto-title trigger fires too,
+	// and its publish would otherwise land as an unpredictable 5th
+	// message in rec's channel, breaking this test's exact 4-message
+	// sequence assertions below. A fake provider client keeps it from
+	// making a real network call in the background regardless.
+	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
+	}
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
 
 	body := fmt.Sprintf(`{"content":"@Claude can you help?","mentioned_agent_id":%q}`, a.ID)
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), body)

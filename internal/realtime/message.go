@@ -20,21 +20,24 @@ const (
 	KindEvent    Kind = "event"
 	KindPresence Kind = "presence"
 	KindMessage  Kind = "message"
+	KindRoom     Kind = "room"
 )
 
 // Message is what flows through the Hub — a tagged union of the distinct
 // things that can flow through it: a recorded event (the exact
 // protocol.Envelope already built for event.Store.Record), an ephemeral
-// agent presence transition that never touches the events table, or a
-// chat message (ADR-004). Exactly one of Event/Presence/Message is
-// populated, matching Kind — a single tagged type rather than separate
-// ones, so a subscriber has one channel type to read regardless of which
-// kind arrives.
+// agent presence transition that never touches the events table, a chat
+// message (ADR-004), or a room update (currently just the auto-generated
+// title landing — ADR-004's nameless-room-creation addendum). Exactly
+// one of Event/Presence/Message/Room is populated, matching Kind — a
+// single tagged type rather than separate ones, so a subscriber has one
+// channel type to read regardless of which kind arrives.
 type Message struct {
 	Kind     Kind               `json:"kind"`
 	Event    *protocol.Envelope `json:"event,omitempty"`
 	Presence *Presence          `json:"presence,omitempty"`
 	Message  *ChatMessage       `json:"message,omitempty"`
+	Room     *RoomUpdate        `json:"room,omitempty"`
 }
 
 // ChatMessage mirrors internal/message.Message's wire shape. Defined
@@ -52,6 +55,19 @@ type ChatMessage struct {
 	ReplyToMessageID *uuid.UUID `json:"reply_to_message_id,omitempty"`
 	Content          string     `json:"content"`
 	CreatedAt        time.Time  `json:"created_at"`
+}
+
+// RoomUpdate carries a room's new name — currently only ever published
+// by the auto-title job once it successfully applies a generated title
+// (internal/message.TitleGenerator), never by a manual rename (a PATCH
+// already returns the new name synchronously to whoever made it; a
+// live push isn't needed there the way it is for something that
+// completes asynchronously in the background, possibly after the human
+// has navigated away from the create flow and is just sitting in the
+// room watching).
+type RoomUpdate struct {
+	RoomID uuid.UUID `json:"room_id"`
+	Name   string    `json:"name"`
 }
 
 // Presence is an agent's status transition. Ephemeral by design — never
@@ -80,4 +96,11 @@ func NewPresenceMessage(agentID uuid.UUID, status string) Message {
 // committed — same ordering rule as NewEventMessage.
 func NewChatMessage(msg ChatMessage) Message {
 	return Message{Kind: KindMessage, Message: &msg}
+}
+
+// NewRoomRenamedMessage wraps a room's new name for publishing. Call
+// this only after the write that applied it has actually committed —
+// same ordering rule as NewEventMessage.
+func NewRoomRenamedMessage(roomID uuid.UUID, name string) Message {
+	return Message{Kind: KindRoom, Room: &RoomUpdate{RoomID: roomID, Name: name}}
 }

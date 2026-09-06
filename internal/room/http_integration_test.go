@@ -74,6 +74,48 @@ func TestIntegration_CreateHandler(t *testing.T) {
 	}
 }
 
+// TestIntegration_CreateHandler_NamelessDefaultsToPlaceholder exercises
+// ADR-004's addendum: a room can be created with no name at all (an
+// omitted field, or an empty/whitespace-only one) and gets the literal
+// PlaceholderName instead of a 400 — the point being a human lands
+// straight in an empty room and starts typing, no naming form first.
+func TestIntegration_CreateHandler_NamelessDefaultsToPlaceholder(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	owner := seedRoomTestUser(t, ctx, pool, "room-nameless-owner-")
+
+	s := NewStore(pool)
+	h := s.CreateHandler()
+
+	bodies := []string{`{}`, `{"name":""}`, `{"name":"   "}`}
+	for _, body := range bodies {
+		req := httptest.NewRequestWithContext(user.NewContext(ctx, owner), http.MethodPost, "/v1/rooms", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("body %q: status = %d, want %d, body = %s", body, rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		var got Room
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("body %q: decode response: %v", body, err)
+		}
+		if got.Name != PlaceholderName {
+			t.Fatalf("body %q: Name = %q, want placeholder %q", body, got.Name, PlaceholderName)
+		}
+	}
+}
+
 // TestIntegration_ListHandler exercises GET /v1/rooms against real
 // Postgres: only the caller's own rooms come back, most recently active
 // first, has_running_agent reflects a real agents.status = 'running' row

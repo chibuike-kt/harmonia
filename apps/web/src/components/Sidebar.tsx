@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
+import { createRoom } from "@/lib/createRoom";
 import { useIsTruncated } from "@/lib/useIsTruncated";
 import { Tooltip } from "./Tooltip";
 import {
@@ -50,10 +51,12 @@ const DEFAULT_WIDTH = 272;
 // Real destinations only — Activity has no backend or page yet (see
 // docs/design/dashboard-build-brief.md's explicit scope note), kept
 // inert exactly like the mockup's own "#" placeholder rather than
-// inventing one.
+// inventing one. "New room" isn't here — it's a real action (create,
+// then navigate), not a link to a naming form (see ADR-004's addendum:
+// /rooms/new no longer exists), so it's rendered separately below with
+// its own click handler rather than through this static Link list.
 const QUICK_NAV = [
   { label: "Dashboard", href: "/dashboard", Icon: GridIcon },
-  { label: "New room", href: "/rooms/new", Icon: PlusIcon },
   { label: "Agents", href: "/connect-agents", Icon: AgentsIcon },
   { label: "Activity", href: "#", Icon: ActivityIcon },
 ] as const;
@@ -321,6 +324,8 @@ export function Sidebar() {
   const [renamingRoomId, setRenamingRoomId] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [creatingRoom, setCreatingRoom] = useState(false);
+  const [createRoomError, setCreateRoomError] = useState<string | null>(null);
 
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -370,6 +375,25 @@ export function Sidebar() {
   }, []);
 
   useEffect(() => {
+    // The room page's own SSE stream is what actually receives the
+    // auto-generated title live (KindRoom, published only once the
+    // title job's race guard confirms it won) — Sidebar has no stream
+    // of its own to listen on directly (it isn't scoped to any one
+    // room). Rather than give every page its own room-list SSE
+    // subscription, the room page re-broadcasts the update as a plain
+    // DOM CustomEvent once it receives it, and Sidebar just reloads its
+    // list the same way it already does after every other room
+    // mutation (pin/rename/delete) — no new architecture, one more
+    // trigger for the same existing reload.
+    function onRoomUpdated() {
+      void loadRooms();
+    }
+    window.addEventListener("harmonia:room-updated", onRoomUpdated);
+    return () =>
+      window.removeEventListener("harmonia:room-updated", onRoomUpdated);
+  }, [loadRooms]);
+
+  useEffect(() => {
     // Same "ref must cover the trigger too, not just the panel" fix the
     // profile menu above needed — but with N rows instead of one fixed
     // element, a data-attribute query is simpler than juggling N refs.
@@ -402,6 +426,30 @@ export function Sidebar() {
     },
     [collapsed],
   );
+
+  const handleCreateRoom = async () => {
+    if (creatingRoom) return;
+    setCreatingRoom(true);
+    setCreateRoomError(null);
+    try {
+      const room = await createRoom();
+      // Sidebar is mounted once by the (shell) layout and persists
+      // across navigation within it (see ShellLayout's own comment) —
+      // pushing to /rooms/{id} does not remount this component the way
+      // navigating in from outside the shell (the old /rooms/new page)
+      // used to, so nothing else will pick up the new room for the
+      // list on its own. Reload explicitly, the same way every other
+      // room mutation here already does.
+      await loadRooms();
+      router.push(`/rooms/${room.id}`);
+    } catch (err) {
+      setCreateRoomError(
+        err instanceof ApiError ? err.message : "Failed to create room.",
+      );
+    } finally {
+      setCreatingRoom(false);
+    }
+  };
 
   const handleLogout = async () => {
     try {
@@ -559,24 +607,51 @@ export function Sidebar() {
         </div>
 
         <nav className="flex flex-col gap-0.5 px-2.5">
-          {QUICK_NAV.map(({ label, href, Icon }) => {
-            const active = pathname === href;
-            return (
-              <Link
-                key={label}
-                href={href}
-                className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
-                  active
-                    ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-                    : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-                }`}
-              >
-                <Icon />
-                {label}
-              </Link>
-            );
-          })}
+          <Link
+            href="/dashboard"
+            className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
+              pathname === "/dashboard"
+                ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            }`}
+          >
+            <GridIcon />
+            Dashboard
+          </Link>
+          <button
+            type="button"
+            onClick={() => void handleCreateRoom()}
+            disabled={creatingRoom}
+            className="flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-sm text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] disabled:opacity-60"
+          >
+            <PlusIcon />
+            {creatingRoom ? "Creating…" : "New room"}
+          </button>
+          {QUICK_NAV.filter(({ href }) => href !== "/dashboard").map(
+            ({ label, href, Icon }) => {
+              const active = pathname === href;
+              return (
+                <Link
+                  key={label}
+                  href={href}
+                  className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
+                    active
+                      ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                      : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+                  }`}
+                >
+                  <Icon />
+                  {label}
+                </Link>
+              );
+            },
+          )}
         </nav>
+        {createRoomError && (
+          <p className="px-3.5 pb-1 text-[12px] text-red-400">
+            {createRoomError}
+          </p>
+        )}
 
         <div className="mx-3.5 my-3.5 h-px bg-[var(--login-border)]" />
 
@@ -631,12 +706,14 @@ export function Sidebar() {
             {rooms !== null && rooms.length === 0 && (
               <div className="flex flex-col items-start gap-2 px-2.5 py-3 text-sm text-[var(--login-text-muted)]">
                 <p>No rooms yet.</p>
-                <Link
-                  href="/rooms/new"
-                  className="text-[var(--login-text-secondary)] underline hover:text-[var(--login-text)]"
+                <button
+                  type="button"
+                  onClick={() => void handleCreateRoom()}
+                  disabled={creatingRoom}
+                  className="text-[var(--login-text-secondary)] underline hover:text-[var(--login-text)] disabled:opacity-60"
                 >
                   Create your first room
-                </Link>
+                </button>
               </div>
             )}
             {rooms?.map((room) => (

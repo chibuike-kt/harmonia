@@ -49,17 +49,6 @@ func TestCreateHandler_InvalidBody(t *testing.T) {
 	assertJSONError(t, rec, http.StatusBadRequest)
 }
 
-func TestCreateHandler_MissingName(t *testing.T) {
-	s := &Store{}
-	h := s.CreateHandler()
-
-	req := httptest.NewRequestWithContext(authedContext(), http.MethodPost, "/v1/rooms", strings.NewReader(`{}`))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	assertJSONError(t, rec, http.StatusBadRequest)
-}
-
 func TestListHandler_Unauthenticated(t *testing.T) {
 	s := &Store{}
 	h := s.ListHandler()

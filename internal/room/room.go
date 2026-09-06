@@ -15,6 +15,15 @@ import (
 // ErrNotFound is returned when no room matches the given lookup.
 var ErrNotFound = errors.New("room: not found")
 
+// PlaceholderName is what a room is created with when no name is given
+// (see ADR-004's addendum on nameless room creation) — a literal,
+// recognizable string, not an empty one, since a room without a
+// meaningful title still needs something to render everywhere a name is
+// expected (the sidebar, the room header). The auto-title job's own
+// race guard checks against this exact value before overwriting it —
+// see internal/message.TitleGenerator.
+const PlaceholderName = "New room"
+
 type Room struct {
 	ID     uuid.UUID `json:"id"`
 	Name   string    `json:"name"`

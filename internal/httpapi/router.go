@@ -59,6 +59,7 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Patch("/v1/rooms/{id}", rooms.UpdateHandler())
 		pr.Delete("/v1/rooms/{id}", rooms.DeleteHandler())
 		pr.Post("/v1/rooms/{room_id}/agents", agents.RegisterHandler(rooms))
+		pr.Get("/v1/rooms/{room_id}/agents", agents.ListByRoomHandler(rooms))
 	})
 
 	// hub is the single in-process realtime fan-out point for this server —
@@ -87,9 +88,10 @@ func NewRouter(st *store.Store) http.Handler {
 
 	messages := message.NewStore(st.Pool)
 	orchestrator := message.NewOrchestrator(messages, agents, creds, hub, st.Redis)
+	titleGen := message.NewTitleGenerator(rooms, creds, hub)
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
-		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator))
+		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator, titleGen))
 	})
 
 	contexts := contextengine.NewStore(st.Pool)

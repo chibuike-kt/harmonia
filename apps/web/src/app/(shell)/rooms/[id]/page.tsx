@@ -1,8 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { apiUrl } from "@/lib/api";
+import { apiFetch, apiUrl } from "@/lib/api";
+import {
+  ArtifactPanel,
+  type ArtifactContent,
+} from "@/components/ArtifactPanel";
+import { Composer, type RoomAgent } from "@/components/Composer";
+import {
+  MessageRow,
+  displaySenderName,
+  type ChatMessage,
+} from "@/components/MessageRow";
+import { TypingIndicator } from "@/components/TypingIndicator";
+import { ChevronDownIcon } from "@/components/icons";
 
 interface AgentPresence {
   agent_id: string;
@@ -31,25 +44,46 @@ interface Envelope {
   payload: Record<string, unknown>;
 }
 
+interface RoomUpdate {
+  room_id: string;
+  name: string;
+}
+
 interface RealtimeMessage {
-  kind: "event" | "presence";
+  kind: "event" | "presence" | "message" | "room";
   event?: Envelope;
   presence?: AgentPresence;
+  message?: ChatMessage;
+  room?: RoomUpdate;
 }
 
 interface Snapshot {
   events: HistoricalEvent[];
   presence: AgentPresence[];
+  messages: ChatMessage[];
+}
+
+interface RoomSummary {
+  id: string;
+  name: string;
+}
+
+interface Me {
+  display_name?: string;
+  username: string;
 }
 
 type Category = "task" | "handoff" | "other";
 
-interface TimelineItem {
-  id: string;
-  category: Category;
-  label: string;
-  timestamp: string;
-}
+type TimelineEntry =
+  | {
+      id: string;
+      kind: "card";
+      timestamp: string;
+      category: Category;
+      label: string;
+    }
+  | { id: string; kind: "message"; timestamp: string; message: ChatMessage };
 
 // Maps both the historical (TASK_CREATED) and live (TASK.CREATE) type
 // formats to one label, so the timeline doesn't visually distinguish
@@ -71,31 +105,149 @@ function classify(type: string): { category: Category; label: string } {
   return TYPE_LABELS[type] ?? { category: "other", label: type };
 }
 
-function fromHistorical(e: HistoricalEvent): TimelineItem {
+function fromHistorical(e: HistoricalEvent): TimelineEntry {
   const { category, label } = classify(e.type);
-  return { id: `h-${e.id}`, category, label, timestamp: e.created_at };
+  return {
+    id: `h-${e.id}`,
+    kind: "card",
+    category,
+    label,
+    timestamp: e.created_at,
+  };
 }
 
-function fromEnvelope(e: Envelope): TimelineItem {
+function fromEnvelope(e: Envelope): TimelineEntry {
   const { category, label } = classify(e.type);
-  return { id: e.id, category, label, timestamp: e.timestamp };
+  return { id: e.id, kind: "card", category, label, timestamp: e.timestamp };
+}
+
+function fromMessage(m: ChatMessage): TimelineEntry {
+  return { id: m.id, kind: "message", timestamp: m.created_at, message: m };
 }
 
 const CATEGORY_STYLES: Record<Category, string> = {
-  task: "border-blue-500/40 bg-blue-500/5",
-  handoff: "border-purple-500/40 bg-purple-500/5",
-  other: "border-foreground/20",
+  task: "border-[var(--room-task-blue)]/40 bg-[var(--room-task-blue)]/5",
+  handoff:
+    "border-[var(--room-handoff-purple)]/40 bg-[var(--room-handoff-purple)]/5",
+  other: "border-[var(--login-border-strong)]",
 };
+
+// Failure messages have no dedicated wire field — ADR-004 frames a
+// failed generation as a real agent message, not a separate concept
+// (internal/message.Orchestrator.fail), so the one signal available is
+// its own fixed prefix. Matched here, not re-invented: this is the
+// exact string the backend writes.
+const FAILURE_PREFIX = "I couldn't generate a reply —";
+function isFailureMessage(content: string): boolean {
+  return content.startsWith(FAILURE_PREFIX);
+}
+
+function snippet(content: string, max = 60): string {
+  const oneLine = content.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max).trimEnd() + "…" : oneLine;
+}
+
+// dateKey/formatDateLabel back the timeline's date dividers — grouping
+// by calendar day in the viewer's own local time, since that's what
+// "Today" actually means to the person looking at it.
+function dateKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function formatDateLabel(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const startOfDay = (d: Date) =>
+    new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round(
+    (startOfDay(now) - startOfDay(date)) / (24 * 60 * 60 * 1000),
+  );
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return date.toLocaleDateString(undefined, {
+    month: "long",
+    day: "numeric",
+    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+  });
+}
+
+// How close to the bottom (in pixels) still counts as "at the bottom" —
+// generous enough that sub-pixel layout rounding never falsely shows the
+// scroll-to-latest pill while the view is, for all practical purposes,
+// already caught up.
+const BOTTOM_THRESHOLD = 48;
+
+// Per-character delay for the generated-title reveal — a simulated
+// typing effect over the complete string the backend already returned
+// in one piece (ADR-004's addendum: no real token streaming here, same
+// as reply generation), not a live stream from the model.
+const TITLE_REVEAL_MS = 28;
 
 export default function RoomViewPage() {
   const params = useParams();
   const roomId = Array.isArray(params.id) ? params.id[0] : params.id;
 
-  const [items, setItems] = useState<TimelineItem[]>([]);
+  const [entries, setEntries] = useState<TimelineEntry[]>([]);
+  const [messagesById, setMessagesById] = useState<Record<string, ChatMessage>>(
+    {},
+  );
   const [presence, setPresence] = useState<Record<string, string>>({});
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  const [roomAgents, setRoomAgents] = useState<RoomAgent[]>([]);
+  const [roomName, setRoomName] = useState<string>("");
+  const [me, setMe] = useState<Me | null>(null);
   const [connection, setConnection] = useState<
     "connecting" | "open" | "reconnecting"
   >("connecting");
+  const [artifact, setArtifact] = useState<ArtifactContent | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+
+  const timelineRef = useRef<HTMLDivElement>(null);
+  // Tracked in a ref, not state: the entries-changed effect below reads
+  // this synchronously to decide whether to auto-follow a new arrival,
+  // and a ref avoids that effect needing to depend on (and re-run
+  // debounced against) scroll-driven state changes.
+  const atBottomRef = useRef(true);
+  const titleRevealTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    void apiFetch<Me>("/v1/users/me")
+      .then(setMe)
+      .catch(() => setMe(null));
+  }, []);
+
+  useEffect(() => {
+    if (!roomId) return;
+    // Same data the sidebar already reads correctly (GET /v1/rooms) —
+    // there's no single-room GET endpoint, and this room view is the
+    // one other place in the app that needs a room's own name, so it
+    // reads the same list and finds itself in it rather than inventing
+    // a second source of truth for "what is this room called."
+    void apiFetch<RoomSummary[]>("/v1/rooms")
+      .then((rooms) => {
+        const match = rooms.find((r) => r.id === roomId);
+        if (match) setRoomName(match.name);
+      })
+      .catch(() => {});
+  }, [roomId]);
+
+  useEffect(() => {
+    if (!roomId) return;
+    void apiFetch<{ id: string; name: string }[]>(`/v1/rooms/${roomId}/agents`)
+      .then((agents) => {
+        setRoomAgents(agents.map((a) => ({ id: a.id, name: a.name })));
+        setAgentNames((prev) => {
+          const next = { ...prev };
+          for (const a of agents) next[a.id] = a.name;
+          return next;
+        });
+      })
+      .catch(() => {
+        setRoomAgents([]);
+      });
+  }, [roomId]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -114,7 +266,17 @@ export default function RoomViewPage() {
       // Defensive, not just trusting the backend: a Go nil slice encodes
       // as JSON null, not [], so a brand-new room with nothing in it yet
       // is exactly the case this needs to survive.
-      setItems([...(data.events ?? [])].reverse().map(fromHistorical));
+      const cardEntries = (data.events ?? []).map(fromHistorical);
+      const messageEntries = (data.messages ?? []).map(fromMessage);
+      const merged = [...cardEntries, ...messageEntries].sort((a, b) =>
+        a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
+      );
+      setEntries(merged);
+
+      const byId: Record<string, ChatMessage> = {};
+      for (const m of data.messages ?? []) byId[m.id] = m;
+      setMessagesById(byId);
+
       const initial: Record<string, string> = {};
       for (const p of data.presence ?? []) {
         initial[p.agent_id] = p.status;
@@ -126,8 +288,7 @@ export default function RoomViewPage() {
     source.addEventListener("event", (e) => {
       const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
       if (msg.event) {
-        const item = fromEnvelope(msg.event);
-        setItems((prev) => [item, ...prev]);
+        setEntries((prev) => [...prev, fromEnvelope(msg.event!)]);
       }
     });
 
@@ -139,6 +300,46 @@ export default function RoomViewPage() {
       }
     });
 
+    source.addEventListener("message", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      if (msg.message) {
+        const m = msg.message;
+        setEntries((prev) => [...prev, fromMessage(m)]);
+        setMessagesById((prev) => ({ ...prev, [m.id]: m }));
+      }
+    });
+
+    source.addEventListener("room", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      if (!msg.room) return;
+      const finalName = msg.room.name;
+
+      // A "room" event only ever arrives here as the auto-title job's
+      // successful outcome — the race guard on the backend discards and
+      // never publishes when a manual rename already won, so receiving
+      // this at all means it's safe to reveal. The reveal is a simulated
+      // per-character typing animation over the complete string already
+      // returned, not a real stream (ADR-004's addendum).
+      if (titleRevealTimer.current) clearInterval(titleRevealTimer.current);
+      let i = 0;
+      titleRevealTimer.current = setInterval(() => {
+        i++;
+        setRoomName(finalName.slice(0, i));
+        if (i >= finalName.length && titleRevealTimer.current) {
+          clearInterval(titleRevealTimer.current);
+          titleRevealTimer.current = null;
+        }
+      }, TITLE_REVEAL_MS);
+
+      // Sidebar has no SSE subscription of its own to catch this — it
+      // isn't scoped to any one room — so it's told the same way it
+      // already reloads after every other room mutation it performs
+      // itself (pin/rename/delete): a plain DOM event it listens for.
+      window.dispatchEvent(
+        new CustomEvent("harmonia:room-updated", { detail: msg.room }),
+      );
+    });
+
     // EventSource retries on its own; a drop just means "not open right
     // now," not "give up" — reflected as "Reconnecting…" below, not an
     // error state.
@@ -146,51 +347,205 @@ export default function RoomViewPage() {
       setConnection((c) => (c === "connecting" ? c : "reconnecting"));
     };
 
-    return () => source.close();
+    return () => {
+      source.close();
+      if (titleRevealTimer.current) clearInterval(titleRevealTimer.current);
+    };
   }, [roomId]);
 
-  return (
-    <main className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 p-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Room</h1>
-        <span className="text-foreground/50 text-sm">
-          {connection === "open"
-            ? "● Live"
-            : connection === "reconnecting"
-              ? "○ Reconnecting…"
-              : "○ Connecting…"}
-        </span>
-      </div>
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    // Only auto-follow new entries when the view was already at the
+    // bottom — otherwise a message arriving while someone has scrolled
+    // up to read history would yank them back down. The scroll-to-latest
+    // pill (driven by the same atBottomRef, via handleScroll below)
+    // covers that case instead: it's already showing since atBottomRef
+    // is false, and clicking it does the (smooth) catch-up scroll.
+    if (atBottomRef.current) {
+      el.scrollTo({ top: el.scrollHeight });
+    }
+  }, [entries]);
 
-      {Object.keys(presence).length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(presence).map(([agentId, status]) => (
-            <span
-              key={agentId}
-              className="rounded-full border border-foreground/20 px-3 py-1 text-xs"
-            >
-              agent {agentId.slice(0, 8)} · {status}
-            </span>
-          ))}
-        </div>
-      )}
+  const handleScroll = () => {
+    const el = timelineRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceFromBottom < BOTTOM_THRESHOLD;
+    atBottomRef.current = atBottom;
+    setShowScrollToLatest(!atBottom);
+  };
 
-      <div className="flex flex-col gap-2">
-        {items.length === 0 && (
-          <p className="text-foreground/50 text-sm">No events yet.</p>
-        )}
-        {items.map((item) => (
-          <div
-            key={item.id}
-            className={`rounded-md border p-3 text-sm ${CATEGORY_STYLES[item.category]}`}
-          >
-            <div className="font-medium">{item.label}</div>
-            <div className="text-foreground/50 text-xs">
-              {new Date(item.timestamp).toLocaleTimeString()}
-            </div>
+  const scrollToLatest = () => {
+    const el = timelineRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    atBottomRef.current = true;
+    setShowScrollToLatest(false);
+  };
+
+  const humanName = me?.display_name || me?.username || "You";
+
+  const typingAgentIds = Object.entries(presence)
+    .filter(([, status]) => status === "running")
+    .map(([agentId]) => agentId);
+
+  const handleSend = async (
+    content: string,
+    mentionedAgentId: string | null,
+  ) => {
+    if (!roomId) return;
+    setSendError(null);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}/messages`, {
+        method: "POST",
+        body: {
+          content,
+          ...(mentionedAgentId ? { mentioned_agent_id: mentionedAgentId } : {}),
+        },
+      });
+      // No optimistic local insert: the POST's own publish arrives back
+      // over the same SSE stream this page already renders from
+      // (hub.Publish happens after commit, before the response even
+      // returns) — adding it a second time here would risk a duplicate
+      // render if the SSE event wins the race, which it normally will.
+    } catch (err) {
+      setSendError(
+        err instanceof Error ? err.message : "Failed to send message.",
+      );
+    }
+  };
+
+  const rendered: ReactNode[] = [];
+  let lastDateKey: string | null = null;
+  entries.forEach((entry, i) => {
+    const key = dateKey(entry.timestamp);
+    if (key !== lastDateKey) {
+      lastDateKey = key;
+      rendered.push(
+        <div
+          key={`divider-${key}`}
+          className="flex items-center gap-3 text-[12px] text-[var(--login-text-muted)] before:h-px before:flex-1 before:bg-[var(--login-border)] after:h-px after:flex-1 after:bg-[var(--login-border)]"
+        >
+          <span className="font-[family-name:var(--login-font-mono)]">
+            {formatDateLabel(entry.timestamp)}
+          </span>
+        </div>,
+      );
+    }
+
+    if (entry.kind === "card") {
+      rendered.push(
+        <div
+          key={entry.id}
+          className={`ml-[42px] rounded-[10px] border p-3.5 text-sm ${CATEGORY_STYLES[entry.category]}`}
+        >
+          <div className="font-medium text-[var(--login-text)]">
+            {entry.label}
           </div>
-        ))}
-      </div>
-    </main>
+          <div className="text-xs text-[var(--login-text-muted)]">
+            {new Date(entry.timestamp).toLocaleTimeString()}
+          </div>
+        </div>,
+      );
+      return;
+    }
+
+    const m = entry.message;
+    const senderName = displaySenderName(m, agentNames, humanName);
+
+    // "Replying to X" earns its place specifically when the
+    // conversation moved on before the reply arrived — i.e. it's not
+    // simply answering whatever came right before it in the timeline
+    // (of any kind, not just another message).
+    const prev = entries[i - 1];
+    const immediatelyAfterItsOwnMention =
+      prev?.kind === "message" && prev.message.id === m.reply_to_message_id;
+    const referenced = m.reply_to_message_id
+      ? messagesById[m.reply_to_message_id]
+      : undefined;
+    const replyPreview =
+      referenced && !immediatelyAfterItsOwnMention
+        ? {
+            senderName: displaySenderName(referenced, agentNames, humanName),
+            snippet: snippet(referenced.content),
+          }
+        : undefined;
+
+    rendered.push(
+      <MessageRow
+        key={entry.id}
+        message={{ ...m, failed: isFailureMessage(m.content) }}
+        senderName={senderName}
+        replyPreview={replyPreview}
+        onOpenArtifact={setArtifact}
+      />,
+    );
+  });
+
+  return (
+    <div className="flex h-full min-w-0 flex-1">
+      <main className="relative flex min-w-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-6 py-3.5">
+          <h1 className="truncate text-[16px] font-semibold text-[var(--login-text)]">
+            {roomName || "…"}
+          </h1>
+          <span className="shrink-0 text-[13px] text-[var(--login-text-muted)]">
+            {connection === "open"
+              ? "● Live"
+              : connection === "reconnecting"
+                ? "○ Reconnecting…"
+                : "○ Connecting…"}
+          </span>
+        </div>
+
+        <div
+          ref={timelineRef}
+          onScroll={handleScroll}
+          className="no-scrollbar flex-1 overflow-y-auto"
+        >
+          <div className="mx-auto flex w-full max-w-[720px] flex-col gap-5 px-6 py-6">
+            {entries.length === 0 && typingAgentIds.length === 0 && (
+              <p className="text-sm text-[var(--login-text-muted)]">
+                No activity yet — @mention an agent below to get started.
+              </p>
+            )}
+
+            {rendered}
+
+            {typingAgentIds.map((agentId) => (
+              <TypingIndicator
+                key={agentId}
+                agentName={agentNames[agentId] || "Agent"}
+              />
+            ))}
+          </div>
+        </div>
+
+        {showScrollToLatest && (
+          <button
+            type="button"
+            onClick={scrollToLatest}
+            className="absolute bottom-[104px] left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-1.5 pl-3 pr-2.5 text-[12.5px] text-[var(--login-text-secondary)] shadow-[0_4px_16px_rgba(0,0,0,0.3)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+          >
+            New messages
+            <ChevronDownIcon />
+          </button>
+        )}
+
+        {sendError && (
+          <p className="mx-auto w-full max-w-[720px] px-6 text-[13px] text-[var(--room-warn)]">
+            {sendError}
+          </p>
+        )}
+
+        <Composer
+          agents={roomAgents}
+          onSend={(c, a) => void handleSend(c, a)}
+        />
+      </main>
+
+      <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
+    </div>
   );
 }

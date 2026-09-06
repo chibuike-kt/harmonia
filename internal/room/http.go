@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -38,6 +39,14 @@ func writeError(w http.ResponseWriter, status int, message string) {
 // CreateHandler returns the handler for POST /v1/rooms. Mount it behind
 // user.Authenticate — every room created through this endpoint has an
 // owner, set from the session.
+//
+// name is optional (ADR-004's addendum on nameless room creation): a
+// human should be able to land straight in an empty room and start
+// typing, the same way every real chat product works, rather than
+// filling out a form before anything can happen. An omitted or blank
+// name creates the room with the literal PlaceholderName — the async
+// auto-title job (internal/message.TitleGenerator) picks it up once the
+// room's first message exists.
 func (s *Store) CreateHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := user.FromContext(r.Context())
@@ -51,12 +60,12 @@ func (s *Store) CreateHandler() http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if req.Name == "" {
-			writeError(w, http.StatusBadRequest, "name is required")
-			return
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			name = PlaceholderName
 		}
 
-		rm, err := s.Create(r.Context(), &u.ID, req.Name)
+		rm, err := s.Create(r.Context(), &u.ID, name)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create room")
 			return
