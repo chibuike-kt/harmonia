@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Harmonia — Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0B0E13;
+    --surface: #12161D;
+    --surface-2: #171C24;
+    --sidebar-bg: #0E1116;
+    --border: #232A34;
+    --border-strong: #2E3642;
+    --text: #E8EAED;
+    --text-secondary: #9AA1AC;
+    --text-muted: #5C6470;
+    --accent: #4CD3C2;
+    --task-blue: #5B9DF5;
+    --handoff-purple: #B08FF0;
+    --warn: #E8A33D;
+    --font-sans: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100vh; background: var(--bg); color: var(--text);
+    font-family: var(--font-sans); font-size: 15px; overflow: hidden;
+  }
+  body { display: flex; }
+
+  /* Shared: scrollable but no visible scrollbar, any browser. */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* ---------- Compact sidebar (static, for context only) ---------- */
+  .sidebar { width: 240px; flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100vh; }
+  .sidebar-top { padding: 16px 14px 12px; font-size: 17px; font-weight: 600; }
+  .quick-nav { padding: 0 10px; display: flex; flex-direction: column; gap: 2px; }
+  .quick-nav a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 7px; color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+  .quick-nav a:hover { background: var(--surface-2); color: var(--text); }
+  .sidebar-divider { height: 1px; background: var(--border); margin: 14px 14px 10px; }
+  .rooms-header { padding: 4px 18px 8px; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+  .rooms-list { flex: 1; overflow-y: auto; padding: 0 10px; display: flex; flex-direction: column; gap: 1px; }
+  .room-item { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 7px; color: var(--text-secondary); text-decoration: none; white-space: nowrap; overflow: hidden; }
+  .room-item.active { background: var(--surface-2); color: var(--text); }
+  .room-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+  .room-time { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); flex-shrink: 0; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; box-shadow: 0 0 0 3px rgba(76,211,194,.15); }
+  .sidebar-profile { border-top: 1px solid var(--border); padding: 10px; display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--accent); }
+
+  /* ---------- Room shell ---------- */
+  .room { flex: 1; display: flex; flex-direction: column; height: 100vh; min-width: 0; position: relative; }
+  .room-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .room-title h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  .room-header-right { display: flex; align-items: center; gap: 14px; }
+  .cost-pill {
+    display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border-strong);
+    border-radius: 999px; padding: 4px 10px;
+  }
+  .room-header-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; padding: 6px; border-radius: 7px; }
+  .room-header-btn:hover, .room-header-btn.active { background: var(--surface-2); color: var(--text); }
+  .room-agents { display: flex; align-items: center; }
+  .agent-chip { width: 26px; height: 26px; border-radius: 50%; background: var(--surface-2); border: 2px solid var(--sidebar-bg); outline: 1px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 600; color: var(--text-secondary); margin-left: -8px; position: relative; }
+  .agent-chip:first-child { margin-left: 0; }
+  .agent-chip .status-ring { position: absolute; inset: -2px; border-radius: 50%; border: 1.5px solid var(--accent); display: none; }
+  .agent-chip.running .status-ring { display: block; }
+
+  /* ---------- Timeline ---------- */
+  .timeline-wrap { flex: 1; overflow-y: auto; display: flex; justify-content: center; }
+  .timeline { width: 100%; max-width: 720px; padding: 24px 24px 16px; display: flex; flex-direction: column; gap: 20px; }
+
+  /* Agent message — plain, left-aligned, no bubble. Matches how
+     ChatGPT/Claude render assistant turns. */
+  .msg-agent { display: flex; gap: 12px; }
+  .msg-avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; background: var(--surface-2); border: 1px solid var(--border-strong); }
+  .msg-agent .msg-body { flex: 1; min-width: 0; }
+  .msg-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+  .msg-sender { font-size: 14px; font-weight: 600; }
+  .msg-time { font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); }
+  .msg-text { font-size: 14.5px; line-height: 1.6; color: var(--text); }
+  .msg-text p { margin: 0 0 8px; }
+  .msg-text p:last-child { margin-bottom: 0; }
+
+  /* Human message — right-aligned bubble, no avatar/name needed. */
+  .msg-human { display: flex; justify-content: flex-end; }
+  .msg-human .bubble {
+    max-width: 78%;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px 14px 3px 14px;
+    padding: 10px 14px;
+  }
+  .msg-human .msg-text { font-size: 14.5px; }
+  .msg-human .msg-time { display: block; text-align: right; margin-top: 4px; }
+
+  /* Hover action row — copy/edit for human, copy/retry for agent. */
+  .msg-actions { display: flex; gap: 2px; margin-top: 6px; opacity: 0; transition: opacity .12s ease; }
+  .msg-agent:hover .msg-actions, .msg-human:hover .msg-actions { opacity: 1; }
+  .msg-human .msg-actions { justify-content: flex-end; }
+  .msg-action-btn {
+    width: 26px; height: 26px; border-radius: 6px; background: none; border: none;
+    color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .msg-action-btn:hover { background: var(--surface-2); color: var(--text-secondary); }
+
+  .artifact-chip { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 12px; margin-top: 6px; cursor: pointer; font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secondary); }
+  .artifact-chip:hover { border-color: var(--accent); color: var(--text); }
+
+  .reply-quote {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);
+    margin-bottom: 5px; padding-bottom: 5px;
+  }
+  .reply-quote b { color: var(--text-secondary); font-family: var(--font-sans); font-weight: 600; }
+
+  .date-divider { display: flex; align-items: center; gap: 12px; color: var(--text-muted); font-size: 12px; font-family: var(--font-mono); margin: 4px 0; }
+  .date-divider::before, .date-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  .card-approval { border-left: 3px solid var(--warn); background: rgba(232, 163, 61, 0.06); }
+  .card-approval .card-kind { color: var(--warn); }
+  .card-approval-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .approve-btn, .reject-btn { font-size: 12.5px; font-weight: 500; padding: 6px 14px; border-radius: 7px; cursor: pointer; font-family: var(--font-sans); }
+  .approve-btn { background: var(--warn); border: none; color: #0B0E13; }
+  .approve-btn:hover { background: #f0b658; }
+  .reject-btn { background: none; border: 1px solid var(--border-strong); color: var(--text-secondary); }
+  .reject-btn:hover { background: var(--surface-2); color: var(--text); }
+
+  .scroll-latest {
+    position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%);
+    background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 999px;
+    padding: 6px 14px 6px 10px; display: flex; align-items: center; gap: 6px;
+    font-size: 12.5px; color: var(--text-secondary); cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  }
+  .scroll-latest:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ---------- Room info panel (decisions, overview) ---------- */
+  .info-panel { width: 0; flex-shrink: 0; overflow: hidden; height: 100vh; background: var(--surface); border-left: 1px solid var(--border); transition: width 0.18s ease; display: flex; flex-direction: column; }
+  .info-panel.open { width: 320px; }
+  .info-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .info-panel-header span { font-size: 14px; font-weight: 600; }
+  .info-panel-body { flex: 1; overflow: auto; padding: 16px; }
+  .info-section { margin-bottom: 22px; }
+  .info-section-label { font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+  .info-objective { font-size: 13.5px; color: var(--text-secondary); line-height: 1.5; }
+  .info-agent-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13.5px; }
+  .decision-item { font-size: 13px; color: var(--text-secondary); padding: 8px 0; border-bottom: 1px solid var(--border); line-height: 1.5; }
+  .decision-item:last-child { border-bottom: none; }
+  .decision-item b { color: var(--text); font-weight: 500; }
+
+  .typing-row { display: flex; gap: 12px; align-items: center; }
+  .typing-label { font-size: 13px; color: var(--text-muted); font-family: var(--font-mono); }
+
+  .card { border-radius: 10px; padding: 14px 16px; border: 1px solid var(--border-strong); background: var(--surface); margin-left: 42px; }
+  .card-task { border-left: 3px solid var(--task-blue); }
+  .card-handoff { border-left: 3px solid var(--handoff-purple); }
+  .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .card-kind { font-size: 11px; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-task .card-kind { color: var(--task-blue); }
+  .card-handoff .card-kind { color: var(--handoff-purple); }
+  .card-status { font-size: 11px; font-family: var(--font-mono); padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-secondary); }
+  .card-status.running { color: var(--accent); border-color: rgba(76,211,194,.35); }
+  .card-title { font-size: 14.5px; font-weight: 500; margin-bottom: 4px; }
+  .card-meta { font-size: 12.5px; color: var(--text-muted); }
+  .handoff-flow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
+  .handoff-flow b { color: var(--text); font-weight: 600; }
+
+  /* ---------- Composer ---------- */
+  .composer-wrap { padding: 14px 24px 20px; display: flex; justify-content: center; }
+  .composer { width: 100%; max-width: 720px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; padding: 10px 10px 10px 14px; position: relative; }
+  .composer-input-row { display: flex; align-items: flex-end; gap: 10px; }
+  .composer-input {
+    flex: 1; background: none; border: none; color: var(--text); font-family: var(--font-sans);
+    font-size: 14.5px; resize: none; outline: none; padding: 8px 0; line-height: 1.5;
+    max-height: 160px; overflow-y: auto;
+  }
+  .composer-input::placeholder { color: var(--text-muted); }
+  .composer-btn { width: 34px; height: 34px; border-radius: 8px; background: none; border: none; color: var(--text-muted); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+  .composer-btn:hover { background: var(--surface-2); color: var(--text-secondary); }
+  .composer-send { background: var(--accent); color: #0B0E13; }
+  .composer-send:hover { background: #63e0d1; }
+
+  .plus-menu, .mention-menu { position: absolute; bottom: calc(100% + 8px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 10px; padding: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.4); display: none; flex-direction: column; gap: 1px; min-width: 200px; }
+  .plus-menu.open, .mention-menu.open { display: flex; }
+  .plus-menu { left: 10px; }
+  .mention-menu { left: 52px; }
+  .menu-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 7px; color: var(--text-secondary); font-size: 13.5px; cursor: pointer; }
+  .menu-item:hover { background: var(--surface-2); color: var(--text); }
+  .menu-item.inert { cursor: not-allowed; opacity: 0.55; }
+  .menu-item.inert:hover { background: none; color: var(--text-secondary); }
+  .menu-item-soon { margin-left: auto; font-size: 10.5px; font-family: var(--font-mono); color: var(--text-muted); }
+
+  /* ---------- Artifact side panel ---------- */
+  .artifact-panel { width: 0; flex-shrink: 0; overflow: hidden; height: 100vh; background: var(--surface); border-left: 1px solid var(--border); transition: width 0.18s ease; display: flex; flex-direction: column; }
+  .artifact-panel.open { width: 420px; }
+  .artifact-panel.enlarged { position: fixed; inset: 0; width: 100vw !important; height: 100vh; z-index: 100; border-left: none; }
+  .artifact-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .artifact-panel-header span { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
+  .artifact-panel-actions { display: flex; align-items: center; gap: 2px; }
+  .artifact-panel-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; padding: 6px; border-radius: 6px; }
+  .artifact-panel-btn:hover { background: var(--surface-2); color: var(--text); }
+  .artifact-panel-body { flex: 1; overflow: auto; padding: 16px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre; }
+  .artifact-panel-body .kw { color: var(--handoff-purple); }
+  .artifact-panel-body .fn { color: var(--task-blue); }
+  .artifact-panel-body .cm { color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-top">Harmonia</div>
+  <div class="quick-nav">
+    <a href="#">Dashboard</a>
+    <a href="#">New room</a>
+    <a href="#">Agents</a>
+    <a href="#">Activity</a>
+  </div>
+  <div class="sidebar-divider"></div>
+  <div class="rooms-header">Rooms</div>
+  <div class="rooms-list no-scrollbar">
+    <div class="room-item active"><span class="live-dot"></span><span class="room-name">Webhook retry logic</span><span class="room-time">now</span></div>
+    <div class="room-item"><span class="room-name">Ledger audit trail redesign</span><span class="room-time">2h</span></div>
+    <div class="room-item"><span class="room-name">Onboarding flow copy review</span><span class="room-time">1d</span></div>
+  </div>
+  <div class="sidebar-profile"><div class="avatar">KC</div></div>
+</div>
+
+<div class="room">
+  <div class="room-header">
+    <div class="room-title"><h1>Webhook retry logic</h1></div>
+    <div class="room-header-right">
+      <div class="cost-pill">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 4.5v7M6 6.5h3a1.3 1.3 0 010 2.6H7a1.3 1.3 0 000 2.6h3"/></svg>
+        $0.42 · 12.4k tokens
+      </div>
+      <button class="room-header-btn" title="Search this room"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5"/><path d="M14 14l-3.5-3.5"/></svg></button>
+      <button class="room-header-btn active" id="infoToggle" title="Room info"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.5v4M8 5.2h.01"/></svg></button>
+      <div class="room-agents">
+        <div class="agent-chip running">C<div class="status-ring"></div></div>
+        <div class="agent-chip">G</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="timeline-wrap no-scrollbar">
+    <div class="timeline">
+      <div class="date-divider">Today</div>
+
+      <div class="msg-human">
+        <div>
+          <div class="bubble">
+            <div class="msg-text">@Claude can you look into why the webhook retries are failing intermittently?</div>
+          </div>
+          <div class="msg-time">10:41 AM</div>
+          <div class="msg-actions">
+            <button class="msg-action-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"/></svg></button>
+            <button class="msg-action-btn" title="Edit"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M11 2l3 3-8 8-3.5 1L4 10.5z"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg-agent">
+        <div class="msg-avatar">C</div>
+        <div class="msg-body">
+          <div class="msg-head"><span class="msg-sender">Claude</span><span class="msg-time">10:41 AM</span></div>
+          <div class="msg-text"><p>Looking at the retry handler now — the intermittent failures line up with a missing idempotency check on the retry path. Here's the relevant section:</p></div>
+          <div class="artifact-chip" id="artifactTrigger">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M5 3L1.5 8 5 13M11 3l3.5 5-3.5 5"/></svg>
+            webhook-retry.go · 18 lines
+          </div>
+          <div class="msg-actions">
+            <button class="msg-action-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"/></svg></button>
+            <button class="msg-action-btn" title="Retry"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 8A5 5 0 113 8"/><path d="M13 4v4H9"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card card-task">
+        <div class="card-head"><span class="card-kind">Task</span><span class="card-status running">RUNNING</span></div>
+        <div class="card-title">Investigate webhook retry logic</div>
+        <div class="card-meta">Claude · claimed 3m ago</div>
+      </div>
+
+      <div class="msg-human">
+        <div>
+          <div class="bubble"><div class="msg-text">@ChatGPT can you review this once Claude's done?</div></div>
+          <div class="msg-time">10:44 AM</div>
+          <div class="msg-actions">
+            <button class="msg-action-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"/></svg></button>
+            <button class="msg-action-btn" title="Edit"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M11 2l3 3-8 8-3.5 1L4 10.5z"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card card-handoff">
+        <div class="card-head"><span class="card-kind">Handoff</span><span class="card-status">ACCEPTED</span></div>
+        <div class="handoff-flow"><b>Claude</b> → <b>ChatGPT</b></div>
+        <div class="card-title">Review the idempotency fix for correctness</div>
+        <div class="card-meta">Risk noted: retry window may need a shorter TTL under load</div>
+      </div>
+
+      <div class="card card-approval">
+        <div class="card-head"><span class="card-kind">Approval needed</span></div>
+        <div class="card-title">ChatGPT wants to shorten the idempotency key TTL from 24h to 2h</div>
+        <div class="card-meta">Affects production retry behavior — requested by ChatGPT, 1m ago</div>
+        <div class="card-approval-actions">
+          <button class="approve-btn">Approve</button>
+          <button class="reject-btn">Reject</button>
+        </div>
+      </div>
+
+      <div class="msg-agent">
+        <div class="msg-avatar">G</div>
+        <div class="msg-body">
+          <div class="msg-head"><span class="msg-sender">ChatGPT</span><span class="msg-time">10:47 AM</span></div>
+          <div class="msg-text"><p>Fix looks correct. One suggestion — the idempotency key TTL might be too long for high-frequency retries, worth tightening it before this ships.</p></div>
+          <div class="msg-actions">
+            <button class="msg-action-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"/></svg></button>
+            <button class="msg-action-btn" title="Retry"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 8A5 5 0 113 8"/><path d="M13 4v4H9"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="msg-human">
+        <div>
+          <div class="bubble"><div class="msg-text">Also — has anyone checked if this affects the Stripe webhook queue too, or just the internal retry path?</div></div>
+          <div class="msg-time">10:46 AM</div>
+        </div>
+      </div>
+
+      <div class="msg-agent">
+        <div class="msg-avatar">C</div>
+        <div class="msg-body">
+          <div class="reply-quote">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4L4 10M4 4v6h6"/></svg>
+            Replying to <b>Kingsley</b>: "@Claude can you look into why the webhook retries are failing intermittently?"
+          </div>
+          <div class="msg-head"><span class="msg-sender">Claude</span><span class="msg-time">10:48 AM</span></div>
+          <div class="msg-text"><p>Confirmed the fix — this was scoped to the internal retry path only, Stripe's own webhook queue has its own idempotency handling and isn't affected.</p></div>
+          <div class="msg-actions">
+            <button class="msg-action-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"/></svg></button>
+            <button class="msg-action-btn" title="Retry"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 8A5 5 0 113 8"/><path d="M13 4v4H9"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="typing-row">
+        <div class="msg-avatar"><canvas id="typingOrb" width="20" height="20"></canvas></div>
+        <span class="typing-label">Claude is thinking…</span>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="scroll-latest">
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 6l5 5 5-5"/></svg>
+    New messages
+  </div>
+
+  <div class="composer-wrap">
+    <div class="composer">
+      <div class="plus-menu" id="plusMenu">
+        <div class="menu-item inert"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5"/><path d="M14 14l-3.5-3.5"/></svg>Search the web <span class="menu-item-soon">soon</span></div>
+        <div class="menu-item inert"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/><path d="M9 2v4h4"/></svg>Add a file <span class="menu-item-soon">soon</span></div>
+      </div>
+      <div class="mention-menu open" id="mentionMenu">
+        <div class="menu-item"><div class="msg-avatar" style="width:20px;height:20px;font-size:9px;">C</div>Claude</div>
+        <div class="menu-item"><div class="msg-avatar" style="width:20px;height:20px;font-size:9px;">G</div>ChatGPT</div>
+      </div>
+      <div class="composer-input-row">
+        <button class="composer-btn" id="plusBtn"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v12M2 8h12"/></svg></button>
+        <textarea class="composer-input no-scrollbar" id="composerInput" rows="1" placeholder="Message this room — @mention an agent to address it">@ChatGPT any concerns before this ships, given the retry volume we're seeing in production right now</textarea>
+        <button class="composer-btn composer-send"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 8h11M9 4l4 4-4 4"/></svg></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="info-panel open" id="infoPanel">
+  <div class="info-panel-header">
+    <span>Room info</span>
+    <button class="artifact-panel-btn" id="infoClose"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  </div>
+  <div class="info-panel-body no-scrollbar">
+    <div class="info-section">
+      <div class="info-section-label">Objective</div>
+      <div class="info-objective">Diagnose and fix intermittent webhook retry failures without affecting the Stripe queue.</div>
+    </div>
+    <div class="info-section">
+      <div class="info-section-label">Agents</div>
+      <div class="info-agent-row"><div class="msg-avatar" style="width:22px;height:22px;font-size:9.5px;">C</div>Claude — architecture, coding</div>
+      <div class="info-agent-row"><div class="msg-avatar" style="width:22px;height:22px;font-size:9.5px;">G</div>ChatGPT — review, research</div>
+    </div>
+    <div class="info-section">
+      <div class="info-section-label">Decisions</div>
+      <div class="decision-item"><b>Idempotency check added</b> to the retry path — proposed by Claude, unopposed.</div>
+      <div class="decision-item"><b>Stripe queue confirmed unaffected</b> — has its own idempotency handling.</div>
+      <div class="decision-item"><b>Retry TTL</b> — pending approval, see request above.</div>
+    </div>
+  </div>
+</div>
+
+<div class="artifact-panel" id="artifactPanel">
+  <div class="artifact-panel-header">
+    <span>webhook-retry.go</span>
+    <div class="artifact-panel-actions">
+      <button class="artifact-panel-btn" title="Copy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5"/></svg></button>
+      <button class="artifact-panel-btn" title="Download"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2v8M4.5 7L8 10.5 11.5 7M3 13h10"/></svg></button>
+      <button class="artifact-panel-btn" id="artifactEnlarge" title="Enlarge"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg></button>
+      <button class="artifact-panel-btn" id="artifactClose" title="Close"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+    </div>
+  </div>
+  <div class="artifact-panel-body no-scrollbar"><span class="kw">func</span> (r *RetryHandler) <span class="fn">Attempt</span>(ctx context.Context, evt Event) <span class="kw">error</span> {
+    <span class="cm">// missing: idempotency key check before retry</span>
+    <span class="kw">key</span> := evt.IdempotencyKey
+    <span class="kw">if</span> key == "" {
+        <span class="kw">return</span> fmt.Errorf(<span class="cm">"missing idempotency key"</span>)
+    }
+
+    <span class="kw">if</span> r.store.Seen(ctx, key) {
+        <span class="kw">return</span> <span class="kw">nil</span> <span class="cm">// already processed</span>
+    }
+
+    <span class="kw">return</span> r.deliver(ctx, evt)
+}</div>
+</div>
+
+<script>
+  function drawOrb(canvas, dotCount, radius, dotSize) {
+    const ctx = canvas.getContext('2d');
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    const dots = Array.from({ length: dotCount }, (_, i) => ({
+      angle: (i / dotCount) * Math.PI * 2, tilt: 0.4 + (i % 3) * 0.15,
+      speed: 0.02 + (i % 4) * 0.006, r: radius * (0.6 + (i % 3) * 0.2)
+    }));
+    function frame() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      dots.forEach(d => {
+        d.angle += d.speed;
+        const x = cx + Math.cos(d.angle) * d.r, y = cy + Math.sin(d.angle) * d.r * d.tilt;
+        const depth = (Math.sin(d.angle) * d.tilt + 1) / 2;
+        ctx.beginPath();
+        ctx.arc(x, y, dotSize * (0.5 + depth * 0.5), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(76, 211, 194, ${0.4 + depth * 0.55})`;
+        ctx.fill();
+      });
+      requestAnimationFrame(frame);
+    }
+    frame();
+  }
+  drawOrb(document.getElementById('typingOrb'), 7, 7, 1.1);
+
+  document.getElementById('infoToggle').addEventListener('click', () => {
+    document.getElementById('infoPanel').classList.toggle('open');
+  });
+  document.getElementById('infoClose').addEventListener('click', () => {
+    document.getElementById('infoPanel').classList.remove('open');
+    document.getElementById('infoToggle').classList.remove('active');
+  });
+
+  document.getElementById('artifactTrigger').addEventListener('click', () => {
+    document.getElementById('artifactPanel').classList.add('open');
+  });
+  document.getElementById('artifactClose').addEventListener('click', () => {
+    document.getElementById('artifactPanel').classList.remove('open', 'enlarged');
+  });
+  document.getElementById('artifactEnlarge').addEventListener('click', () => {
+    document.getElementById('artifactPanel').classList.toggle('enlarged');
+  });
+  document.getElementById('plusBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('plusMenu').classList.toggle('open');
+  });
+  document.addEventListener('click', () => {
+    document.getElementById('plusMenu').classList.remove('open');
+  });
+
+  // Auto-growing textarea, capped by max-height (CSS) — the actual fix
+  // for the "scrollbar appears on narrow screens" bug: the input was
+  // fixed-height with overflow visible by default, so wrapped text at
+  // a narrow width had nowhere to go but a scrollbar. Growing the
+  // element itself (up to the cap) is what real chat composers do.
+  const input = document.getElementById('composerInput');
+  function autoGrow() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  }
+  input.addEventListener('input', autoGrow);
+  autoGrow();
+</script>
+
+</body>
+</html>
