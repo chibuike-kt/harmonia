@@ -8,6 +8,7 @@ import {
   ArtifactPanel,
   type ArtifactContent,
 } from "@/components/ArtifactPanel";
+import { ArtifactsMenu, type ArtifactListItem } from "@/components/ArtifactsMenu";
 import { AddAgentMenu } from "@/components/AddAgentMenu";
 import { Composer, type RoomAgent } from "@/components/Composer";
 import {
@@ -22,12 +23,21 @@ import {
   type RoomAgentSummary,
 } from "@/components/RoomInfoPanel";
 import { ChevronDownIcon, CoinIcon, InfoIcon } from "@/components/icons";
+import { collectRoomArtifacts } from "@/lib/messageContent";
 import { AgentAvatarGlyph } from "@/components/providerLogos";
 import {
   estimateCostUSD,
   formatCostUSD,
   formatTokenCount,
 } from "@/lib/tokenPricing";
+
+// internal/message.go's own recencyLimit — ListByRoom (the snapshot's
+// message source) never returns more than this many of a room's most
+// recent messages. Duplicated here, not imported (no shared-constant
+// mechanism across the Go/TS boundary in this codebase), purely so the
+// artifacts menu can tell whether the initial snapshot might have cut
+// off older messages — if it changes on the backend, update this too.
+const RECENCY_LIMIT_HINT = 50;
 
 interface AgentPresence {
   agent_id: string;
@@ -224,6 +234,9 @@ export default function RoomViewPage() {
   const [infoOpen, setInfoOpen] = useState(false);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [pinError, setPinError] = useState<string | null>(null);
+  const [initialMessageCount, setInitialMessageCount] = useState<
+    number | null
+  >(null);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   // Tracked in a ref, not state: the entries-changed effect below reads
@@ -332,6 +345,12 @@ export default function RoomViewPage() {
         a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
       );
       setEntries(merged);
+      // Captured once, from the snapshot alone (never touched again as
+      // live messages append to entries below) — this is what tells the
+      // artifacts menu whether the snapshot itself might have already
+      // cut off older history, which a later, larger entries.length
+      // couldn't answer on its own.
+      setInitialMessageCount((data.messages ?? []).length);
 
       const byId: Record<string, ChatMessage> = {};
       for (const m of data.messages ?? []) byId[m.id] = m;
@@ -509,6 +528,35 @@ export default function RoomViewPage() {
 
   const pinnedMessageIds = new Set(decisions.map((d) => d.message_id));
 
+  // Artifacts menu: every file in the room — every fenced code block,
+  // plus every message that's essentially one large pasted block — across
+  // every message currently loaded, same detection MessageRow's own
+  // inline chips use, just run across all of them instead of one. This
+  // is a real, not hypothetical, gap: the SSE snapshot's message history
+  // is capped (internal/message.go's recencyLimit), so a room with more
+  // history than that cap will have older artifacts this list can't see
+  // — mayBeIncomplete below reflects exactly that, surfaced as a plain
+  // caption in the menu rather than silently presented as complete.
+  const loadedMessages = entries
+    .filter((e): e is Extract<TimelineEntry, { kind: "message" }> => e.kind === "message")
+    .map((e) => e.message);
+  const artifactListItems: ArtifactListItem[] = collectRoomArtifacts(
+    loadedMessages,
+  ).map((a) => {
+    const source = loadedMessages.find((m) => m.id === a.messageId)!;
+    return {
+      id: a.id,
+      senderName: displaySenderName(source, agentNames, humanName),
+      createdAt: source.created_at,
+      kind: a.kind,
+      language: a.language,
+      lines: a.lines,
+      code: a.code,
+    };
+  });
+  const artifactsMayBeIncomplete =
+    initialMessageCount !== null && initialMessageCount >= RECENCY_LIMIT_HINT;
+
   // Cost/token pill totals — accumulated client-side from messages
   // already in state (snapshot + live SSE), not a separate backend
   // aggregation endpoint: every ChatMessage already carries its own
@@ -624,6 +672,11 @@ export default function RoomViewPage() {
                 {formatTokenCount(totalInputTokens + totalOutputTokens)} tokens
               </span>
             )}
+            <ArtifactsMenu
+              artifacts={artifactListItems}
+              mayBeIncomplete={artifactsMayBeIncomplete}
+              onOpenArtifact={setArtifact}
+            />
             <button
               type="button"
               title="Room info"

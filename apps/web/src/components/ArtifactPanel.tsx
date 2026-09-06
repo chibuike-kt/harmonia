@@ -44,6 +44,10 @@ export interface ArtifactContent {
   label: string;
   language: string;
   code: string;
+  /** "text" skips syntax highlighting entirely — hljs.highlightAuto
+   *  guessing a "language" for plain pasted prose produces wrong,
+   *  distracting tokenization, not a helpful rendering. */
+  kind: "code" | "text";
 }
 
 interface ArtifactPanelProps {
@@ -72,12 +76,25 @@ const EXTENSIONS: Record<string, string> = {
   markdown: "md",
 };
 
-function highlight(code: string, language: string): string {
-  ensureLanguagesRegistered();
-  if (language !== "text" && hljs.getLanguage(language)) {
-    return hljs.highlight(code, { language }).value;
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+};
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>]/g, (c) => HTML_ESCAPES[c]);
+}
+
+function highlight(artifact: ArtifactContent): string {
+  if (artifact.kind === "text") {
+    return escapeHtml(artifact.code);
   }
-  return hljs.highlightAuto(code).value;
+  ensureLanguagesRegistered();
+  if (artifact.language !== "text" && hljs.getLanguage(artifact.language)) {
+    return hljs.highlight(artifact.code, { language: artifact.language }).value;
+  }
+  return hljs.highlightAuto(artifact.code).value;
 }
 
 interface ArtifactPanelContentProps {
@@ -85,21 +102,54 @@ interface ArtifactPanelContentProps {
   onClose: () => void;
 }
 
+// Draggable-width bounds for the normal (non-enlarged) panel — same
+// drag-from-the-border resize Sidebar.tsx already has, ported here:
+// "expand" means grabbing the panel's own left edge, not just a
+// fullscreen-toggle button.
+const MIN_WIDTH = 320;
+const MAX_WIDTH = 960;
+const DEFAULT_WIDTH = 420;
+
 // Split from ArtifactPanel and keyed by the outer component on the
 // artifact's identity: mounting a fresh instance per opened artifact is
-// what resets `enlarged`/`copied` for a newly opened one, without an
-// effect synchronizing local state off a prop change.
+// what resets `enlarged`/`copied`/`width` for a newly opened one, without
+// an effect synchronizing local state off a prop change.
 function ArtifactPanelContent({
   artifact,
   onClose,
 }: ArtifactPanelContentProps) {
   const [enlarged, setEnlarged] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [width, setWidth] = useState(DEFAULT_WIDTH);
+  const [resizing, setResizing] = useState(false);
 
-  const highlighted = useMemo(
-    () => highlight(artifact.code, artifact.language),
-    [artifact],
-  );
+  const handleResizeStart = (event: React.MouseEvent) => {
+    event.preventDefault();
+    if (enlarged) return;
+    setResizing(true);
+    const onMove = (moveEvent: MouseEvent) => {
+      // The panel is anchored to the right edge of the screen, so its
+      // width is the distance from the drag point to that edge, not the
+      // drag point itself (Sidebar's own handle, anchored to the left
+      // edge, can use clientX directly — this is the mirror image of
+      // that).
+      setWidth(
+        Math.min(
+          MAX_WIDTH,
+          Math.max(MIN_WIDTH, window.innerWidth - moveEvent.clientX),
+        ),
+      );
+    };
+    const onUp = () => {
+      setResizing(false);
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
+  const highlighted = useMemo(() => highlight(artifact), [artifact]);
 
   const handleCopy = async () => {
     try {
@@ -130,9 +180,21 @@ function ArtifactPanelContent({
       className={
         enlarged
           ? "fixed inset-0 z-[60] flex h-screen w-screen flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)]"
-          : "flex h-screen w-[420px] shrink-0 flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)] transition-[width] duration-150"
+          : "relative flex h-screen shrink-0 flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)]"
+      }
+      style={
+        enlarged
+          ? undefined
+          : { width, transition: resizing ? "none" : "width 0.18s ease" }
       }
     >
+      {!enlarged && (
+        <div
+          onMouseDown={handleResizeStart}
+          title="Resize"
+          className="absolute -left-[3px] top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
+        />
+      )}
       <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-3.5 py-3">
         <span className="truncate font-[family-name:var(--login-font-mono)] text-[13px] text-[var(--login-text-secondary)]">
           {artifact.label}
@@ -172,7 +234,7 @@ function ArtifactPanelContent({
           </button>
         </div>
       </div>
-      <pre className="hljs m-0 flex-1 overflow-auto p-4 font-[family-name:var(--login-font-mono)] text-[12.5px] leading-[1.6]">
+      <pre className="hljs no-scrollbar m-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words p-4 font-[family-name:var(--login-font-mono)] text-[12.5px] leading-[1.6]">
         <code dangerouslySetInnerHTML={{ __html: highlighted }} />
       </pre>
     </div>

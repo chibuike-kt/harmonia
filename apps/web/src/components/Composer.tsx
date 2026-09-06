@@ -1,8 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { exceedsPasteThreshold, PASTED_TEXT_TAG } from "@/lib/messageContent";
 import { FileIcon, PlusIcon, SearchIcon, SendIcon } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
+
+interface PastedAttachment {
+  id: string;
+  text: string;
+  lines: number;
+}
 
 export interface RoomAgent {
   id: string;
@@ -32,6 +39,9 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
   const [value, setValue] = useState("");
   const [plusOpen, setPlusOpen] = useState(false);
   const [mentionedAgent, setMentionedAgent] = useState<RoomAgent | null>(null);
+  const [pastedAttachments, setPastedAttachments] = useState<
+    PastedAttachment[]
+  >([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -57,10 +67,29 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
 
   const handleSend = () => {
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed, mentionedAgent?.id ?? null);
+    if (disabled) return;
+    if (!trimmed && pastedAttachments.length === 0) return;
+    // No schema change: the full pasted text still goes out as part of
+    // the message's ordinary content field. Each pasted block is wrapped
+    // in a ```pasted-text fence — the same fence syntax a real code
+    // block uses, just with this reserved tag — so parseMessageContent
+    // splits it into its own segment instead of merging it into
+    // whatever else is in the message. That's what keeps typed text from
+    // getting swallowed into the pasted-file chip: without a marked
+    // boundary, a message that's part typed and part pasted has no way
+    // to tell the two apart once they're joined into one string. A chip
+    // lives outside the textarea entirely (same as the mentioned-agent
+    // chip above it), so there's no tracked cursor position to splice
+    // pasted content back into — it's appended after typed text, not
+    // spliced into the middle. A judgment call, not a precision guarantee.
+    const pastedBlocks = pastedAttachments.map(
+      (p) => "```" + PASTED_TEXT_TAG + "\n" + p.text + "\n```",
+    );
+    const parts = [trimmed, ...pastedBlocks].filter((p) => p !== "");
+    onSend(parts.join("\n\n"), mentionedAgent?.id ?? null);
     setValue("");
     setMentionedAgent(null);
+    setPastedAttachments([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -68,6 +97,18 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const text = e.clipboardData.getData("text/plain");
+    if (!text || !exceedsPasteThreshold(text)) return;
+    // Below the threshold, do nothing — let the browser's default paste
+    // behavior insert it into the textarea like any normal paste.
+    e.preventDefault();
+    setPastedAttachments((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), text, lines: text.split("\n").length },
+    ]);
   };
 
   return (
@@ -139,6 +180,32 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
           </div>
         )}
 
+        {pastedAttachments.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+            {pastedAttachments.map((p) => (
+              <span
+                key={p.id}
+                className="flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-1.5 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-secondary)]"
+              >
+                <FileIcon />
+                Pasted text · {p.lines} line{p.lines === 1 ? "" : "s"}
+                <button
+                  type="button"
+                  aria-label="Remove pasted text"
+                  onClick={() =>
+                    setPastedAttachments((prev) =>
+                      prev.filter((x) => x.id !== p.id),
+                    )
+                  }
+                  className="ml-0.5 text-[var(--login-text-muted)] hover:text-[var(--login-text)]"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-end gap-2.5">
           <button
             type="button"
@@ -154,13 +221,16 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Message this room — @mention an agent to address it"
             className="no-scrollbar max-h-[160px] flex-1 resize-none bg-transparent py-2 font-[family-name:var(--login-font-sans)] text-[14.5px] leading-[1.5] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
           />
           <button
             type="button"
             aria-label="Send message"
-            disabled={disabled || value.trim() === ""}
+            disabled={
+              disabled || (value.trim() === "" && pastedAttachments.length === 0)
+            }
             onClick={handleSend}
             className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg bg-[var(--login-accent)] text-[var(--login-bg)] hover:bg-[#63e0d1] disabled:cursor-not-allowed disabled:opacity-40"
           >

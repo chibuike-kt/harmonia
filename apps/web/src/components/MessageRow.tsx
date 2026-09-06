@@ -1,10 +1,11 @@
 "use client";
 
-import { parseMessageContent } from "@/lib/messageContent";
+import { PASTED_TEXT_TAG, parseMessageContent } from "@/lib/messageContent";
 import type { ArtifactContent } from "./ArtifactPanel";
 import {
   CodeBracketsIcon,
   CopyIcon,
+  FileIcon,
   PinIcon,
   ReplyArrowIcon,
   WarnIcon,
@@ -60,6 +61,90 @@ async function copyText(text: string) {
   }
 }
 
+// Same visual language as the code-artifact chip below (icon + label in
+// a bordered box), just FileIcon instead of CodeBracketsIcon — this is
+// generic pasted text, not a code snippet, and the composer's own
+// pending-paste chip (Composer.tsx) uses this exact same look so the
+// two read as one consistent feature, not two unrelated ones.
+function PastedTextChip({
+  lines,
+  onClick,
+}: {
+  lines: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-1.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-2 font-[family-name:var(--login-font-mono)] text-[12.5px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+    >
+      <FileIcon />
+      Pasted text · {lines} line{lines === 1 ? "" : "s"}
+    </button>
+  );
+}
+
+// Shared by both the human bubble and the agent row: a message's
+// content, segment by segment — plain paragraphs for text, a code chip
+// for a real fenced code block, a pasted-text chip for a
+// PASTED_TEXT_TAG block (the composer's paste-as-file marker — see
+// Composer.tsx's handleSend). Rendering this the same way regardless of
+// sender is what keeps typed text and a pasted block visually separate
+// in a mixed message: each is its own segment, not one blob decided by
+// the whole message's size.
+function renderContent(
+  content: string,
+  senderName: string,
+  onOpenArtifact: (artifact: ArtifactContent) => void,
+) {
+  return parseMessageContent(content).map((seg, i) => {
+    if (seg.type === "text") {
+      return (
+        seg.text.trim() && (
+          <p key={i} className="mb-2 whitespace-pre-wrap last:mb-0">
+            {seg.text.trim()}
+          </p>
+        )
+      );
+    }
+    if (seg.language === PASTED_TEXT_TAG) {
+      return (
+        <PastedTextChip
+          key={i}
+          lines={seg.lines}
+          onClick={() =>
+            onOpenArtifact({
+              label: `${senderName.toLowerCase()}-pasted-text.txt`,
+              language: "text",
+              code: seg.code,
+              kind: "text",
+            })
+          }
+        />
+      );
+    }
+    return (
+      <button
+        key={i}
+        type="button"
+        onClick={() =>
+          onOpenArtifact({
+            label: `${senderName.toLowerCase()}-snippet.${seg.language}`,
+            language: seg.language,
+            code: seg.code,
+            kind: "code",
+          })
+        }
+        className="mt-1.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-2 font-[family-name:var(--login-font-mono)] text-[12.5px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+      >
+        <CodeBracketsIcon />
+        {seg.language} · {seg.lines} line{seg.lines === 1 ? "" : "s"}
+      </button>
+    );
+  });
+}
+
 /**
  * One row of the room timeline's chat grammar — a Slack-style row for an
  * agent (avatar + name + timestamp, left-aligned, no bubble) or a
@@ -79,17 +164,14 @@ export function MessageRow({
   pinned,
   onPinDecision,
 }: MessageRowProps) {
-  const segments = parseMessageContent(message.content);
   const isHuman = message.sender_kind === "human";
 
   if (isHuman) {
     return (
       <div className="group/msg flex justify-end">
         <div className="max-w-[78%]">
-          <div className="rounded-[14px_14px_3px_14px] border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3.5 py-2.5">
-            <div className="whitespace-pre-wrap text-[14.5px] leading-[1.6] text-[var(--login-text)]">
-              {message.content}
-            </div>
+          <div className="rounded-[14px_14px_3px_14px] border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3.5 py-2.5 text-[16px] leading-[1.6] text-[var(--login-text)]">
+            {renderContent(message.content, senderName, onOpenArtifact)}
           </div>
           <div className="mt-1 flex items-center justify-end gap-2">
             <span className="font-[family-name:var(--login-font-mono)] text-[11.5px] text-[var(--login-text-muted)]">
@@ -157,31 +239,7 @@ export function MessageRow({
           )}
         </div>
         <div className="text-[14.5px] leading-[1.6] text-[var(--login-text)]">
-          {segments.map((seg, i) =>
-            seg.type === "text" ? (
-              seg.text.trim() && (
-                <p key={i} className="mb-2 whitespace-pre-wrap last:mb-0">
-                  {seg.text.trim()}
-                </p>
-              )
-            ) : (
-              <button
-                key={i}
-                type="button"
-                onClick={() =>
-                  onOpenArtifact({
-                    label: `${senderName.toLowerCase()}-snippet.${seg.language}`,
-                    language: seg.language,
-                    code: seg.code,
-                  })
-                }
-                className="mt-1.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-2 font-[family-name:var(--login-font-mono)] text-[12.5px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
-              >
-                <CodeBracketsIcon />
-                {seg.language} · {seg.lines} line{seg.lines === 1 ? "" : "s"}
-              </button>
-            ),
-          )}
+          {renderContent(message.content, senderName, onOpenArtifact)}
         </div>
         <div className="mt-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
           <button
