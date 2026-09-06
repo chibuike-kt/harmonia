@@ -82,13 +82,13 @@ func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, tokenHash s
 // or revoked — those cases aren't distinguished in the response, so a
 // caller can't use it to probe session state.
 func (s *Store) Authenticate(ctx context.Context, tokenHash string) (User, error) {
-	var u User
-	err := s.pool.QueryRow(ctx, `
-		SELECT u.id, u.github_id, u.google_id, u.username, u.display_name, u.avatar_url, u.email, u.created_at
+	u, err := scanUser(s.pool.QueryRow(ctx, `
+		SELECT u.id, u.github_id, u.google_id, u.username, u.display_name,
+		       u.avatar_url, u.email, u.created_at, u.preferred_name, u.custom_instructions
 		FROM sessions se
 		JOIN users u ON u.id = se.user_id
 		WHERE se.token_hash = $1 AND se.revoked_at IS NULL AND se.expires_at > now()
-	`, tokenHash).Scan(&u.ID, &u.GitHubID, &u.GoogleID, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Email, &u.CreatedAt)
+	`, tokenHash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrSessionNotFound
 	}

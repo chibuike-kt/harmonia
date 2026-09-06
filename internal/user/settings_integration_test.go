@@ -106,6 +106,73 @@ func TestIntegration_MeAndUpdateMe(t *testing.T) {
 	}
 }
 
+// TestIntegration_UpdateMe_PreferredNameAndCustomInstructions exercises
+// ADR-005's two new fields end to end against real Postgres: both can
+// be set independently or together, an omitted field is left unchanged
+// (the same COALESCE pattern username/display_name already use), and —
+// unlike username — an empty string is accepted as a real value (this
+// is how a human clears either preference), not rejected.
+func TestIntegration_UpdateMe_PreferredNameAndCustomInstructions(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	s := NewStore(pool)
+	u := seedSettingsTestUser(t, ctx, pool, "settings-prefs-")
+
+	rec := doUpdateMeRequest(t, s.UpdateMeHandler(), u, `{"preferred_name":"Kingsley"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH preferred_name status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var afterPreferred User
+	if err := json.Unmarshal(rec.Body.Bytes(), &afterPreferred); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if afterPreferred.PreferredName == nil || *afterPreferred.PreferredName != "Kingsley" {
+		t.Fatalf("PreferredName = %v, want %q", afterPreferred.PreferredName, "Kingsley")
+	}
+	if afterPreferred.CustomInstructions != nil {
+		t.Fatalf("CustomInstructions = %v, want nil (untouched)", afterPreferred.CustomInstructions)
+	}
+
+	rec2 := doUpdateMeRequest(t, s.UpdateMeHandler(), u, `{"custom_instructions":"Keep answers concise. Default to Go."}`)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("PATCH custom_instructions status = %d, want %d, body = %s", rec2.Code, http.StatusOK, rec2.Body.String())
+	}
+	var afterInstructions User
+	if err := json.Unmarshal(rec2.Body.Bytes(), &afterInstructions); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if afterInstructions.PreferredName == nil || *afterInstructions.PreferredName != "Kingsley" {
+		t.Fatalf("PreferredName = %v, want %q (unchanged)", afterInstructions.PreferredName, "Kingsley")
+	}
+	if afterInstructions.CustomInstructions == nil || *afterInstructions.CustomInstructions != "Keep answers concise. Default to Go." {
+		t.Fatalf("CustomInstructions = %v, want the new value", afterInstructions.CustomInstructions)
+	}
+
+	// An empty string clears custom_instructions — unlike username, this
+	// is accepted, not rejected.
+	rec3 := doUpdateMeRequest(t, s.UpdateMeHandler(), u, `{"custom_instructions":""}`)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("PATCH empty custom_instructions status = %d, want %d, body = %s", rec3.Code, http.StatusOK, rec3.Body.String())
+	}
+	var afterCleared User
+	if err := json.Unmarshal(rec3.Body.Bytes(), &afterCleared); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if afterCleared.CustomInstructions == nil || *afterCleared.CustomInstructions != "" {
+		t.Fatalf("CustomInstructions after clearing = %v, want empty string, not nil/unchanged", afterCleared.CustomInstructions)
+	}
+}
+
 func seedSettingsTestUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, githubIDPrefix string) User {
 	t.Helper()
 	var u User

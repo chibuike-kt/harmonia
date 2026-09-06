@@ -101,16 +101,19 @@ func (s *Store) MeHandler() http.HandlerFunc {
 }
 
 type updateMeRequest struct {
-	Username    *string `json:"username"`
-	DisplayName *string `json:"display_name"`
+	Username           *string `json:"username"`
+	DisplayName        *string `json:"display_name"`
+	PreferredName      *string `json:"preferred_name"`
+	CustomInstructions *string `json:"custom_instructions"`
 }
 
 // UpdateMeHandler returns the handler for PATCH /v1/users/me. Mount it
-// behind Authenticate. Username and display name only — this phase's
-// entire "settings" surface is this plus the sessions and credentials
-// endpoints, not a new subsystem. A field omitted or null in the request
-// body is left unchanged; a present-but-empty username is rejected
-// rather than silently ignored or blanking out a NOT NULL column.
+// behind Authenticate. A field omitted or null in the request body is
+// left unchanged; a present-but-empty username is rejected rather than
+// silently ignored or blanking out a NOT NULL column — preferred_name
+// and custom_instructions have no such restriction, since both are
+// nullable free-text preferences (ADR-005) and an empty string is a
+// legitimate way to clear either one.
 func (s *Store) UpdateMeHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := FromContext(r.Context())
@@ -129,7 +132,7 @@ func (s *Store) UpdateMeHandler() http.HandlerFunc {
 			return
 		}
 
-		updated, err := s.UpdateMe(r.Context(), u.ID, req.Username, req.DisplayName)
+		updated, err := s.UpdateMe(r.Context(), u.ID, req.Username, req.DisplayName, req.PreferredName, req.CustomInstructions)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update user")
 			return
