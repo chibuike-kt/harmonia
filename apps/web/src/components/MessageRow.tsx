@@ -238,7 +238,7 @@ export function MessageRow({
           </div>
         )}
         <div className="mb-0.5 flex items-baseline gap-2">
-          <span className="text-[14px] font-semibold text-[var(--login-text)]">
+          <span className="text-[15px] font-semibold text-[var(--login-text)]">
             {senderName}
           </span>
           <span className="font-[family-name:var(--login-font-mono)] text-[11.5px] text-[var(--login-text-muted)]">
@@ -251,7 +251,7 @@ export function MessageRow({
             </span>
           )}
         </div>
-        <div className="text-[14.5px] leading-[1.6] text-[var(--login-text)]">
+        <div className="text-[16px] leading-[1.6] text-[var(--login-text)]">
           {renderContent(message.content, senderName, onOpenArtifact)}
         </div>
         <div className="mt-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">

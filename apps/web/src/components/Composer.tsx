@@ -223,7 +223,7 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder="Message this room — @mention an agent to address it"
-            className="no-scrollbar max-h-[160px] flex-1 resize-none bg-transparent py-2 font-[family-name:var(--login-font-sans)] text-[14.5px] leading-[1.5] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
+            className="no-scrollbar max-h-[160px] flex-1 resize-none bg-transparent py-2 font-[family-name:var(--login-font-sans)] text-[16px] leading-[1.5] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
           />
           <button
             type="button"
