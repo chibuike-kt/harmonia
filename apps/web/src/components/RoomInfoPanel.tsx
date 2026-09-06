@@ -1,5 +1,6 @@
 "use client";
 
+import { AddAgentMenu, type AddedAgent } from "./AddAgentMenu";
 import { CloseIcon } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
 
@@ -23,6 +24,8 @@ interface RoomInfoPanelProps {
   objective: string | null;
   agents: RoomAgentSummary[];
   decisions: Decision[];
+  roomId: string;
+  onAgentAdded: (agent: AddedAgent) => void;
 }
 
 /**
@@ -44,6 +47,8 @@ export function RoomInfoPanel({
   objective,
   agents,
   decisions,
+  roomId,
+  onAgentAdded,
 }: RoomInfoPanelProps) {
   return (
     <div
@@ -80,8 +85,15 @@ export function RoomInfoPanel({
             </div>
 
             <div className="mb-5">
-              <div className="mb-2 font-[family-name:var(--login-font-mono)] text-[11px] uppercase tracking-wide text-[var(--login-text-muted)]">
-                Agents
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-[family-name:var(--login-font-mono)] text-[11px] uppercase tracking-wide text-[var(--login-text-muted)]">
+                  Agents
+                </span>
+                <AddAgentMenu
+                  roomId={roomId}
+                  onAdded={onAgentAdded}
+                  label="Add agent"
+                />
               </div>
               {agents.length === 0 ? (
                 <p className="text-[13.5px] text-[var(--login-text-muted)]">

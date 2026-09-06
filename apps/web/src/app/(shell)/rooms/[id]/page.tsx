@@ -8,6 +8,7 @@ import {
   ArtifactPanel,
   type ArtifactContent,
 } from "@/components/ArtifactPanel";
+import { AddAgentMenu } from "@/components/AddAgentMenu";
 import { Composer, type RoomAgent } from "@/components/Composer";
 import {
   MessageRow,
@@ -21,6 +22,7 @@ import {
   type RoomAgentSummary,
 } from "@/components/RoomInfoPanel";
 import { ChevronDownIcon, CoinIcon, InfoIcon } from "@/components/icons";
+import { AgentAvatarGlyph } from "@/components/providerLogos";
 import {
   estimateCostUSD,
   formatCostUSD,
@@ -252,13 +254,18 @@ export default function RoomViewPage() {
       .catch(() => {});
   }, [roomId]);
 
-  useEffect(() => {
+  // Full agent objects, not just {id, name}: the info panel wants
+  // provider + capabilities too, and the cost pill needs provider to
+  // price each agent's usage. One fetch, three consumers (this, the
+  // composer's @-picker via roomAgents, the pill's per-message pricing
+  // via agentProviders) rather than three separate calls. Extracted out
+  // of its own effect so AddAgentMenu's onAdded can re-run this same
+  // fetch after registering a new agent — the same reload-after-mutation
+  // convention every other mutation on this page already follows
+  // (Sidebar's loadRooms, this page's own loadDecisions below), rather
+  // than hand-splicing the new agent into four separate state shapes.
+  const loadRoomAgents = () => {
     if (!roomId) return;
-    // Full agent objects, not just {id, name}: the info panel wants
-    // provider + capabilities too, and the cost pill needs provider to
-    // price each agent's usage. One fetch, three consumers (this, the
-    // composer's @-picker via roomAgents, the pill's per-message
-    // pricing via agentProviders) rather than three separate calls.
     void apiFetch<
       { id: string; name: string; provider: string; capabilities: string[] }[]
     >(`/v1/rooms/${roomId}/agents`)
@@ -289,7 +296,9 @@ export default function RoomViewPage() {
         setRoomAgents([]);
         setRoomAgentSummaries([]);
       });
-  }, [roomId]);
+  };
+
+  useEffect(loadRoomAgents, [roomId]);
 
   const loadDecisions = () => {
     if (!roomId) return;
@@ -637,6 +646,30 @@ export default function RoomViewPage() {
           </div>
         </div>
 
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-[var(--login-border)] px-6 py-2">
+          <span className="font-[family-name:var(--login-font-mono)] text-[11px] text-[var(--login-text-muted)]">
+            Agents:
+          </span>
+          {roomAgentSummaries.map((a) => (
+            <span
+              key={a.id}
+              className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-0.5 pl-1 pr-2.5 text-[12px] text-[var(--login-text-secondary)]"
+            >
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
+                <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
+              </span>
+              {a.name}
+            </span>
+          ))}
+          {roomId && (
+            <AddAgentMenu
+              roomId={roomId}
+              onAdded={loadRoomAgents}
+              label={roomAgentSummaries.length === 0 ? "Add an agent to get started" : "Add agent"}
+            />
+          )}
+        </div>
+
         <div
           ref={timelineRef}
           onScroll={handleScroll}
@@ -689,6 +722,8 @@ export default function RoomViewPage() {
         objective={objective}
         agents={roomAgentSummaries}
         decisions={decisions}
+        roomId={roomId ?? ""}
+        onAgentAdded={loadRoomAgents}
       />
       <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
     </div>
