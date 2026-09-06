@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ThinkingOrb } from "thinking-orbs";
 import {
@@ -16,6 +15,7 @@ import { createRoom } from "@/lib/createRoom";
 
 interface Me {
   display_name?: string;
+  preferred_name?: string;
   username: string;
 }
 
@@ -84,7 +84,10 @@ export default function DashboardPage() {
     // never had to handle this since its name was a hardcoded string
     // with no fetch in between.
     if (!meLoaded) return;
-    const name = me?.display_name || me?.username || "there";
+    // ADR-005: preferred_name is what agents/the app should call someone
+    // casually — falls back through display_name/username, same as
+    // before, for a user who's never set it.
+    const name = me?.preferred_name || me?.display_name || me?.username || "there";
     const options = headingOptions(name);
     const lastIndex = Number(sessionStorage.getItem("lastHeadingIndex"));
     let nextIndex = Math.floor(Math.random() * options.length);
@@ -125,13 +128,20 @@ export default function DashboardPage() {
             <PlusIcon size={16} strokeWidth={1.8} />
             {creatingRoom ? "Creating…" : "Create a new room"}
           </button>
-          <Link
-            href="/connect-agents"
+          <button
+            type="button"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent("harmonia:open-settings", {
+                  detail: { category: "agents" },
+                }),
+              )
+            }
             className="flex h-[48px] items-center gap-2 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-6 text-[15.5px] font-medium text-[var(--login-text)] hover:border-[#3A4453] hover:bg-[#1C222B]"
           >
             <AgentsIcon size={17} />
             Connect an agent
-          </Link>
+          </button>
         </div>
         {createRoomError && (
           <p className="mt-3 text-[13px] text-red-400">{createRoomError}</p>

@@ -308,6 +308,57 @@ export function SettingsIcon() {
   );
 }
 
+export function SessionsIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <rect x="2" y="3" width="12" height="8" rx="1.5" />
+      <path d="M6 14h4M8 11v3" />
+    </svg>
+  );
+}
+
+export function BillingIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <rect x="1.5" y="3.5" width="13" height="9" rx="1.5" />
+      <path d="M1.5 6.5h13" />
+    </svg>
+  );
+}
+
+export function NotificationsIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <path d="M8 1.5a4 4 0 00-4 4v3l-1.5 2.5h11L12 8.5v-3a4 4 0 00-4-4z" />
+      <path d="M6.5 13.5a1.5 1.5 0 003 0" />
+    </svg>
+  );
+}
+
 export function HelpIcon() {
   return (
     <svg

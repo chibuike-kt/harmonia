@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
 import { createRoom } from "@/lib/createRoom";
 import { useIsTruncated } from "@/lib/useIsTruncated";
+import { SettingsModal, type SettingsCategory } from "./SettingsModal";
 import { Tooltip } from "./Tooltip";
 import {
   AgentsIcon,
@@ -55,25 +56,23 @@ const DEFAULT_WIDTH = 272;
 // then navigate), not a link to a naming form (see ADR-004's addendum:
 // /rooms/new no longer exists), so it's rendered separately below with
 // its own click handler rather than through this static Link list.
+// "Agents" isn't a plain Link either (see its own render below): it
+// opens the settings modal's Connected agents category directly, rather
+// than round-tripping through the now-retired /connect-agents route.
 const QUICK_NAV = [
   { label: "Dashboard", href: "/dashboard", Icon: GridIcon },
-  { label: "Agents", href: "/connect-agents", Icon: AgentsIcon },
   { label: "Activity", href: "#", Icon: ActivityIcon },
 ] as const;
 
-// None of these concepts (org/teams, security settings, a settings page,
-// real search) exist in the backend yet — explicitly out of scope per
-// the brief. Log out is handled separately below since it's a real action,
-// not a link.
-const PROFILE_PLACEHOLDER_ITEMS = [
-  { label: "Search", Icon: SearchIcon },
-  { label: "Team & roles", Icon: TeamIcon },
-  { label: "Security", Icon: SecurityIcon },
-] as const;
-const PROFILE_PLACEHOLDER_ITEMS_2 = [
-  { label: "Settings", Icon: SettingsIcon },
-  { label: "Get help", Icon: HelpIcon },
-] as const;
+// Team & roles and Security are real settings categories now (ADR-005),
+// but as honest placeholders — same "not built yet" explanation whether
+// opened from here or from Settings itself, so these still just open the
+// modal rather than pretending this menu has its own separate feature.
+// Real search doesn't exist anywhere in this app yet, so that one stays
+// a plain inert item. Settings and Log out are handled separately below
+// since they're real actions, not links into the settings modal's
+// placeholder categories.
+const PROFILE_PLACEHOLDER_ITEMS = [{ label: "Search", Icon: SearchIcon }];
 
 function formatRelativeTime(iso: string): string {
   const diffMinutes = Math.floor(
@@ -327,6 +326,10 @@ export function Sidebar() {
   const [creatingRoom, setCreatingRoom] = useState(false);
   const [createRoomError, setCreateRoomError] = useState<string | null>(null);
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCategory, setSettingsCategory] =
+    useState<SettingsCategory>("general");
+
   const profileRef = useRef<HTMLDivElement>(null);
 
   const loadRooms = useCallback(() => {
@@ -334,6 +337,22 @@ export function Sidebar() {
       .then(setRooms)
       .catch(() => setRooms([]));
   }, []);
+
+  // Extracted so the settings modal can call this same fetch again after
+  // a General-panel save (display_name change) — it holds its own
+  // separate /v1/users/me fetch and has no other way to tell this
+  // profile button to refresh.
+  const loadMe = useCallback(() => {
+    return apiFetch<Me>("/v1/users/me")
+      .then(setMe)
+      .catch(async (err: unknown) => {
+        setMe(null);
+        if (err instanceof ApiError && err.status === 401) {
+          await apiFetch("/v1/auth/logout", { method: "POST" }).catch(() => {});
+          router.push("/login");
+        }
+      });
+  }, [router]);
 
   useEffect(() => {
     // Same fetch-on-mount pattern as connect-agents' own load: a plain
@@ -350,16 +369,46 @@ export function Sidebar() {
     // the httpOnly cookie for real) before redirecting, rather than just
     // pushing straight to /login — without that, a stale-but-present
     // cookie has middleware bounce straight back here on the next load.
-    void apiFetch<Me>("/v1/users/me")
-      .then(setMe)
-      .catch(async (err: unknown) => {
-        setMe(null);
-        if (err instanceof ApiError && err.status === 401) {
-          await apiFetch("/v1/auth/logout", { method: "POST" }).catch(() => {});
-          router.push("/login");
-        }
-      });
-  }, [router, loadRooms]);
+    void loadMe();
+  }, [loadRooms, loadMe]);
+
+  useEffect(() => {
+    // The retired /connect-agents route (ADR-005) redirects here with
+    // ?settings=<category> rather than rendering its own page — it has
+    // no sidebar of its own to open the modal directly, so it hands off
+    // through the URL instead. Picked up once on mount, then stripped
+    // immediately so it doesn't reopen on a later navigation or refresh.
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("settings");
+    if (requested) {
+      // Reading a one-time redirect handoff via window.location.search on
+      // mount — same justification as connect-agents' own fetch-on-mount
+      // comment for this same lint rule.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSettingsCategory(requested as SettingsCategory);
+      setSettingsOpen(true);
+      router.replace(pathname);
+    }
+    // Intentionally mount-only: re-running this on every pathname change
+    // would reopen the modal after the replace above changes the URL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Lets any page inside the shell open the settings modal to a
+    // specific category without prop-drilling through every layout in
+    // between — the same cross-component pattern the room page's own
+    // "harmonia:room-updated" broadcast already uses for the same reason.
+    function onOpenSettings(event: Event) {
+      const category = (event as CustomEvent<{ category?: SettingsCategory }>)
+        .detail?.category;
+      setSettingsCategory(category ?? "general");
+      setSettingsOpen(true);
+    }
+    window.addEventListener("harmonia:open-settings", onOpenSettings);
+    return () =>
+      window.removeEventListener("harmonia:open-settings", onOpenSettings);
+  }, []);
 
   useEffect(() => {
     function onDocumentClick(event: MouseEvent) {
@@ -627,6 +676,17 @@ export function Sidebar() {
             <PlusIcon />
             {creatingRoom ? "Creating…" : "New room"}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSettingsCategory("agents");
+              setSettingsOpen(true);
+            }}
+            className="flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-sm text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+          >
+            <AgentsIcon />
+            Agents
+          </button>
           {QUICK_NAV.filter(({ href }) => href !== "/dashboard").map(
             ({ label, href, Icon }) => {
               const active = pathname === href;
@@ -762,17 +822,50 @@ export function Sidebar() {
                   {label}
                 </a>
               ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsCategory("team");
+                  setSettingsOpen(true);
+                  setProfileOpen(false);
+                }}
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <TeamIcon />
+                Team &amp; roles
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsCategory("security");
+                  setSettingsOpen(true);
+                  setProfileOpen(false);
+                }}
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <SecurityIcon />
+                Security
+              </button>
               <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
-              {PROFILE_PLACEHOLDER_ITEMS_2.map(({ label, Icon }) => (
-                <a
-                  key={label}
-                  href="#"
-                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-                >
-                  <Icon />
-                  {label}
-                </a>
-              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsCategory("general");
+                  setSettingsOpen(true);
+                  setProfileOpen(false);
+                }}
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <SettingsIcon />
+                Settings
+              </button>
+              <a
+                href="#"
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <HelpIcon />
+                Get help
+              </a>
               <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
               <button
                 type="button"
@@ -804,6 +897,13 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialCategory={settingsCategory}
+        onProfileSaved={() => void loadMe()}
+      />
     </div>
   );
 }
