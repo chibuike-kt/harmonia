@@ -16,6 +16,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/provider"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 // titleGenerationTimeout bounds one title-generation call. Short — this
@@ -54,12 +55,13 @@ var titleProviderPreference = []agent.Provider{agent.ProviderAnthropic, agent.Pr
 type TitleGenerator struct {
 	rooms             *room.Store
 	credentials       *credentials.Store
+	users             *user.Store
 	hub               realtime.Publisher
 	newProviderClient newProviderClientFunc
 }
 
-func NewTitleGenerator(rooms *room.Store, creds *credentials.Store, hub realtime.Publisher) *TitleGenerator {
-	return &TitleGenerator{rooms: rooms, credentials: creds, hub: hub, newProviderClient: newProviderClient}
+func NewTitleGenerator(rooms *room.Store, creds *credentials.Store, users *user.Store, hub realtime.Publisher) *TitleGenerator {
+	return &TitleGenerator{rooms: rooms, credentials: creds, users: users, hub: hub, newProviderClient: newProviderClient}
 }
 
 // GenerateTitle launches, in a new goroutine, generation of roomID's
@@ -95,7 +97,7 @@ func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID
 		return
 	}
 
-	resp, err := client.Generate(ctx, buildTitleRequest(firstMessageContent))
+	resp, err := client.Generate(ctx, buildTitleRequest(firstMessageContent, t.loadCustomInstructions(ctx, ownerID)))
 	if err != nil {
 		log.Printf("ERROR message: generate title for room %s: %v", roomID, err)
 		return
@@ -162,12 +164,39 @@ func (t *TitleGenerator) resolveClient(ctx context.Context, ownerID *uuid.UUID) 
 // around it — a system prompt this narrow is appropriate here in a way
 // it wouldn't be for a real conversational reply, since the only
 // output this call has any use for is the bare title string itself.
-func buildTitleRequest(firstMessageContent string) provider.GenerateRequest {
-	return provider.GenerateRequest{
-		SystemPrompt: "Generate a short title (3 to 6 words) summarizing the topic of the message below. " +
-			"Reply with only the title itself — no quotation marks, no trailing punctuation, no preamble.",
-		Messages: []provider.Message{{Role: "user", Content: firstMessageContent}},
+// customInstructions is prepended the same way Orchestrator's
+// buildGenerateRequest does, so a user's stated preferences (e.g.
+// "always title things in French") apply here too — same source of
+// truth, same context-assembly point as a real reply.
+func buildTitleRequest(firstMessageContent, customInstructions string) provider.GenerateRequest {
+	systemPrompt := "Generate a short title (3 to 6 words) summarizing the topic of the message below. " +
+		"Reply with only the title itself — no quotation marks, no trailing punctuation, no preamble."
+	if customInstructions != "" {
+		systemPrompt = customInstructions + "\n\n" + systemPrompt
 	}
+	return provider.GenerateRequest{
+		SystemPrompt: systemPrompt,
+		Messages:     []provider.Message{{Role: "user", Content: firstMessageContent}},
+	}
+}
+
+// loadCustomInstructions mirrors Orchestrator.loadCustomInstructions —
+// same soft-fail posture: a lookup failure logs and falls back to no
+// instructions rather than failing title generation, which has no
+// ADR-004 requirement to surface a visible failure.
+func (t *TitleGenerator) loadCustomInstructions(ctx context.Context, ownerID *uuid.UUID) string {
+	if ownerID == nil {
+		return ""
+	}
+	owner, err := t.users.GetByID(ctx, *ownerID)
+	if err != nil {
+		log.Printf("ERROR message: load owner %s for title custom instructions: %v", *ownerID, err)
+		return ""
+	}
+	if owner.CustomInstructions == nil {
+		return ""
+	}
+	return *owner.CustomInstructions
 }
 
 // sanitizeTitle strips the surrounding quotes/punctuation a model adds

@@ -17,6 +17,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/provider/anthropic"
 	"github.com/chibuike-kt/harmonia/internal/provider/openai"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
+	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
 // generationTimeout bounds one @mention's whole invocation — agent
@@ -45,14 +46,15 @@ type Orchestrator struct {
 	messages          *Store
 	agents            *agent.Store
 	credentials       *credentials.Store
+	users             *user.Store
 	hub               realtime.Publisher
 	rdb               *redis.Client
 	newProviderClient newProviderClientFunc
 }
 
-func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
+func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, users *user.Store, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
 	return &Orchestrator{
-		messages: messages, agents: agents, credentials: creds, hub: hub, rdb: rdb,
+		messages: messages, agents: agents, credentials: creds, users: users, hub: hub, rdb: rdb,
 		newProviderClient: newProviderClient,
 	}
 }
@@ -111,7 +113,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		return
 	}
 
-	resp, err := client.Generate(ctx, buildGenerateRequest(a, history))
+	resp, err := client.Generate(ctx, buildGenerateRequest(a, history, o.loadCustomInstructions(ctx, roomOwnerID)))
 	if err != nil {
 		log.Printf("ERROR message: generate reply for agent %s: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, fmt.Sprintf("the provider call failed: %v", err))
@@ -191,6 +193,28 @@ func (o *Orchestrator) resolveClient(ctx context.Context, roomOwnerID *uuid.UUID
 	return o.newProviderClient(a.Provider, apiKey)
 }
 
+// loadCustomInstructions returns roomOwnerID's custom instructions
+// (ADR-005), or "" if there's no owner, none are set, or the lookup
+// fails. This is a soft dependency, not a hard requirement: a human's
+// @mention is waiting on a real reply either way, and custom
+// instructions are a nice-to-have refinement of that reply's tone, not
+// something worth failing the whole generation over if this one lookup
+// has a transient problem.
+func (o *Orchestrator) loadCustomInstructions(ctx context.Context, roomOwnerID *uuid.UUID) string {
+	if roomOwnerID == nil {
+		return ""
+	}
+	owner, err := o.users.GetByID(ctx, *roomOwnerID)
+	if err != nil {
+		log.Printf("ERROR message: load owner %s for custom instructions: %v", *roomOwnerID, err)
+		return ""
+	}
+	if owner.CustomInstructions == nil {
+		return ""
+	}
+	return *owner.CustomInstructions
+}
+
 // resolveFailureReason turns a resolveClient error into the visible
 // failure message's explanation — specific enough for a human to act on
 // (connect a credential, or set the dev env var) without leaking
@@ -241,11 +265,19 @@ func newProviderClient(providerName agent.Provider, apiKey string) (provider.Age
 // APIs support. This phase proves the loop with one agent without
 // hard-coding it, but doesn't build multi-agent conversational depth
 // (name-attributing a third party's turns) — that's real, later work.
-func buildGenerateRequest(a agent.Agent, history []Message) provider.GenerateRequest {
+func buildGenerateRequest(a agent.Agent, history []Message, customInstructions string) provider.GenerateRequest {
 	systemPrompt := fmt.Sprintf(
 		"You are %s, an AI agent participating in a chat room in Harmonia, a tool for coordinating work between humans and AI agents. Respond naturally and helpfully to the conversation below.",
 		a.Name,
 	)
+	// Prepended, not appended: the room owner's own standing preference
+	// for how any agent should respond takes precedence over this
+	// generic role framing, the same "prepend it" placement the build
+	// brief specifies (ADR-005) — same spot the recency-window history
+	// itself gets assembled relative to the rest of the prompt.
+	if customInstructions != "" {
+		systemPrompt = fmt.Sprintf("%s\n\n%s", customInstructions, systemPrompt)
+	}
 	msgs := make([]provider.Message, 0, len(history))
 	for _, m := range history {
 		role := "user"

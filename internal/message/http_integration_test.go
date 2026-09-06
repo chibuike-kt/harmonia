@@ -41,9 +41,17 @@ type fakeProviderAgent struct {
 	// (see TestIntegration_TitleGenerator_RaceGuardSkipsManualRename)
 	// without relying on a real sleep/timing race.
 	beforeReturn func()
+	// capturedRequest records the last GenerateRequest this fake
+	// received, so a test can assert on what Orchestrator/TitleGenerator
+	// actually assembled (e.g. custom_instructions prepended into
+	// SystemPrompt) rather than only on the reply that came back.
+	capturedRequest *provider.GenerateRequest
 }
 
-func (f *fakeProviderAgent) Generate(context.Context, provider.GenerateRequest) (provider.GenerateResponse, error) {
+func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
+	if f.capturedRequest != nil {
+		*f.capturedRequest = req
+	}
 	if f.beforeReturn != nil {
 		f.beforeReturn()
 	}
@@ -148,8 +156,8 @@ func TestIntegration_CreateHandler_HumanOnly(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, realtime.NewHub(), rdb)
-	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	orch := NewOrchestrator(s, agents, creds, users, realtime.NewHub(), rdb)
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	rec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"just a note, no mention"}`)
@@ -200,8 +208,8 @@ func TestIntegration_CreateHandler_RoomOwnership(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, realtime.NewHub(), rdb)
-	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	orch := NewOrchestrator(s, agents, creds, users, realtime.NewHub(), rdb)
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	if rec := doCreateMessage(h, owner, uuid.New().String(), `{"content":"x"}`); rec.Code != http.StatusNotFound {
@@ -241,8 +249,8 @@ func TestIntegration_CreateHandler_MentionedAgentNotFound(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, realtime.NewHub(), rdb)
-	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	orch := NewOrchestrator(s, agents, creds, users, realtime.NewHub(), rdb)
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	nonexistentID := uuid.New()
@@ -292,7 +300,7 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Hello — this is the generated reply."}, nil
 	}
@@ -302,7 +310,7 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	// message in rec's channel, breaking this test's exact 4-message
 	// sequence assertions below. A fake provider client keeps it from
 	// making a real network call in the background regardless.
-	titleGen := NewTitleGenerator(rooms, creds, realtime.NewHub())
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
@@ -361,6 +369,57 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	}
 }
 
+// TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt
+// proves ADR-005's custom_instructions field actually reaches the
+// provider call, not just the database: the room owner's stored
+// instructions are prepended into the GenerateRequest's SystemPrompt
+// the same way buildGenerateRequest does for every real reply.
+func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-custom-instr-")
+	instructions := "Always answer in Spanish."
+	if _, err := users.UpdateMe(ctx, owner.ID, nil, nil, nil, &instructions); err != nil {
+		t.Fatalf("set custom_instructions: %v", err)
+	}
+
+	rm, err := rooms.Create(ctx, &owner.ID, "custom-instr-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-custom-instr")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	var captured provider.GenerateRequest
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", &a.ID)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering)
+	waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
+
+	if !strings.Contains(captured.SystemPrompt, instructions) {
+		t.Fatalf("SystemPrompt = %q, want it to contain the owner's custom instructions %q", captured.SystemPrompt, instructions)
+	}
+}
+
 // TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage
 // exercises ADR-004's "failures are visible messages, never silent"
 // requirement directly against the orchestrator: a provider error still
@@ -388,7 +447,7 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{err: errors.New("simulated provider error: rate limited")}, nil
 	}
@@ -440,7 +499,7 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{shouldPanic: true}, nil
 	}

@@ -42,7 +42,7 @@ func TestIntegration_TitleGenerator_HappyPath(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
 
 	rec := newRecordingHub(rm.ID)
-	titleGen := NewTitleGenerator(rooms, creds, rec)
+	titleGen := NewTitleGenerator(rooms, creds, users, rec)
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: `"Debugging the Webhook Retry Logic."`}, nil
 	}
@@ -97,7 +97,7 @@ func TestIntegration_TitleGenerator_RaceGuardSkipsManualRename(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
 
 	rec := newRecordingHub(rm.ID)
-	titleGen := NewTitleGenerator(rooms, creds, rec)
+	titleGen := NewTitleGenerator(rooms, creds, users, rec)
 
 	const manualName = "Renamed by a human mid-generation"
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
