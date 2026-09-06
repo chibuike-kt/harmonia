@@ -79,7 +79,7 @@ export function RoomInfoPanel({
               <div className="mb-2 font-[family-name:var(--login-font-mono)] text-[11px] uppercase tracking-wide text-[var(--login-text-muted)]">
                 Objective
               </div>
-              <p className="text-[13.5px] leading-[1.5] text-[var(--login-text-secondary)]">
+              <p className="text-[13.5px] leading-[1.5] text-[var(--login-text)]">
                 {objective || "No messages yet in this room."}
               </p>
             </div>
@@ -103,7 +103,7 @@ export function RoomInfoPanel({
                 agents.map((a) => (
                   <div
                     key={a.id}
-                    className="flex items-center gap-2 py-1.5 text-[13.5px] text-[var(--login-text-secondary)]"
+                    className="flex items-center gap-2 py-1.5 text-[13.5px] text-[var(--login-text)]"
                   >
                     <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[9.5px] font-semibold">
                       <AgentAvatarGlyph provider={a.provider} name={a.name} size={12} />
@@ -132,7 +132,7 @@ export function RoomInfoPanel({
                 decisions.map((d) => (
                   <div
                     key={d.id}
-                    className="border-b border-[var(--login-border)] py-2 text-[13px] leading-[1.5] text-[var(--login-text-secondary)] last:border-b-0"
+                    className="border-b border-[var(--login-border)] py-2 text-[13px] leading-[1.5] text-[var(--login-text)] last:border-b-0"
                   >
                     {d.content}
                   </div>

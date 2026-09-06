@@ -89,7 +89,7 @@ body {
  * off-palette theme.
  */
 .hljs {
-  color: var(--login-text-secondary);
+  color: var(--login-text);
   background: transparent;
 }
 .hljs-keyword,
