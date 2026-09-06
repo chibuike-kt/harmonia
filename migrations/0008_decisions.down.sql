@@ -1,0 +1,2 @@
+REVOKE SELECT, INSERT, UPDATE, DELETE ON decisions FROM harmonia_app;
+DROP TABLE IF EXISTS decisions;

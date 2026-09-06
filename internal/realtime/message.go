@@ -55,6 +55,12 @@ type ChatMessage struct {
 	ReplyToMessageID *uuid.UUID `json:"reply_to_message_id,omitempty"`
 	Content          string     `json:"content"`
 	CreatedAt        time.Time  `json:"created_at"`
+	// InputTokens/OutputTokens mirror internal/message.Message's own
+	// fields — real usage from the provider response, nil for a human
+	// message. Carried over SSE so the frontend's cost/token pill can
+	// accumulate a running total without a separate fetch per message.
+	InputTokens  *int `json:"input_tokens,omitempty"`
+	OutputTokens *int `json:"output_tokens,omitempty"`
 }
 
 // RoomUpdate carries a room's new name — currently only ever published

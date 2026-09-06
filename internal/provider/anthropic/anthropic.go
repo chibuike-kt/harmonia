@@ -53,8 +53,14 @@ type contentBlock struct {
 	Text string `json:"text"`
 }
 
+type usage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 type messagesResponse struct {
 	Content []contentBlock `json:"content"`
+	Usage   usage          `json:"usage"`
 }
 
 type errorEnvelope struct {
@@ -120,5 +126,9 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 		}
 	}
 
-	return provider.GenerateResponse{Content: content.String()}, nil
+	return provider.GenerateResponse{
+		Content:      content.String(),
+		InputTokens:  parsed.Usage.InputTokens,
+		OutputTokens: parsed.Usage.OutputTokens,
+	}, nil
 }

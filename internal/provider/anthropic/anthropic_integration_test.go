@@ -33,5 +33,8 @@ func TestIntegration_Generate(t *testing.T) {
 	if resp.Content == "" {
 		t.Fatal("expected a non-empty response")
 	}
-	t.Logf("response: %q", resp.Content)
+	if resp.InputTokens == 0 || resp.OutputTokens == 0 {
+		t.Fatalf("expected real non-zero token usage from a live response, got input=%d output=%d", resp.InputTokens, resp.OutputTokens)
+	}
+	t.Logf("response: %q (input_tokens=%d output_tokens=%d)", resp.Content, resp.InputTokens, resp.OutputTokens)
 }

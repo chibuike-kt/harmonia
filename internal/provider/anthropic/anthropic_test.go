@@ -35,6 +35,7 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 				{Type: "text", Text: "Hello, "},
 				{Type: "text", Text: "world."},
 			},
+			Usage: usage{InputTokens: 12, OutputTokens: 4},
 		})
 	}))
 	defer srv.Close()
@@ -78,6 +79,9 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 
 	if resp.Content != "Hello, world." {
 		t.Errorf("Content = %q, want %q", resp.Content, "Hello, world.")
+	}
+	if resp.InputTokens != 12 || resp.OutputTokens != 4 {
+		t.Errorf("InputTokens/OutputTokens = %d/%d, want 12/4", resp.InputTokens, resp.OutputTokens)
 	}
 }
 

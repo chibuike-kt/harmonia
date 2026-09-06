@@ -611,3 +611,41 @@ export function FileIcon() {
     </svg>
   );
 }
+
+// Room-header icons — direct ports of the inline SVGs in
+// docs/design/room-mockup.html's room-header-right section.
+
+export function InfoIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      className={className}
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6.5" />
+      <path d="M8 7.5v4M8 5.2h.01" />
+    </svg>
+  );
+}
+
+export function CoinIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 4.5v7M6 6.5h3a1.3 1.3 0 010 2.6H7a1.3 1.3 0 000 2.6h3" />
+    </svg>
+  );
+}

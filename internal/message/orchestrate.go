@@ -118,7 +118,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		return
 	}
 
-	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, resp.Content, triggering.ID)
+	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, resp.Content, triggering.ID, &resp.InputTokens, &resp.OutputTokens)
 	if err != nil {
 		log.Printf("ERROR message: store generated reply for agent %s: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "the reply was generated but couldn't be saved.")
@@ -136,7 +136,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 // separate system-message concept this phase doesn't build.
 func (o *Orchestrator) fail(ctx context.Context, roomID, agentID uuid.UUID, replyToMessageID uuid.UUID, reason string) {
 	content := "I couldn't generate a reply — " + reason
-	msg, err := o.messages.CreateAgent(ctx, roomID, agentID, content, replyToMessageID)
+	msg, err := o.messages.CreateAgent(ctx, roomID, agentID, content, replyToMessageID, nil, nil)
 	if err != nil {
 		log.Printf("ERROR message: store failure message for agent %s: %v", agentID, err)
 	} else {
@@ -268,5 +268,7 @@ func toChatMessage(m Message) realtime.ChatMessage {
 		ReplyToMessageID: m.ReplyToMessageID,
 		Content:          m.Content,
 		CreatedAt:        m.CreatedAt,
+		InputTokens:      m.InputTokens,
+		OutputTokens:     m.OutputTokens,
 	}
 }

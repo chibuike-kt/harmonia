@@ -6,12 +6,17 @@ package message
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/chibuike-kt/harmonia/internal/store"
 )
+
+// ErrNotFound is returned when no message matches the given ID.
+var ErrNotFound = errors.New("message: not found")
 
 // SenderKind distinguishes who authored a message — exactly one of the
 // two, enforced by messages_sender_matches_kind at the database level
@@ -40,6 +45,12 @@ type Message struct {
 	ReplyToMessageID *uuid.UUID `json:"reply_to_message_id,omitempty"`
 	Content          string     `json:"content"`
 	CreatedAt        time.Time  `json:"created_at"`
+	// InputTokens/OutputTokens are only ever set for sender_kind =
+	// 'agent' rows — the real usage the generation behind this message
+	// actually consumed (see provider.GenerateResponse). Nil for a human
+	// message, which has no generation behind it to meter.
+	InputTokens  *int `json:"input_tokens,omitempty"`
+	OutputTokens *int `json:"output_tokens,omitempty"`
 }
 
 type Store struct {
@@ -53,7 +64,7 @@ func NewStore(pool store.Querier) *Store {
 	return &Store{pool: pool}
 }
 
-const messageColumns = `id, room_id, sender_kind, user_id, agent_id, mentioned_agent_id, reply_to_message_id, content, created_at`
+const messageColumns = `id, room_id, sender_kind, user_id, agent_id, mentioned_agent_id, reply_to_message_id, content, created_at, input_tokens, output_tokens`
 
 func scanMessage(row interface {
 	Scan(dest ...any) error
@@ -62,6 +73,7 @@ func scanMessage(row interface {
 	err := row.Scan(
 		&m.ID, &m.RoomID, &m.SenderKind, &m.UserID, &m.AgentID,
 		&m.MentionedAgentID, &m.ReplyToMessageID, &m.Content, &m.CreatedAt,
+		&m.InputTokens, &m.OutputTokens,
 	)
 	return m, err
 }
@@ -84,15 +96,32 @@ func (s *Store) CreateHuman(ctx context.Context, roomID, userID uuid.UUID, conte
 // both to be real messages, never a silent drop, so both go through this
 // one insert path. replyToMessageID is always the human message that
 // triggered the invocation, so the UI can show "replying to X" once the
-// conversation has moved on before the reply lands.
-func (s *Store) CreateAgent(ctx context.Context, roomID, agentID uuid.UUID, content string, replyToMessageID uuid.UUID) (Message, error) {
+// conversation has moved on before the reply lands. inputTokens/
+// outputTokens are the real usage from the provider response that
+// produced content — nil on the failure path, where no successful
+// generation exists to meter.
+func (s *Store) CreateAgent(ctx context.Context, roomID, agentID uuid.UUID, content string, replyToMessageID uuid.UUID, inputTokens, outputTokens *int) (Message, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO messages (room_id, sender_kind, agent_id, reply_to_message_id, content)
-		VALUES ($1, 'agent', $2, $3, $4)
+		INSERT INTO messages (room_id, sender_kind, agent_id, reply_to_message_id, content, input_tokens, output_tokens)
+		VALUES ($1, 'agent', $2, $3, $4, $5, $6)
 		RETURNING `+messageColumns,
-		roomID, agentID, replyToMessageID, content,
+		roomID, agentID, replyToMessageID, content, inputTokens, outputTokens,
 	)
 	return scanMessage(row)
+}
+
+// GetByID fetches a single message. Returns ErrNotFound if no message
+// matches — used by decision.Store.PinHandler to validate that the
+// message being pinned actually belongs to the room it's being pinned
+// in (the same non-leaking pattern every other cross-resource lookup in
+// this API uses).
+func (s *Store) GetByID(ctx context.Context, messageID uuid.UUID) (Message, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+messageColumns+` FROM messages WHERE id = $1`, messageID)
+	m, err := scanMessage(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Message{}, ErrNotFound
+	}
+	return m, err
 }
 
 // ListByRoom returns roomID's most recent messages, oldest first — ready

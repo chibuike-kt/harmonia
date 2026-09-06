@@ -49,8 +49,14 @@ type choice struct {
 	Message message `json:"message"`
 }
 
+type usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
 type chatCompletionsResponse struct {
 	Choices []choice `json:"choices"`
+	Usage   usage    `json:"usage"`
 }
 
 type errorEnvelope struct {
@@ -112,5 +118,9 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 		return provider.GenerateResponse{}, fmt.Errorf("openai: response had no choices")
 	}
 
-	return provider.GenerateResponse{Content: parsed.Choices[0].Message.Content}, nil
+	return provider.GenerateResponse{
+		Content:      parsed.Choices[0].Message.Content,
+		InputTokens:  parsed.Usage.PromptTokens,
+		OutputTokens: parsed.Usage.CompletionTokens,
+	}, nil
 }

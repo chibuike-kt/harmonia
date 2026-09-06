@@ -15,7 +15,17 @@ import {
   type ChatMessage,
 } from "@/components/MessageRow";
 import { TypingIndicator } from "@/components/TypingIndicator";
-import { ChevronDownIcon } from "@/components/icons";
+import {
+  RoomInfoPanel,
+  type Decision,
+  type RoomAgentSummary,
+} from "@/components/RoomInfoPanel";
+import { ChevronDownIcon, CoinIcon, InfoIcon } from "@/components/icons";
+import {
+  estimateCostUSD,
+  formatCostUSD,
+  formatTokenCount,
+} from "@/lib/tokenPricing";
 
 interface AgentPresence {
   agent_id: string;
@@ -194,7 +204,13 @@ export default function RoomViewPage() {
   );
   const [presence, setPresence] = useState<Record<string, string>>({});
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  const [agentProviders, setAgentProviders] = useState<Record<string, string>>(
+    {},
+  );
   const [roomAgents, setRoomAgents] = useState<RoomAgent[]>([]);
+  const [roomAgentSummaries, setRoomAgentSummaries] = useState<
+    RoomAgentSummary[]
+  >([]);
   const [roomName, setRoomName] = useState<string>("");
   const [me, setMe] = useState<Me | null>(null);
   const [connection, setConnection] = useState<
@@ -203,6 +219,9 @@ export default function RoomViewPage() {
   const [artifact, setArtifact] = useState<ArtifactContent | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [pinError, setPinError] = useState<string | null>(null);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   // Tracked in a ref, not state: the entries-changed effect below reads
@@ -235,19 +254,49 @@ export default function RoomViewPage() {
 
   useEffect(() => {
     if (!roomId) return;
-    void apiFetch<{ id: string; name: string }[]>(`/v1/rooms/${roomId}/agents`)
+    // Full agent objects, not just {id, name}: the info panel wants
+    // provider + capabilities too, and the cost pill needs provider to
+    // price each agent's usage. One fetch, three consumers (this, the
+    // composer's @-picker via roomAgents, the pill's per-message
+    // pricing via agentProviders) rather than three separate calls.
+    void apiFetch<
+      { id: string; name: string; provider: string; capabilities: string[] }[]
+    >(`/v1/rooms/${roomId}/agents`)
       .then((agents) => {
         setRoomAgents(agents.map((a) => ({ id: a.id, name: a.name })));
+        setRoomAgentSummaries(
+          agents.map((a) => ({
+            id: a.id,
+            name: a.name,
+            provider: a.provider,
+            capabilities: a.capabilities,
+          })),
+        );
         setAgentNames((prev) => {
           const next = { ...prev };
           for (const a of agents) next[a.id] = a.name;
           return next;
         });
+        setAgentProviders((prev) => {
+          const next = { ...prev };
+          for (const a of agents) next[a.id] = a.provider;
+          return next;
+        });
       })
       .catch(() => {
         setRoomAgents([]);
+        setRoomAgentSummaries([]);
       });
   }, [roomId]);
+
+  const loadDecisions = () => {
+    if (!roomId) return;
+    void apiFetch<Decision[]>(`/v1/rooms/${roomId}/decisions`)
+      .then(setDecisions)
+      .catch(() => {});
+  };
+
+  useEffect(loadDecisions, [roomId]);
 
   useEffect(() => {
     if (!roomId) return;
@@ -416,6 +465,66 @@ export default function RoomViewPage() {
     }
   };
 
+  const handlePinDecision = async (messageId: string) => {
+    if (!roomId) return;
+    setPinError(null);
+    try {
+      const decision = await apiFetch<Decision>(
+        `/v1/rooms/${roomId}/messages/${messageId}/decisions`,
+        { method: "POST" },
+      );
+      // Direct response, not the SSE stream: pinning has no realtime
+      // fan-out (see decision.Store's own doc comment — this is a
+      // same-session action a human takes, not something another
+      // viewer needs pushed live), so appending the actual response is
+      // the source of truth here, not an optimistic guess.
+      setDecisions((prev) =>
+        prev.some((d) => d.id === decision.id) ? prev : [...prev, decision],
+      );
+    } catch (err) {
+      setPinError(
+        err instanceof Error ? err.message : "Failed to pin decision.",
+      );
+    }
+  };
+
+  // Objective: the room's first message, per the build brief's explicit
+  // scope call — "no new capture needed," not a real captured field.
+  const firstMessageEntry = entries.find((e) => e.kind === "message");
+  const objective =
+    firstMessageEntry?.kind === "message"
+      ? firstMessageEntry.message.content
+      : null;
+
+  const pinnedMessageIds = new Set(decisions.map((d) => d.message_id));
+
+  // Cost/token pill totals — accumulated client-side from messages
+  // already in state (snapshot + live SSE), not a separate backend
+  // aggregation endpoint: every ChatMessage already carries its own
+  // real input_tokens/output_tokens (internal/message.Message), so
+  // there's nothing a server-side sum would provide that summing what's
+  // already loaded doesn't. See lib/tokenPricing.ts for why the dollar
+  // figure is a rough, clearly-non-authoritative estimate.
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCostUSD = 0;
+  for (const entry of entries) {
+    if (entry.kind !== "message") continue;
+    const m = entry.message;
+    if (m.input_tokens == null || m.output_tokens == null) continue;
+    totalInputTokens += m.input_tokens;
+    totalOutputTokens += m.output_tokens;
+    const providerName = m.agent_id ? agentProviders[m.agent_id] : undefined;
+    if (providerName) {
+      totalCostUSD += estimateCostUSD(
+        providerName,
+        m.input_tokens,
+        m.output_tokens,
+      );
+    }
+  }
+  const hasUsageData = totalInputTokens > 0 || totalOutputTokens > 0;
+
   const rendered: ReactNode[] = [];
   let lastDateKey: string | null = null;
   entries.forEach((entry, i) => {
@@ -479,6 +588,8 @@ export default function RoomViewPage() {
         senderName={senderName}
         replyPreview={replyPreview}
         onOpenArtifact={setArtifact}
+        pinned={pinnedMessageIds.has(m.id)}
+        onPinDecision={() => void handlePinDecision(m.id)}
       />,
     );
   });
@@ -490,13 +601,37 @@ export default function RoomViewPage() {
           <h1 className="truncate text-[16px] font-semibold text-[var(--login-text)]">
             {roomName || "…"}
           </h1>
-          <span className="shrink-0 text-[13px] text-[var(--login-text-muted)]">
-            {connection === "open"
-              ? "● Live"
-              : connection === "reconnecting"
-                ? "○ Reconnecting…"
-                : "○ Connecting…"}
-          </span>
+          <div className="flex shrink-0 items-center gap-3.5">
+            {hasUsageData && (
+              <span
+                title="Estimated cost — not authoritative, see this room's actual token usage on your provider's own dashboard for a real figure"
+                className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-2.5 py-1 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-muted)]"
+              >
+                <CoinIcon />
+                {formatCostUSD(totalCostUSD)} ·{" "}
+                {formatTokenCount(totalInputTokens + totalOutputTokens)} tokens
+              </span>
+            )}
+            <button
+              type="button"
+              title="Room info"
+              onClick={() => setInfoOpen((o) => !o)}
+              className={`flex rounded-md p-1.5 ${
+                infoOpen
+                  ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                  : "text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              }`}
+            >
+              <InfoIcon />
+            </button>
+            <span className="text-[13px] text-[var(--login-text-muted)]">
+              {connection === "open"
+                ? "● Live"
+                : connection === "reconnecting"
+                  ? "○ Reconnecting…"
+                  : "○ Connecting…"}
+            </span>
+          </div>
         </div>
 
         <div
@@ -533,9 +668,9 @@ export default function RoomViewPage() {
           </button>
         )}
 
-        {sendError && (
+        {(sendError || pinError) && (
           <p className="mx-auto w-full max-w-[720px] px-6 text-[13px] text-[var(--room-warn)]">
-            {sendError}
+            {sendError || pinError}
           </p>
         )}
 
@@ -545,6 +680,13 @@ export default function RoomViewPage() {
         />
       </main>
 
+      <RoomInfoPanel
+        open={infoOpen}
+        onClose={() => setInfoOpen(false)}
+        objective={objective}
+        agents={roomAgentSummaries}
+        decisions={decisions}
+      />
       <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
     </div>
   );

@@ -27,6 +27,7 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 			Choices: []choice{
 				{Message: message{Role: "assistant", Content: "Hello, world."}},
 			},
+			Usage: usage{PromptTokens: 20, CompletionTokens: 7},
 		})
 	}))
 	defer srv.Close()
@@ -70,6 +71,9 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 
 	if resp.Content != "Hello, world." {
 		t.Errorf("Content = %q, want %q", resp.Content, "Hello, world.")
+	}
+	if resp.InputTokens != 20 || resp.OutputTokens != 7 {
+		t.Errorf("InputTokens/OutputTokens = %d/%d, want 20/7", resp.InputTokens, resp.OutputTokens)
 	}
 }
 

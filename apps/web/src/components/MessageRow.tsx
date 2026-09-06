@@ -2,7 +2,13 @@
 
 import { parseMessageContent } from "@/lib/messageContent";
 import type { ArtifactContent } from "./ArtifactPanel";
-import { CodeBracketsIcon, CopyIcon, ReplyArrowIcon, WarnIcon } from "./icons";
+import {
+  CodeBracketsIcon,
+  CopyIcon,
+  PinIcon,
+  ReplyArrowIcon,
+  WarnIcon,
+} from "./icons";
 
 export interface ChatMessage {
   id: string;
@@ -14,6 +20,8 @@ export interface ChatMessage {
   reply_to_message_id?: string;
   content: string;
   created_at: string;
+  input_tokens?: number;
+  output_tokens?: number;
   /** Client-side only, never from the wire — see room page's own comment. */
   failed?: boolean;
 }
@@ -26,6 +34,11 @@ interface MessageRowProps {
    *  room page's own "replying to" placement logic. */
   replyPreview?: { senderName: string; snippet: string };
   onOpenArtifact: (artifact: ArtifactContent) => void;
+  /** Already pinned as a decision — reflected as a filled, inert pin
+   *  rather than a clickable button, since pinning has no "undo" this
+   *  phase builds (see the build brief: manual pin only, no unpin). */
+  pinned: boolean;
+  onPinDecision: () => void;
 }
 
 function initials(name: string): string {
@@ -65,6 +78,8 @@ export function MessageRow({
   senderName,
   replyPreview,
   onOpenArtifact,
+  pinned,
+  onPinDecision,
 }: MessageRowProps) {
   const segments = parseMessageContent(message.content);
   const isHuman = message.sender_kind === "human";
@@ -90,6 +105,15 @@ export function MessageRow({
                 className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
               >
                 <CopyIcon />
+              </button>
+              <button
+                type="button"
+                title={pinned ? "Pinned as decision" : "Pin as decision"}
+                disabled={pinned}
+                onClick={onPinDecision}
+                className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] disabled:cursor-default disabled:text-[var(--login-accent)] disabled:hover:bg-transparent"
+              >
+                <PinIcon filled={pinned} />
               </button>
             </div>
           </div>
@@ -169,6 +193,15 @@ export function MessageRow({
             className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
           >
             <CopyIcon />
+          </button>
+          <button
+            type="button"
+            title={pinned ? "Pinned as decision" : "Pin as decision"}
+            disabled={pinned}
+            onClick={onPinDecision}
+            className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] disabled:cursor-default disabled:text-[var(--login-accent)] disabled:hover:bg-transparent"
+          >
+            <PinIcon filled={pinned} />
           </button>
         </div>
       </div>

@@ -18,6 +18,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
 	"github.com/chibuike-kt/harmonia/internal/credentials"
+	"github.com/chibuike-kt/harmonia/internal/decision"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/handoff"
 	"github.com/chibuike-kt/harmonia/internal/message"
@@ -94,6 +95,13 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator, titleGen))
 	})
 
+	decisions := decision.NewStore(st.Pool)
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/rooms/{room_id}/messages/{message_id}/decisions", decisions.PinHandler(rooms, messages))
+		pr.Get("/v1/rooms/{room_id}/decisions", decisions.ListByRoomHandler(rooms))
+	})
+
 	contexts := contextengine.NewStore(st.Pool)
 	r.Group(func(pr chi.Router) {
 		pr.Use(agent.Authenticate(agents))
@@ -134,6 +142,8 @@ func NewRouter(st *store.Store) http.Handler {
 				ReplyToMessageID: m.ReplyToMessageID,
 				Content:          m.Content,
 				CreatedAt:        m.CreatedAt,
+				InputTokens:      m.InputTokens,
+				OutputTokens:     m.OutputTokens,
 			}
 		}
 		return out, nil
