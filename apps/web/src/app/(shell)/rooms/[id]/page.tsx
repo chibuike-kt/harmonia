@@ -263,7 +263,9 @@ export default function RoomViewPage() {
       { id: string; name: string; provider: string; capabilities: string[] }[]
     >(`/v1/rooms/${roomId}/agents`)
       .then((agents) => {
-        setRoomAgents(agents.map((a) => ({ id: a.id, name: a.name })));
+        setRoomAgents(
+          agents.map((a) => ({ id: a.id, name: a.name, provider: a.provider })),
+        );
         setRoomAgentSummaries(
           agents.map((a) => ({
             id: a.id,
@@ -586,6 +588,7 @@ export default function RoomViewPage() {
         key={entry.id}
         message={{ ...m, failed: isFailureMessage(m.content) }}
         senderName={senderName}
+        senderProvider={m.agent_id ? agentProviders[m.agent_id] : undefined}
         replyPreview={replyPreview}
         onOpenArtifact={setArtifact}
         pinned={pinnedMessageIds.has(m.id)}

@@ -2,10 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { FileIcon, PlusIcon, SearchIcon, SendIcon } from "./icons";
+import { AgentAvatarGlyph } from "./providerLogos";
 
 export interface RoomAgent {
   id: string;
   name: string;
+  provider: string;
 }
 
 interface ComposerProps {
@@ -97,7 +99,11 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
           <div className="mb-1.5 flex items-center gap-1.5 px-1">
             <span className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-0.5 pl-1 pr-2 text-[12px] text-[var(--login-text-secondary)]">
               <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
-                {mentionedAgent.name.slice(0, 1).toUpperCase()}
+                <AgentAvatarGlyph
+                  provider={mentionedAgent.provider}
+                  name={mentionedAgent.name}
+                  size={9}
+                />
               </span>
               @{mentionedAgent.name}
               <button
@@ -122,8 +128,11 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
                 key={a.id}
                 type="button"
                 onClick={() => setMentionedAgent(a)}
-                className="rounded-full border border-[var(--login-border-strong)] px-2.5 py-1 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+                className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] py-1 pl-1.5 pr-2.5 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
               >
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
+                  <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
+                </span>
                 @{a.name}
               </button>
             ))}

@@ -1,6 +1,7 @@
 "use client";
 
 import { CloseIcon } from "./icons";
+import { AgentAvatarGlyph } from "./providerLogos";
 
 export interface RoomAgentSummary {
   id: string;
@@ -22,13 +23,6 @@ interface RoomInfoPanelProps {
   objective: string | null;
   agents: RoomAgentSummary[];
   decisions: Decision[];
-}
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 /**
@@ -100,7 +94,7 @@ export function RoomInfoPanel({
                     className="flex items-center gap-2 py-1.5 text-[13.5px] text-[var(--login-text-secondary)]"
                   >
                     <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[9.5px] font-semibold">
-                      {initials(a.name)}
+                      <AgentAvatarGlyph provider={a.provider} name={a.name} size={12} />
                     </span>
                     {a.name}
                     {a.capabilities.length > 0 && (

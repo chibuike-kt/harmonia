@@ -14,6 +14,7 @@ import {
   SettingsIcon,
   TeamIcon,
 } from "./icons";
+import { PROVIDER_LABELS, PROVIDER_LOGOS } from "./providerLogos";
 
 interface SettingsUser {
   id: string;
@@ -40,10 +41,13 @@ interface ProviderConfig {
 
 // Same "not hardcoded to exactly two" note as the retired connect-agents
 // page this list was ported from — add an entry, its card shows up, no
-// other code changes.
+// other code changes. Labels are the product name (Claude, ChatGPT),
+// not the company (Anthropic, OpenAI) — this screen is about connecting
+// to the product this app talks to; `id` stays the company-scoped wire
+// value the backend's credentials/provider resolution actually uses.
 const PROVIDERS: ProviderConfig[] = [
-  { id: "anthropic", label: "Anthropic" },
-  { id: "openai", label: "OpenAI" },
+  { id: "anthropic", label: PROVIDER_LABELS.anthropic },
+  { id: "openai", label: PROVIDER_LABELS.openai },
 ];
 
 interface SessionRow {
@@ -602,19 +606,28 @@ function ProviderRow({
     }
   };
 
+  const ProviderLogo = PROVIDER_LOGOS[provider.id];
+
   return (
     <div className="mb-2.5 rounded-[10px] border border-[var(--login-border-strong)] p-3.5">
       <div className="flex items-center justify-between gap-4">
-        <div>
-          <div className="mb-0.5 text-[13.5px] font-medium text-[var(--login-text)]">
-            {provider.label}
-          </div>
-          <div className="font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-muted)]">
-            {loading
-              ? "Loading…"
-              : credential
-                ? `Connected · •••${credential.key_hint}`
-                : "Not connected"}
+        <div className="flex items-center gap-2.5">
+          {ProviderLogo && (
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center text-[var(--login-text-secondary)]">
+              <ProviderLogo size={18} />
+            </span>
+          )}
+          <div>
+            <div className="mb-0.5 text-[13.5px] font-medium text-[var(--login-text)]">
+              {provider.label}
+            </div>
+            <div className="font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-muted)]">
+              {loading
+                ? "Loading…"
+                : credential
+                  ? `Connected · •••${credential.key_hint}`
+                  : "Not connected"}
+            </div>
           </div>
         </div>
         {!loading &&

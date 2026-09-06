@@ -9,6 +9,7 @@ import {
   ReplyArrowIcon,
   WarnIcon,
 } from "./icons";
+import { AgentAvatarGlyph } from "./providerLogos";
 
 export interface ChatMessage {
   id: string;
@@ -29,6 +30,9 @@ export interface ChatMessage {
 interface MessageRowProps {
   message: ChatMessage;
   senderName: string;
+  /** Undefined for a human sender — AgentAvatarGlyph falls back to
+   *  initials whenever there's no provider to look up a logo for. */
+  senderProvider?: string;
   /** Set only when reply_to_message_id points somewhere still resolvable
    *  and it isn't the immediately preceding timeline item — see
    *  room page's own "replying to" placement logic. */
@@ -39,13 +43,6 @@ interface MessageRowProps {
    *  phase builds (see the build brief: manual pin only, no unpin). */
   pinned: boolean;
   onPinDecision: () => void;
-}
-
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function formatTime(iso: string): string {
@@ -76,6 +73,7 @@ async function copyText(text: string) {
 export function MessageRow({
   message,
   senderName,
+  senderProvider,
   replyPreview,
   onOpenArtifact,
   pinned,
@@ -129,7 +127,7 @@ export function MessageRow({
       className={`group/msg flex gap-3 ${isFailure ? "border-l-2 border-[var(--room-warn)] pl-3" : ""}`}
     >
       <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[11px] font-semibold">
-        {initials(senderName)}
+        <AgentAvatarGlyph provider={senderProvider} name={senderName} size={13} />
       </div>
       <div className="min-w-0 flex-1">
         {replyPreview && (
