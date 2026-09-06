@@ -646,6 +646,9 @@ export default function RoomViewPage() {
         message={{ ...m, failed: isFailureMessage(m.content) }}
         senderName={senderName}
         senderProvider={m.agent_id ? agentProviders[m.agent_id] : undefined}
+        mentionedAgentName={
+          m.mentioned_agent_id ? agentNames[m.mentioned_agent_id] : undefined
+        }
         replyPreview={replyPreview}
         onOpenArtifact={setArtifact}
         pinned={pinnedMessageIds.has(m.id)}
