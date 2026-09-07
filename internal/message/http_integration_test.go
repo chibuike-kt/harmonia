@@ -175,8 +175,8 @@ func TestIntegration_CreateHandler_HumanOnly(t *testing.T) {
 	if got.UserID == nil || *got.UserID != owner.ID {
 		t.Fatalf("UserID = %v, want %s", got.UserID, owner.ID)
 	}
-	if got.MentionedAgentID != nil {
-		t.Fatalf("MentionedAgentID = %v, want nil", got.MentionedAgentID)
+	if len(got.MentionedAgentIDs) != 0 {
+		t.Fatalf("MentionedAgentIDs = %v, want none", got.MentionedAgentIDs)
 	}
 
 	stored, err := s.ListByRoom(ctx, rm.ID)
@@ -254,12 +254,12 @@ func TestIntegration_CreateHandler_MentionedAgentNotFound(t *testing.T) {
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
 	nonexistentID := uuid.New()
-	body := fmt.Sprintf(`{"content":"hi","mentioned_agent_id":%q}`, nonexistentID)
+	body := fmt.Sprintf(`{"content":"hi","mentioned_agent_ids":[%q]}`, nonexistentID)
 	if rec := doCreateMessage(h, owner, rm.ID.String(), body); rec.Code != http.StatusNotFound {
 		t.Fatalf("nonexistent agent status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 
-	body = fmt.Sprintf(`{"content":"hi","mentioned_agent_id":%q}`, elsewhere.ID)
+	body = fmt.Sprintf(`{"content":"hi","mentioned_agent_ids":[%q]}`, elsewhere.ID)
 	if rec := doCreateMessage(h, owner, rm.ID.String(), body); rec.Code != http.StatusNotFound {
 		t.Fatalf("agent in another room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
@@ -316,7 +316,7 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	}
 	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
 
-	body := fmt.Sprintf(`{"content":"@Claude can you help?","mentioned_agent_id":%q}`, a.ID)
+	body := fmt.Sprintf(`{"content":"@Claude can you help?","mentioned_agent_ids":[%q]}`, a.ID)
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), body)
 	if httpRec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusCreated, httpRec.Body.String())
@@ -369,6 +369,169 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	}
 }
 
+// TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies
+// is ADR-006 batch A's central proof: one message mentioning two agents
+// produces exactly two independent replies, each running its own full
+// invocation (running, generate, publish, available) rather than one
+// invocation somehow serving both — and each reply_to_message_id points
+// back at the one triggering message.
+func TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-multi-mention-")
+	rm, err := rooms.Create(ctx, &owner.ID, "multi-mention-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	claude, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-multi-claude")
+	if err != nil {
+		t.Fatalf("register first agent: %v", err)
+	}
+	gpt, err := agents.Register(ctx, rm.ID, "GPT", agent.ProviderOpenAI, nil, "hash-multi-gpt")
+	if err != nil {
+		t.Fatalf("register second agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	// Distinguishes replies by provider, since two real agents mentioned
+	// together are a realistic case this fake needs to tell apart — the
+	// seam's signature has no agent identity, only the provider being
+	// resolved for.
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		switch p {
+		case agent.ProviderAnthropic:
+			return &fakeProviderAgent{content: "Claude's reply"}, nil
+		case agent.ProviderOpenAI:
+			return &fakeProviderAgent{content: "GPT's reply"}, nil
+		default:
+			return nil, fmt.Errorf("unexpected provider %s", p)
+		}
+	}
+	// Separate Hub for the title generator — same reasoning as
+	// TestIntegration_CreateHandler_MentionTriggersReply: this is the
+	// room's first message, so the auto-title trigger fires too, and its
+	// publish would otherwise land as an unpredictable extra message in
+	// rec's channel.
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
+	}
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+
+	body := fmt.Sprintf(`{"content":"@Claude @GPT can one of you look at this?","mentioned_agent_ids":[%q,%q]}`, claude.ID, gpt.ID)
+	httpRec := doCreateMessage(h, owner, rm.ID.String(), body)
+	if httpRec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusCreated, httpRec.Body.String())
+	}
+	var mention Message
+	if err := json.Unmarshal(httpRec.Body.Bytes(), &mention); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(mention.MentionedAgentIDs) != 2 {
+		t.Fatalf("MentionedAgentIDs = %v, want both agents", mention.MentionedAgentIDs)
+	}
+
+	// The human message itself always arrives first — published
+	// synchronously, before either agent's invocation goroutine is even
+	// launched.
+	first := rec.recv(t)
+	if first.Kind != realtime.KindMessage || first.Message == nil || first.Message.ID != mention.ID {
+		t.Fatalf("first published message = %+v, want the human message %s", first, mention.ID)
+	}
+
+	// The two agents' invocations run concurrently, so their six
+	// remaining messages (running, reply, available — per agent) can
+	// interleave in either order relative to each other. What must hold
+	// regardless of interleaving: each agent's own three arrive in that
+	// relative order, and both replies point back at the one mention.
+	type perAgent struct {
+		sawRunning, sawReply, sawAvailable bool
+		replyContent                       string
+		replyToID                          uuid.UUID
+	}
+	byAgent := map[uuid.UUID]*perAgent{claude.ID: {}, gpt.ID: {}}
+
+	for i := 0; i < 6; i++ {
+		msg := rec.recv(t)
+		switch msg.Kind {
+		case realtime.KindPresence:
+			pa, ok := byAgent[msg.Presence.AgentID]
+			if !ok {
+				t.Fatalf("presence for unexpected agent %s", msg.Presence.AgentID)
+			}
+			switch msg.Presence.Status {
+			case string(agent.StatusRunning):
+				if pa.sawReply || pa.sawAvailable {
+					t.Fatalf("agent %s: running arrived out of order", msg.Presence.AgentID)
+				}
+				pa.sawRunning = true
+			case string(agent.StatusAvailable):
+				if !pa.sawReply {
+					t.Fatalf("agent %s: available arrived before its reply", msg.Presence.AgentID)
+				}
+				pa.sawAvailable = true
+			default:
+				t.Fatalf("unexpected presence status %q", msg.Presence.Status)
+			}
+		case realtime.KindMessage:
+			reply := msg.Message
+			if reply.AgentID == nil {
+				t.Fatalf("agent reply with no AgentID: %+v", reply)
+			}
+			pa, ok := byAgent[*reply.AgentID]
+			if !ok {
+				t.Fatalf("reply from unexpected agent %s", *reply.AgentID)
+			}
+			if !pa.sawRunning || pa.sawReply {
+				t.Fatalf("agent %s: reply arrived out of order", *reply.AgentID)
+			}
+			pa.sawReply = true
+			pa.replyContent = reply.Content
+			if reply.ReplyToMessageID != nil {
+				pa.replyToID = *reply.ReplyToMessageID
+			}
+		default:
+			t.Fatalf("unexpected message kind %q", msg.Kind)
+		}
+	}
+
+	claudeState, gptState := byAgent[claude.ID], byAgent[gpt.ID]
+	if !claudeState.sawRunning || !claudeState.sawReply || !claudeState.sawAvailable {
+		t.Fatalf("Claude's invocation incomplete: %+v", claudeState)
+	}
+	if !gptState.sawRunning || !gptState.sawReply || !gptState.sawAvailable {
+		t.Fatalf("GPT's invocation incomplete: %+v", gptState)
+	}
+	if claudeState.replyContent != "Claude's reply" {
+		t.Fatalf("Claude's reply content = %q, want %q", claudeState.replyContent, "Claude's reply")
+	}
+	if gptState.replyContent != "GPT's reply" {
+		t.Fatalf("GPT's reply content = %q, want %q", gptState.replyContent, "GPT's reply")
+	}
+	if claudeState.replyToID != mention.ID || gptState.replyToID != mention.ID {
+		t.Fatalf("replies point at reply_to_message_id = %s / %s, want both = %s", claudeState.replyToID, gptState.replyToID, mention.ID)
+	}
+
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Fatalf("stored messages = %d, want 3 (the mention plus two replies)", len(stored))
+	}
+}
+
 // TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt
 // proves ADR-005's custom_instructions field actually reaches the
 // provider call, not just the database: the room owner's stored
@@ -407,7 +570,7 @@ func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *t
 		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", &a.ID)
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID})
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -452,7 +615,7 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 		return &fakeProviderAgent{err: errors.New("simulated provider error: rate limited")}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Flaky are you there?", &a.ID)
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Flaky are you there?", []uuid.UUID{a.ID})
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -504,7 +667,7 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 		return &fakeProviderAgent{shouldPanic: true}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Unstable go", &a.ID)
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Unstable go", []uuid.UUID{a.ID})
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}

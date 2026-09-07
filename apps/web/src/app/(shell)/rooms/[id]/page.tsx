@@ -469,10 +469,7 @@ export default function RoomViewPage() {
     .filter(([, status]) => status === "running")
     .map(([agentId]) => agentId);
 
-  const handleSend = async (
-    content: string,
-    mentionedAgentId: string | null,
-  ) => {
+  const handleSend = async (content: string, mentionedAgentIds: string[]) => {
     if (!roomId) return;
     setSendError(null);
     try {
@@ -480,7 +477,9 @@ export default function RoomViewPage() {
         method: "POST",
         body: {
           content,
-          ...(mentionedAgentId ? { mentioned_agent_id: mentionedAgentId } : {}),
+          ...(mentionedAgentIds.length > 0
+            ? { mentioned_agent_ids: mentionedAgentIds }
+            : {}),
         },
       });
       // No optimistic local insert: the POST's own publish arrives back
@@ -646,9 +645,9 @@ export default function RoomViewPage() {
         message={{ ...m, failed: isFailureMessage(m.content) }}
         senderName={senderName}
         senderProvider={m.agent_id ? agentProviders[m.agent_id] : undefined}
-        mentionedAgentName={
-          m.mentioned_agent_id ? agentNames[m.mentioned_agent_id] : undefined
-        }
+        mentionedAgentNames={m.mentioned_agent_ids?.map(
+          (id) => agentNames[id] || "Agent",
+        )}
         replyPreview={replyPreview}
         onOpenArtifact={setArtifact}
         pinned={pinnedMessageIds.has(m.id)}

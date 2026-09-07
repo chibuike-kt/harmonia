@@ -18,8 +18,8 @@ import (
 )
 
 type createRequest struct {
-	Content          string     `json:"content"`
-	MentionedAgentID *uuid.UUID `json:"mentioned_agent_id,omitempty"`
+	Content           string      `json:"content"`
+	MentionedAgentIDs []uuid.UUID `json:"mentioned_agent_ids,omitempty"`
 }
 
 type errorResponse struct {
@@ -43,19 +43,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // CreateHandler returns the handler for POST /v1/rooms/{room_id}/messages.
 // Mount it behind user.Authenticate — a human posts here, never an
 // agent. Ownership is checked the same 404-then-403 way as every other
-// room-scoped route (see room.UpdateHandler); a mentioned_agent_id gets
-// the same non-leaking treatment: an agent that doesn't exist, or exists
-// in a different room, both 404 identically, so a caller learns nothing
-// about an agent it can't reach.
+// room-scoped route (see room.UpdateHandler); each mentioned_agent_id
+// gets the same non-leaking treatment: an agent that doesn't exist, or
+// exists in a different room, both 404 identically, so a caller learns
+// nothing about an agent it can't reach.
 //
 // The message write is transactional and published only after commit —
 // the same pattern every other write in this API follows — even though
 // today it's a single insert with no accompanying event record: chat
 // messages are their own first-class grammar (ADR-004), not folded into
-// the events audit trail. If a mention is present, the reply is
-// triggered asynchronously after the human message has committed and
-// published: this handler returns as soon as the human message is
-// durable, never blocking on a live provider call (ADR-004).
+// the events audit trail. If any mentions are present, their replies are
+// each triggered asynchronously after the human message has committed
+// and published: this handler returns as soon as the human message is
+// durable, never blocking on a live provider call (ADR-004), regardless
+// of how many agents it addresses (ADR-006 batch A).
 func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store.Beginner, hub realtime.Publisher, orch *Orchestrator, titleGen *TitleGenerator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := user.FromContext(r.Context())
@@ -95,9 +96,26 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 			return
 		}
 
-		var mentioned *agent.Agent
-		if req.MentionedAgentID != nil {
-			a, err := agents.GetByID(ctx, *req.MentionedAgentID)
+		// Dedupe first: a repeated mention in the request isn't an error,
+		// it just collapses to one — message_mentions' primary key
+		// (message_id, agent_id) would otherwise reject the insert outright.
+		seen := make(map[uuid.UUID]bool, len(req.MentionedAgentIDs))
+		var mentionedIDs []uuid.UUID
+		for _, id := range req.MentionedAgentIDs {
+			if !seen[id] {
+				seen[id] = true
+				mentionedIDs = append(mentionedIDs, id)
+			}
+		}
+
+		// Fail the whole request if any mentioned agent is invalid, rather
+		// than silently dropping the bad one and proceeding with the rest:
+		// keeps the write atomic (no message ever exists with a mention
+		// the caller can't see was rejected) and matches the single-mention
+		// behavior this replaces exactly, just extended to a set.
+		mentioned := make([]agent.Agent, 0, len(mentionedIDs))
+		for _, id := range mentionedIDs {
+			a, err := agents.GetByID(ctx, id)
 			if errors.Is(err, agent.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "mentioned agent not found")
 				return
@@ -114,7 +132,7 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 				writeError(w, http.StatusNotFound, "mentioned agent not found")
 				return
 			}
-			mentioned = &a
+			mentioned = append(mentioned, a)
 		}
 
 		tx, rollback, err := store.BeginTx(ctx, pool)
@@ -125,7 +143,7 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		defer rollback()
 
 		txMessages := NewStore(tx)
-		m, err := txMessages.CreateHuman(ctx, roomID, u.ID, req.Content, req.MentionedAgentID)
+		m, err := txMessages.CreateHuman(ctx, roomID, u.ID, req.Content, mentionedIDs)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create message")
 			return
@@ -137,8 +155,12 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		}
 		hub.Publish(roomID, realtime.NewChatMessage(toChatMessage(m)))
 
-		if mentioned != nil {
-			orch.TriggerReply(mentioned.ID, rm.OwnerID, m)
+		// One independent async invocation per mentioned agent (ADR-006
+		// batch A) — each follows the existing orchestration path on its
+		// own and produces its own reply, all pointing reply_to_message_id
+		// back at this one human message.
+		for _, a := range mentioned {
+			orch.TriggerReply(a.ID, rm.OwnerID, m)
 		}
 
 		// Auto-title trigger (ADR-004's nameless-room-creation addendum):

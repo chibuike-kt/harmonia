@@ -18,7 +18,7 @@ export interface ChatMessage {
   sender_kind: "human" | "agent";
   user_id?: string;
   agent_id?: string;
-  mentioned_agent_id?: string;
+  mentioned_agent_ids?: string[];
   reply_to_message_id?: string;
   content: string;
   created_at: string;
@@ -34,13 +34,14 @@ interface MessageRowProps {
   /** Undefined for a human sender — AgentAvatarGlyph falls back to
    *  initials whenever there's no provider to look up a logo for. */
   senderProvider?: string;
-  /** The @mentioned agent's display name, resolved from
-   *  message.mentioned_agent_id — set only on a human message that
-   *  actually addressed one. Rendered as a visible tag above the
-   *  bubble: without it, a mention was invisible in the timeline — the
-   *  message just looked like plain text and the agent replied with no
-   *  shown connection between the two. */
-  mentionedAgentName?: string;
+  /** The @mentioned agents' display names, resolved from
+   *  message.mentioned_agent_ids (ADR-006 batch A: a message can
+   *  address more than one) — set only on a human message that
+   *  actually addressed at least one. Rendered as visible tags above
+   *  the bubble: without them, a mention was invisible in the
+   *  timeline — the message just looked like plain text and the
+   *  agent(s) replied with no shown connection to it. */
+  mentionedAgentNames?: string[];
   /** Set only when reply_to_message_id points somewhere still resolvable
    *  and it isn't the immediately preceding timeline item — see
    *  room page's own "replying to" placement logic. */
@@ -166,7 +167,7 @@ export function MessageRow({
   message,
   senderName,
   senderProvider,
-  mentionedAgentName,
+  mentionedAgentNames,
   replyPreview,
   onOpenArtifact,
   pinned,
@@ -178,9 +179,10 @@ export function MessageRow({
     return (
       <div className="group/msg flex justify-end">
         <div className="max-w-[78%]">
-          {mentionedAgentName && (
+          {mentionedAgentNames && mentionedAgentNames.length > 0 && (
             <div className="mb-1 flex items-center justify-end gap-1 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-secondary)]">
-              <ReplyArrowIcon />@{mentionedAgentName}
+              <ReplyArrowIcon />
+              {mentionedAgentNames.map((name) => `@${name}`).join(" ")}
             </div>
           )}
           <div className="rounded-[14px_14px_3px_14px] border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3.5 py-2.5 text-[16px] leading-[1.6] text-[var(--login-text)]">

@@ -36,15 +36,19 @@ const (
 const recencyLimit = 50
 
 type Message struct {
-	ID               uuid.UUID  `json:"id"`
-	RoomID           uuid.UUID  `json:"room_id"`
-	SenderKind       SenderKind `json:"sender_kind"`
-	UserID           *uuid.UUID `json:"user_id,omitempty"`
-	AgentID          *uuid.UUID `json:"agent_id,omitempty"`
-	MentionedAgentID *uuid.UUID `json:"mentioned_agent_id,omitempty"`
-	ReplyToMessageID *uuid.UUID `json:"reply_to_message_id,omitempty"`
-	Content          string     `json:"content"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID         uuid.UUID  `json:"id"`
+	RoomID     uuid.UUID  `json:"room_id"`
+	SenderKind SenderKind `json:"sender_kind"`
+	UserID     *uuid.UUID `json:"user_id,omitempty"`
+	AgentID    *uuid.UUID `json:"agent_id,omitempty"`
+	// MentionedAgentIDs comes from the message_mentions join table (ADR-006
+	// batch A), not a column on this row — every mention this message
+	// makes, in no particular order. Populated separately from the rest of
+	// this struct's fields; see loadMentions.
+	MentionedAgentIDs []uuid.UUID `json:"mentioned_agent_ids,omitempty"`
+	ReplyToMessageID  *uuid.UUID  `json:"reply_to_message_id,omitempty"`
+	Content           string      `json:"content"`
+	CreatedAt         time.Time   `json:"created_at"`
 	// InputTokens/OutputTokens are only ever set for sender_kind =
 	// 'agent' rows — the real usage the generation behind this message
 	// actually consumed (see provider.GenerateResponse). Nil for a human
@@ -64,7 +68,7 @@ func NewStore(pool store.Querier) *Store {
 	return &Store{pool: pool}
 }
 
-const messageColumns = `id, room_id, sender_kind, user_id, agent_id, mentioned_agent_id, reply_to_message_id, content, created_at, input_tokens, output_tokens`
+const messageColumns = `id, room_id, sender_kind, user_id, agent_id, reply_to_message_id, content, created_at, input_tokens, output_tokens`
 
 func scanMessage(row interface {
 	Scan(dest ...any) error
@@ -72,23 +76,63 @@ func scanMessage(row interface {
 	var m Message
 	err := row.Scan(
 		&m.ID, &m.RoomID, &m.SenderKind, &m.UserID, &m.AgentID,
-		&m.MentionedAgentID, &m.ReplyToMessageID, &m.Content, &m.CreatedAt,
+		&m.ReplyToMessageID, &m.Content, &m.CreatedAt,
 		&m.InputTokens, &m.OutputTokens,
 	)
 	return m, err
 }
 
+// loadMentions batch-fetches message_mentions for every ID in
+// messageIDs, keyed by message ID — one query regardless of how many
+// messages are being assembled (GetByID's single-element case included),
+// not one query per message.
+func (s *Store) loadMentions(ctx context.Context, messageIDs []uuid.UUID) (map[uuid.UUID][]uuid.UUID, error) {
+	byMessage := make(map[uuid.UUID][]uuid.UUID, len(messageIDs))
+	if len(messageIDs) == 0 {
+		return byMessage, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT message_id, agent_id FROM message_mentions WHERE message_id = ANY($1)
+	`, messageIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var messageID, agentID uuid.UUID
+		if err := rows.Scan(&messageID, &agentID); err != nil {
+			return nil, err
+		}
+		byMessage[messageID] = append(byMessage[messageID], agentID)
+	}
+	return byMessage, rows.Err()
+}
+
 // CreateHuman inserts a message posted by userID, optionally @mentioning
-// mentionedAgentID — the structured field the invocation loop keys off
-// of, never text parsing (see ADR-004).
-func (s *Store) CreateHuman(ctx context.Context, roomID, userID uuid.UUID, content string, mentionedAgentID *uuid.UUID) (Message, error) {
+// one or more mentionedAgentIDs — the structured field the invocation
+// loop keys off of, never text parsing (see ADR-004). One row lands in
+// message_mentions per mentioned agent (ADR-006 batch A: one message,
+// many agents); unnest of an empty/nil slice inserts nothing, so an
+// unmentioned message needs no special-casing here.
+func (s *Store) CreateHuman(ctx context.Context, roomID, userID uuid.UUID, content string, mentionedAgentIDs []uuid.UUID) (Message, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO messages (room_id, sender_kind, user_id, mentioned_agent_id, content)
-		VALUES ($1, 'human', $2, $3, $4)
+		INSERT INTO messages (room_id, sender_kind, user_id, content)
+		VALUES ($1, 'human', $2, $3)
 		RETURNING `+messageColumns,
-		roomID, userID, mentionedAgentID, content,
+		roomID, userID, content,
 	)
-	return scanMessage(row)
+	m, err := scanMessage(row)
+	if err != nil {
+		return Message{}, err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO message_mentions (message_id, agent_id)
+		SELECT $1, unnest($2::uuid[])
+	`, m.ID, mentionedAgentIDs); err != nil {
+		return Message{}, err
+	}
+	m.MentionedAgentIDs = mentionedAgentIDs
+	return m, nil
 }
 
 // CreateAgent inserts an agent-authored message: a generated reply on
@@ -121,7 +165,15 @@ func (s *Store) GetByID(ctx context.Context, messageID uuid.UUID) (Message, erro
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
-	return m, err
+	if err != nil {
+		return Message{}, err
+	}
+	mentions, err := s.loadMentions(ctx, []uuid.UUID{m.ID})
+	if err != nil {
+		return Message{}, err
+	}
+	m.MentionedAgentIDs = mentions[m.ID]
+	return m, nil
 }
 
 // ListByRoom returns roomID's most recent messages, oldest first — ready
@@ -152,7 +204,22 @@ func (s *Store) ListByRoom(ctx context.Context, roomID uuid.UUID) ([]Message, er
 		}
 		messages = append(messages, m)
 	}
-	return messages, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	ids := make([]uuid.UUID, len(messages))
+	for i, m := range messages {
+		ids[i] = m.ID
+	}
+	mentions, err := s.loadMentions(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range messages {
+		messages[i].MentionedAgentIDs = mentions[m.ID]
+	}
+	return messages, nil
 }
 
 // CountByRoom returns how many messages exist in roomID — used to

@@ -291,16 +291,16 @@ func buildGenerateRequest(a agent.Agent, history []Message, customInstructions s
 
 func toChatMessage(m Message) realtime.ChatMessage {
 	return realtime.ChatMessage{
-		ID:               m.ID,
-		RoomID:           m.RoomID,
-		SenderKind:       string(m.SenderKind),
-		UserID:           m.UserID,
-		AgentID:          m.AgentID,
-		MentionedAgentID: m.MentionedAgentID,
-		ReplyToMessageID: m.ReplyToMessageID,
-		Content:          m.Content,
-		CreatedAt:        m.CreatedAt,
-		InputTokens:      m.InputTokens,
-		OutputTokens:     m.OutputTokens,
+		ID:                m.ID,
+		RoomID:            m.RoomID,
+		SenderKind:        string(m.SenderKind),
+		UserID:            m.UserID,
+		AgentID:           m.AgentID,
+		MentionedAgentIDs: m.MentionedAgentIDs,
+		ReplyToMessageID:  m.ReplyToMessageID,
+		Content:           m.Content,
+		CreatedAt:         m.CreatedAt,
+		InputTokens:       m.InputTokens,
+		OutputTokens:      m.OutputTokens,
 	}
 }

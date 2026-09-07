@@ -453,10 +453,15 @@ func TestIntegration_DeleteHandler(t *testing.T) {
 	// reasoning as the agent/task/event/handoff seeding above.
 	var mentionMsgID, replyMsgID uuid.UUID
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO messages (room_id, sender_kind, user_id, mentioned_agent_id, content)
-		VALUES ($1, 'human', $2, $3, 'mentioning the agent') RETURNING id
-	`, rm.ID, owner.ID, agentID).Scan(&mentionMsgID); err != nil {
+		INSERT INTO messages (room_id, sender_kind, user_id, content)
+		VALUES ($1, 'human', $2, 'mentioning the agent') RETURNING id
+	`, rm.ID, owner.ID).Scan(&mentionMsgID); err != nil {
 		t.Fatalf("seed mention message: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO message_mentions (message_id, agent_id) VALUES ($1, $2)
+	`, mentionMsgID, agentID); err != nil {
+		t.Fatalf("seed message mention: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO messages (room_id, sender_kind, agent_id, reply_to_message_id, content)
@@ -496,7 +501,7 @@ func TestIntegration_DeleteHandler(t *testing.T) {
 		t.Fatalf("delete status = %d, want %d, body = %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 
-	var roomCount, agentCount, taskCount, eventCount, handoffCount, messageCount, decisionCount int
+	var roomCount, agentCount, taskCount, eventCount, handoffCount, messageCount, mentionCount, decisionCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rooms WHERE id = $1`, rm.ID).Scan(&roomCount); err != nil {
 		t.Fatalf("count rooms: %v", err)
 	}
@@ -520,12 +525,19 @@ func TestIntegration_DeleteHandler(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE room_id = $1`, rm.ID).Scan(&messageCount); err != nil {
 		t.Fatalf("count messages: %v", err)
 	}
+	// message_mentions has no room_id of its own (ADR-006 batch A) — it
+	// cascades from messages.id, one hop further than everything else
+	// checked here, so counting by the seeded message ID rather than a
+	// room_id column is the only way to confirm it, not an assumption.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM message_mentions WHERE message_id = $1`, mentionMsgID).Scan(&mentionCount); err != nil {
+		t.Fatalf("count message_mentions: %v", err)
+	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM decisions WHERE room_id = $1`, rm.ID).Scan(&decisionCount); err != nil {
 		t.Fatalf("count decisions: %v", err)
 	}
-	if roomCount != 0 || agentCount != 0 || taskCount != 0 || eventCount != 0 || handoffCount != 0 || messageCount != 0 || decisionCount != 0 {
-		t.Fatalf("expected full cascade delete, got rooms=%d agents=%d tasks=%d events=%d handoffs=%d messages=%d decisions=%d",
-			roomCount, agentCount, taskCount, eventCount, handoffCount, messageCount, decisionCount)
+	if roomCount != 0 || agentCount != 0 || taskCount != 0 || eventCount != 0 || handoffCount != 0 || messageCount != 0 || mentionCount != 0 || decisionCount != 0 {
+		t.Fatalf("expected full cascade delete, got rooms=%d agents=%d tasks=%d events=%d handoffs=%d messages=%d message_mentions=%d decisions=%d",
+			roomCount, agentCount, taskCount, eventCount, handoffCount, messageCount, mentionCount, decisionCount)
 	}
 }
 

@@ -46,15 +46,15 @@ type Message struct {
 // internal/message would be a cycle — the same reasoning KindPresence's
 // own Presence struct (not agent.Agent) already follows in this file.
 type ChatMessage struct {
-	ID               uuid.UUID  `json:"id"`
-	RoomID           uuid.UUID  `json:"room_id"`
-	SenderKind       string     `json:"sender_kind"`
-	UserID           *uuid.UUID `json:"user_id,omitempty"`
-	AgentID          *uuid.UUID `json:"agent_id,omitempty"`
-	MentionedAgentID *uuid.UUID `json:"mentioned_agent_id,omitempty"`
-	ReplyToMessageID *uuid.UUID `json:"reply_to_message_id,omitempty"`
-	Content          string     `json:"content"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID                uuid.UUID   `json:"id"`
+	RoomID            uuid.UUID   `json:"room_id"`
+	SenderKind        string      `json:"sender_kind"`
+	UserID            *uuid.UUID  `json:"user_id,omitempty"`
+	AgentID           *uuid.UUID  `json:"agent_id,omitempty"`
+	MentionedAgentIDs []uuid.UUID `json:"mentioned_agent_ids,omitempty"`
+	ReplyToMessageID  *uuid.UUID  `json:"reply_to_message_id,omitempty"`
+	Content           string      `json:"content"`
+	CreatedAt         time.Time   `json:"created_at"`
 	// InputTokens/OutputTokens mirror internal/message.Message's own
 	// fields — real usage from the provider response, nil for a human
 	// message. Carried over SSE so the frontend's cost/token pill can

@@ -20,15 +20,16 @@ export interface RoomAgent {
 interface ComposerProps {
   agents: RoomAgent[];
   disabled?: boolean;
-  onSend: (content: string, mentionedAgentId: string | null) => void;
+  onSend: (content: string, mentionedAgentIds: string[]) => void;
 }
 
 const MAX_HEIGHT = 160;
 
 /**
  * Message composer — text input, send, an @-picker for the room's own
- * agents (sends the structured mentioned_agent_id the backend expects,
- * never text-parsed), and a "+" menu with two honestly-labeled,
+ * agents that allows selecting more than one (sends the structured
+ * mentioned_agent_ids array the backend expects, never text-parsed —
+ * ADR-006 batch A), and a "+" menu with two honestly-labeled,
  * currently-inert items. See ADR-004's addendum: web search and file
  * attachment are real, near-term follow-up work once this phase ships,
  * not a permanent dead end — labeled "soon," not left mysteriously
@@ -38,7 +39,7 @@ const MAX_HEIGHT = 160;
 export function Composer({ agents, disabled, onSend }: ComposerProps) {
   const [value, setValue] = useState("");
   const [plusOpen, setPlusOpen] = useState(false);
-  const [mentionedAgent, setMentionedAgent] = useState<RoomAgent | null>(null);
+  const [mentionedAgents, setMentionedAgents] = useState<RoomAgent[]>([]);
   const [pastedAttachments, setPastedAttachments] = useState<
     PastedAttachment[]
   >([]);
@@ -86,9 +87,12 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
       (p) => "```" + PASTED_TEXT_TAG + "\n" + p.text + "\n```",
     );
     const parts = [trimmed, ...pastedBlocks].filter((p) => p !== "");
-    onSend(parts.join("\n\n"), mentionedAgent?.id ?? null);
+    onSend(
+      parts.join("\n\n"),
+      mentionedAgents.map((a) => a.id),
+    );
     setValue("");
-    setMentionedAgent(null);
+    setMentionedAgents([]);
     setPastedAttachments([]);
   };
 
@@ -136,47 +140,52 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
           </div>
         )}
 
-        {mentionedAgent && (
-          <div className="mb-1.5 flex items-center gap-1.5 px-1">
-            <span className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-0.5 pl-1 pr-2 text-[12px] text-[var(--login-text-secondary)]">
-              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
-                <AgentAvatarGlyph
-                  provider={mentionedAgent.provider}
-                  name={mentionedAgent.name}
-                  size={9}
-                />
-              </span>
-              @{mentionedAgent.name}
-              <button
-                type="button"
-                aria-label="Remove mention"
-                onClick={() => setMentionedAgent(null)}
-                className="ml-0.5 text-[var(--login-text-muted)] hover:text-[var(--login-text)]"
-              >
-                ×
-              </button>
-            </span>
-          </div>
-        )}
-
-        {!mentionedAgent && agents.length > 0 && (
+        {mentionedAgents.length > 0 && (
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
-            <span className="font-[family-name:var(--login-font-mono)] text-[11px] text-[var(--login-text-muted)]">
-              Address:
-            </span>
-            {agents.map((a) => (
-              <button
+            {mentionedAgents.map((a) => (
+              <span
                 key={a.id}
-                type="button"
-                onClick={() => setMentionedAgent(a)}
-                className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] py-1 pl-1.5 pr-2.5 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+                className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-0.5 pl-1 pr-2 text-[12px] text-[var(--login-text-secondary)]"
               >
                 <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
                   <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
                 </span>
                 @{a.name}
-              </button>
+                <button
+                  type="button"
+                  aria-label={`Remove @${a.name}`}
+                  onClick={() =>
+                    setMentionedAgents((prev) => prev.filter((x) => x.id !== a.id))
+                  }
+                  className="ml-0.5 text-[var(--login-text-muted)] hover:text-[var(--login-text)]"
+                >
+                  ×
+                </button>
+              </span>
             ))}
+          </div>
+        )}
+
+        {agents.some((a) => !mentionedAgents.some((m) => m.id === a.id)) && (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+            <span className="font-[family-name:var(--login-font-mono)] text-[11px] text-[var(--login-text-muted)]">
+              Address:
+            </span>
+            {agents
+              .filter((a) => !mentionedAgents.some((m) => m.id === a.id))
+              .map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setMentionedAgents((prev) => [...prev, a])}
+                  className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] py-1 pl-1.5 pr-2.5 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+                >
+                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
+                    <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
+                  </span>
+                  @{a.name}
+                </button>
+              ))}
           </div>
         )}
 

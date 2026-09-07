@@ -2,9 +2,18 @@
 -- agent-initiated action proposals. See
 -- docs/adr/ADR-006-multi-agent-group-dynamics.md.
 
+-- Both FKs cascade, not just message_id: a room delete's own cascade
+-- reaches agents and messages independently (agents via rooms.id
+-- directly, messages via rooms.id directly too), and Postgres doesn't
+-- guarantee which branch it resolves first. Without ON DELETE CASCADE
+-- on agent_id as well, a room with an agent that has an existing
+-- mention fails the whole delete outright if the agents branch happens
+-- to run before the messages branch reaches this table — not a
+-- hypothetical, reproduced directly against a real room/agent/mention
+-- via delete_room_cascade.
 CREATE TABLE message_mentions (
     message_id uuid NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-    agent_id   uuid NOT NULL REFERENCES agents(id),
+    agent_id   uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     PRIMARY KEY (message_id, agent_id)
 );
 
@@ -16,10 +25,14 @@ ALTER TABLE messages DROP COLUMN mentioned_agent_id;
 
 ALTER TABLE rooms ADD COLUMN agent_cascading_enabled boolean NOT NULL DEFAULT false;
 
+-- proposing_agent_id cascades for the same reason message_mentions.
+-- agent_id just above does: room_id's own cascade from rooms doesn't
+-- protect this row from the agents branch of the same room delete
+-- running first.
 CREATE TABLE agent_action_proposals (
     id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     room_id            uuid NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-    proposing_agent_id uuid NOT NULL REFERENCES agents(id),
+    proposing_agent_id uuid NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     action_type        text NOT NULL,
     payload            jsonb NOT NULL,
     status             text NOT NULL DEFAULT 'pending',
