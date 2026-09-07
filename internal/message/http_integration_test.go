@@ -46,6 +46,13 @@ type fakeProviderAgent struct {
 	// actually assembled (e.g. custom_instructions prepended into
 	// SystemPrompt) rather than only on the reply that came back.
 	capturedRequest *provider.GenerateRequest
+	// toolCalls, if set, is returned alongside content on every call —
+	// unconditionally, regardless of what Tools the request actually
+	// declared. That's deliberate for the cascading-disabled proof: it
+	// lets a test assert the orchestrator itself is what suppresses a
+	// cascade when a room hasn't opted in, not merely that the fake
+	// cooperated by staying quiet.
+	toolCalls []provider.ToolCall
 }
 
 func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
@@ -61,7 +68,7 @@ func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateReq
 	if f.err != nil {
 		return provider.GenerateResponse{}, f.err
 	}
-	return provider.GenerateResponse{Content: f.content}, nil
+	return provider.GenerateResponse{Content: f.content, ToolCalls: f.toolCalls}, nil
 }
 
 // connectMessageTestPool connects to real Postgres and Redis, skipping
@@ -156,7 +163,7 @@ func TestIntegration_CreateHandler_HumanOnly(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, users, realtime.NewHub(), rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
@@ -208,7 +215,7 @@ func TestIntegration_CreateHandler_RoomOwnership(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, users, realtime.NewHub(), rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
@@ -249,7 +256,7 @@ func TestIntegration_CreateHandler_MentionedAgentNotFound(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, users, realtime.NewHub(), rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
@@ -300,7 +307,7 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Hello — this is the generated reply."}, nil
 	}
@@ -403,7 +410,7 @@ func TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies(t *
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
 	// Distinguishes replies by provider, since two real agents mentioned
 	// together are a realistic case this fake needs to tell apart — the
 	// seam's signature has no agent identity, only the provider being
@@ -532,6 +539,232 @@ func TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies(t *
 	}
 }
 
+// TestIntegration_Orchestrator_CascadingDisabledByDefault_MentionInReplyDoesNothing
+// is ADR-006 batch B's opt-in proof: a room's agent_cascading_enabled
+// defaults false, and an agent's reply attempting to mention another
+// agent does nothing when it's off — not merely because a cooperative
+// fake stays quiet, but because the orchestrator itself never offers the
+// mention_agent tool and never acts on a tool call when cascading isn't
+// enabled. The fake here returns a tool call unconditionally, regardless
+// of what tools the request declared, specifically to prove suppression
+// is the orchestrator's own doing.
+func TestIntegration_Orchestrator_CascadingDisabledByDefault_MentionInReplyDoesNothing(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-cascade-off-")
+	rm, err := rooms.Create(ctx, &owner.ID, "cascade-off-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if rm.AgentCascadingEnabled {
+		t.Fatal("expected agent_cascading_enabled to default false")
+	}
+	ping, err := agents.Register(ctx, rm.ID, "Ping", agent.ProviderAnthropic, nil, "hash-cascade-off-ping")
+	if err != nil {
+		t.Fatalf("register Ping: %v", err)
+	}
+	pong, err := agents.Register(ctx, rm.ID, "Pong", agent.ProviderOpenAI, nil, "hash-cascade-off-pong")
+	if err != nil {
+		t.Fatalf("register Pong: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	pongCalled := false
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		switch p {
+		case agent.ProviderAnthropic:
+			return &fakeProviderAgent{
+				content:   "ping went ahead without pong",
+				toolCalls: []provider.ToolCall{{Name: mentionAgentToolName, Input: map[string]any{"agent_name": "Pong"}}},
+			}, nil
+		case agent.ProviderOpenAI:
+			pongCalled = true
+			return nil, fmt.Errorf("Pong should never be invoked while cascading is disabled")
+		default:
+			return nil, fmt.Errorf("unexpected provider %s", p)
+		}
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID})
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0)
+
+	running := rec.recv(t)
+	if running.Kind != realtime.KindPresence || running.Presence.AgentID != ping.ID || running.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("first published message = %+v, want presence running for Ping", running)
+	}
+	reply := rec.recv(t)
+	if reply.Kind != realtime.KindMessage || reply.Message == nil || reply.Message.AgentID == nil || *reply.Message.AgentID != ping.ID {
+		t.Fatalf("second published message = %+v, want Ping's reply", reply)
+	}
+	if len(reply.Message.MentionedAgentIDs) != 0 {
+		t.Fatalf("Ping's reply MentionedAgentIDs = %v, want none — cascading is off", reply.Message.MentionedAgentIDs)
+	}
+	available := rec.recv(t)
+	if available.Kind != realtime.KindPresence || available.Presence.AgentID != ping.ID || available.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("third published message = %+v, want presence available for Ping", available)
+	}
+
+	// Ping's own invoke() has now fully returned (its last action was the
+	// available-presence publish just received above) without ever
+	// reaching a TriggerReply call for Pong — there is no further
+	// goroutine left that could still publish something later, so this
+	// is a deterministic end state to assert against, not a race won by
+	// waiting long enough.
+	if pongCalled {
+		t.Fatal("Pong's provider client was invoked — cascading should have suppressed this entirely")
+	}
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored messages = %d, want 2 (the mention plus Ping's reply only)", len(stored))
+	}
+	finalPong, err := agents.GetByID(ctx, pong.ID)
+	if err != nil {
+		t.Fatalf("GetByID Pong: %v", err)
+	}
+	if finalPong.Status != agent.StatusAvailable {
+		t.Fatalf("Pong's status = %s, want unchanged %s", finalPong.Status, agent.StatusAvailable)
+	}
+}
+
+// TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap is ADR-006
+// batch B's other central proof: two agents configured to always mention
+// each other back, with cascading enabled, chain exactly cascadeDepthCap
+// hops deep and then stop with a visible message — never a silent
+// truncation, and never one hop more or less. Written deterministically,
+// not against a timeout: this ping-pong chain is provably sequential
+// (each hop's TriggerReply is only called after the previous hop's own
+// publish/status-update work has already completed), so the exact
+// publish sequence below is the only order this can ever produce, not
+// one that merely usually happens.
+func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-cascade-cap-")
+	rm, err := rooms.Create(ctx, &owner.ID, "cascade-cap-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	enabled := true
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled); err != nil {
+		t.Fatalf("enable cascading: %v", err)
+	}
+	ping, err := agents.Register(ctx, rm.ID, "Ping", agent.ProviderAnthropic, nil, "hash-cascade-cap-ping")
+	if err != nil {
+		t.Fatalf("register Ping: %v", err)
+	}
+	pong, err := agents.Register(ctx, rm.ID, "Pong", agent.ProviderOpenAI, nil, "hash-cascade-cap-pong")
+	if err != nil {
+		t.Fatalf("register Pong: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		switch p {
+		case agent.ProviderAnthropic:
+			return &fakeProviderAgent{
+				content:   "ping says hi",
+				toolCalls: []provider.ToolCall{{Name: mentionAgentToolName, Input: map[string]any{"agent_name": "Pong"}}},
+			}, nil
+		case agent.ProviderOpenAI:
+			return &fakeProviderAgent{
+				content:   "pong says hi",
+				toolCalls: []provider.ToolCall{{Name: mentionAgentToolName, Input: map[string]any{"agent_name": "Ping"}}},
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected provider %s", p)
+		}
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID})
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0)
+
+	// One hop = presence running, the reply, presence available — for
+	// whichever agent is invoked at that hop. hops[i] is the agent
+	// expected at depth i (0-indexed: hop 0 is the human-triggered one).
+	hops := []agent.Agent{ping, pong, ping, pong}
+	var replyIDs []uuid.UUID
+	for i, a := range hops {
+		running := rec.recv(t)
+		if running.Kind != realtime.KindPresence || running.Presence.AgentID != a.ID || running.Presence.Status != string(agent.StatusRunning) {
+			t.Fatalf("hop %d: got %+v, want presence running for %s", i, running, a.Name)
+		}
+		reply := rec.recv(t)
+		if reply.Kind != realtime.KindMessage || reply.Message == nil || reply.Message.AgentID == nil || *reply.Message.AgentID != a.ID {
+			t.Fatalf("hop %d: got %+v, want a reply from %s", i, reply, a.Name)
+		}
+		replyIDs = append(replyIDs, reply.Message.ID)
+		available := rec.recv(t)
+		if available.Kind != realtime.KindPresence || available.Presence.AgentID != a.ID || available.Presence.Status != string(agent.StatusAvailable) {
+			t.Fatalf("hop %d: got %+v, want presence available for %s", i, available, a.Name)
+		}
+	}
+
+	// Hop 4 (depth+1 = 4 > cascadeDepthCap's 3) never actually invokes
+	// Ping — no running/available presence for it, just the one visible
+	// stop message, attributed to Ping since it's the agent that would
+	// have been invoked next.
+	stopMsg := rec.recv(t)
+	if stopMsg.Kind != realtime.KindMessage || stopMsg.Message == nil || stopMsg.Message.AgentID == nil || *stopMsg.Message.AgentID != ping.ID {
+		t.Fatalf("final published message = %+v, want the cascade-stopped message attributed to Ping", stopMsg)
+	}
+	if stopMsg.Message.ReplyToMessageID == nil || *stopMsg.Message.ReplyToMessageID != replyIDs[len(replyIDs)-1] {
+		t.Fatalf("stop message ReplyToMessageID = %v, want %s (Pong's hop-3 reply)", stopMsg.Message.ReplyToMessageID, replyIDs[len(replyIDs)-1])
+	}
+	if !strings.Contains(stopMsg.Message.Content, "3-hop limit") {
+		t.Fatalf("stop message content = %q, want it to name the 3-hop limit", stopMsg.Message.Content)
+	}
+
+	// The chain is now provably wound down (see the test's own doc
+	// comment) — Ping was never actually invoked a third time, so both
+	// agents' final status is whatever their own last real hop left it
+	// at: available.
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 6 {
+		t.Fatalf("stored messages = %d, want 6 (the mention, four replies, one stop message)", len(stored))
+	}
+	for _, a := range []agent.Agent{ping, pong} {
+		final, err := agents.GetByID(ctx, a.ID)
+		if err != nil {
+			t.Fatalf("GetByID %s: %v", a.Name, err)
+		}
+		if final.Status != agent.StatusAvailable {
+			t.Fatalf("%s final status = %s, want %s", a.Name, final.Status, agent.StatusAvailable)
+		}
+	}
+}
+
 // TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt
 // proves ADR-005's custom_instructions field actually reaches the
 // provider call, not just the database: the room owner's stored
@@ -564,7 +797,7 @@ func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *t
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
 	var captured provider.GenerateRequest
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
@@ -575,7 +808,7 @@ func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *t
 		t.Fatalf("seed triggering message: %v", err)
 	}
 
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
 	waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
 
 	if !strings.Contains(captured.SystemPrompt, instructions) {
@@ -610,7 +843,7 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{err: errors.New("simulated provider error: rate limited")}, nil
 	}
@@ -620,7 +853,7 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 		t.Fatalf("seed triggering message: %v", err)
 	}
 
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
 
 	// Poll for the failure message itself, not agent status: 'available'
 	// is also the agent's status before the goroutine ever runs (set at
@@ -662,7 +895,7 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 
 	s := NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{shouldPanic: true}, nil
 	}
@@ -675,7 +908,7 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 	// If the panic weren't recovered, this test binary itself would
 	// crash here — the test passing at all is part of the proof, not
 	// just the assertions below.
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
 
 	failure := waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
 	if !strings.Contains(failure.Content, "went wrong") {

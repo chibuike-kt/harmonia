@@ -87,7 +87,8 @@ export default function DashboardPage() {
     // ADR-005: preferred_name is what agents/the app should call someone
     // casually — falls back through display_name/username, same as
     // before, for a user who's never set it.
-    const name = me?.preferred_name || me?.display_name || me?.username || "there";
+    const name =
+      me?.preferred_name || me?.display_name || me?.username || "there";
     const options = headingOptions(name);
     const lastIndex = Number(sessionStorage.getItem("lastHeadingIndex"));
     let nextIndex = Math.floor(Math.random() * options.length);

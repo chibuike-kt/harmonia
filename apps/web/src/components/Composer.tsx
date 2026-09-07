@@ -148,14 +148,20 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
                 className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-0.5 pl-1 pr-2 text-[12px] text-[var(--login-text-secondary)]"
               >
                 <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
-                  <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
+                  <AgentAvatarGlyph
+                    provider={a.provider}
+                    name={a.name}
+                    size={9}
+                  />
                 </span>
                 @{a.name}
                 <button
                   type="button"
                   aria-label={`Remove @${a.name}`}
                   onClick={() =>
-                    setMentionedAgents((prev) => prev.filter((x) => x.id !== a.id))
+                    setMentionedAgents((prev) =>
+                      prev.filter((x) => x.id !== a.id),
+                    )
                   }
                   className="ml-0.5 text-[var(--login-text-muted)] hover:text-[var(--login-text)]"
                 >
@@ -181,7 +187,11 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
                   className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] py-1 pl-1.5 pr-2.5 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
                 >
                   <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
-                    <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
+                    <AgentAvatarGlyph
+                      provider={a.provider}
+                      name={a.name}
+                      size={9}
+                    />
                   </span>
                   @{a.name}
                 </button>
@@ -238,7 +248,8 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
             type="button"
             aria-label="Send message"
             disabled={
-              disabled || (value.trim() === "" && pastedAttachments.length === 0)
+              disabled ||
+              (value.trim() === "" && pastedAttachments.length === 0)
             }
             onClick={handleSend}
             className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg bg-[var(--login-accent)] text-[var(--login-bg)] hover:bg-[#63e0d1] disabled:cursor-not-allowed disabled:opacity-40"

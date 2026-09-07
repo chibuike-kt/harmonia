@@ -42,15 +42,38 @@ type message struct {
 }
 
 type messagesRequest struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system,omitempty"`
-	Messages  []message `json:"messages"`
+	Model      string      `json:"model"`
+	MaxTokens  int         `json:"max_tokens"`
+	System     string      `json:"system,omitempty"`
+	Messages   []message   `json:"messages"`
+	Tools      []tool      `json:"tools,omitempty"`
+	ToolChoice *toolChoice `json:"tool_choice,omitempty"`
 }
 
-type contentBlock struct {
+type tool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+}
+
+// toolChoice's Type "any" forces some tool call; the zero value (an
+// absent field, via messagesRequest's own omitempty) leaves the
+// Messages API's default "auto" in place — a model choosing not to call
+// a declared tool.
+type toolChoice struct {
 	Type string `json:"type"`
-	Text string `json:"text"`
+}
+
+// contentBlock covers both shapes the Messages API returns in one
+// response's content array: a text block (Type "text", Text set) and a
+// tool_use block (Type "tool_use", Name/Input set) — the same array can
+// hold either or both, so this isn't two separate response shapes to
+// switch on, just one block type left blank where it doesn't apply.
+type contentBlock struct {
+	Type  string         `json:"type"`
+	Text  string         `json:"text"`
+	Name  string         `json:"name"`
+	Input map[string]any `json:"input"`
 }
 
 type usage struct {
@@ -69,19 +92,32 @@ type errorEnvelope struct {
 	} `json:"error"`
 }
 
-// Generate calls the Messages API, non-streaming. No tool use, no retries
-// beyond what net/http gives for free.
+// Generate calls the Messages API, non-streaming. Single-turn tool use
+// only (see package provider's own doc comment) — no retries beyond what
+// net/http gives for free.
 func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
 	messages := make([]message, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		messages = append(messages, message{Role: m.Role, Content: m.Content})
 	}
 
+	var tools []tool
+	for _, t := range req.Tools {
+		tools = append(tools, tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+	}
+
+	var choice *toolChoice
+	if req.RequireToolCall {
+		choice = &toolChoice{Type: "any"}
+	}
+
 	body, err := json.Marshal(messagesRequest{
-		Model:     c.model,
-		MaxTokens: defaultMaxTokens,
-		System:    req.SystemPrompt,
-		Messages:  messages,
+		Model:      c.model,
+		MaxTokens:  defaultMaxTokens,
+		System:     req.SystemPrompt,
+		Messages:   messages,
+		Tools:      tools,
+		ToolChoice: choice,
 	})
 	if err != nil {
 		return provider.GenerateResponse{}, fmt.Errorf("anthropic: encode request: %w", err)
@@ -120,14 +156,19 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 	}
 
 	var content strings.Builder
+	var toolCalls []provider.ToolCall
 	for _, block := range parsed.Content {
-		if block.Type == "text" {
+		switch block.Type {
+		case "text":
 			content.WriteString(block.Text)
+		case "tool_use":
+			toolCalls = append(toolCalls, provider.ToolCall{Name: block.Name, Input: block.Input})
 		}
 	}
 
 	return provider.GenerateResponse{
 		Content:      content.String(),
+		ToolCalls:    toolCalls,
 		InputTokens:  parsed.Usage.InputTokens,
 		OutputTokens: parsed.Usage.OutputTokens,
 	}, nil

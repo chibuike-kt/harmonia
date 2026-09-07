@@ -160,7 +160,7 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		// own and produces its own reply, all pointing reply_to_message_id
 		// back at this one human message.
 		for _, a := range mentioned {
-			orch.TriggerReply(a.ID, rm.OwnerID, m)
+			orch.TriggerReply(a.ID, rm.OwnerID, m, 0)
 		}
 
 		// Auto-title trigger (ADR-004's nameless-room-creation addendum):

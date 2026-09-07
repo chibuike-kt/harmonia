@@ -85,17 +85,14 @@ export function AddAgentMenu({ roomId, onAdded, label }: AddAgentMenuProps) {
     setAddingProvider(provider);
     setAddError(null);
     try {
-      const agent = await apiFetch<AddedAgent>(
-        `/v1/rooms/${roomId}/agents`,
-        {
-          method: "POST",
-          body: {
-            name: PROVIDER_LABELS[provider] ?? provider,
-            provider,
-            capabilities: [],
-          },
+      const agent = await apiFetch<AddedAgent>(`/v1/rooms/${roomId}/agents`, {
+        method: "POST",
+        body: {
+          name: PROVIDER_LABELS[provider] ?? provider,
+          provider,
+          capabilities: [],
         },
-      );
+      });
       onAdded(agent);
       setOpen(false);
     } catch (err) {
@@ -130,9 +127,7 @@ export function AddAgentMenu({ roomId, onAdded, label }: AddAgentMenuProps) {
               Loading…
             </p>
           ) : loadError ? (
-            <p className="px-2 py-2 text-[12.5px] text-red-400">
-              {loadError}
-            </p>
+            <p className="px-2 py-2 text-[12.5px] text-red-400">{loadError}</p>
           ) : credentials.length === 0 ? (
             <div className="px-2 py-2">
               <p className="mb-2 text-[12.5px] leading-[1.5] text-[var(--login-text)]">

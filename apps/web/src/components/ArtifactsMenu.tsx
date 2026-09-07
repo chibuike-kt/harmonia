@@ -25,7 +25,9 @@ interface ArtifactsMenuProps {
 }
 
 function formatRelativeTime(iso: string): string {
-  const diffMinutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  const diffMinutes = Math.floor(
+    (Date.now() - new Date(iso).getTime()) / 60000,
+  );
   if (diffMinutes < 1) return "just now";
   if (diffMinutes < 60) return `${diffMinutes}m ago`;
   const hours = Math.floor(diffMinutes / 60);
@@ -115,8 +117,8 @@ export function ArtifactsMenu({
                 >
                   <span className="flex w-full items-center gap-1.5 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text)]">
                     {a.kind === "text" ? <FileIcon /> : <CodeBracketsIcon />}
-                    {a.kind === "text" ? "Pasted text" : a.language} ·{" "}
-                    {a.lines} line{a.lines === 1 ? "" : "s"}
+                    {a.kind === "text" ? "Pasted text" : a.language} · {a.lines}{" "}
+                    line{a.lines === 1 ? "" : "s"}
                   </span>
                   <span className="text-[11.5px] text-[var(--login-text-muted)]">
                     {a.senderName} · {formatRelativeTime(a.createdAt)}
@@ -128,8 +130,8 @@ export function ArtifactsMenu({
 
           {mayBeIncomplete && (
             <div className="border-t border-[var(--login-border)] px-3 py-2 text-[11px] leading-[1.5] text-[var(--login-text-muted)]">
-              Reflects messages currently loaded in this room, not
-              necessarily its full history.
+              Reflects messages currently loaded in this room, not necessarily
+              its full history.
             </div>
           )}
         </div>

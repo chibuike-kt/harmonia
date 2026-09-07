@@ -108,7 +108,7 @@ func TestIntegration_TitleGenerator_RaceGuardSkipsManualRename(t *testing.T) {
 				// this slow provider call is still in flight — exactly
 				// the race ADR-004's addendum describes.
 				manual := manualName
-				if _, err := rooms.Update(ctx, rm.ID, &manual, nil); err != nil {
+				if _, err := rooms.Update(ctx, rm.ID, &manual, nil, nil); err != nil {
 					t.Errorf("simulate concurrent manual rename: %v", err)
 				}
 			},

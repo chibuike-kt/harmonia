@@ -88,7 +88,7 @@ func NewRouter(st *store.Store) http.Handler {
 	creds := credentials.NewStore(st.Pool, cipher)
 
 	messages := message.NewStore(st.Pool)
-	orchestrator := message.NewOrchestrator(messages, agents, creds, users, hub, st.Redis)
+	orchestrator := message.NewOrchestrator(messages, agents, creds, users, rooms, hub, st.Redis)
 	titleGen := message.NewTitleGenerator(rooms, creds, users, hub)
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))

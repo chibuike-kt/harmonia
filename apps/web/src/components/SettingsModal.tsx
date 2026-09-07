@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
 import {
@@ -141,7 +147,9 @@ function describeDevice(userAgent?: string): string {
 }
 
 function formatRelativeTime(iso: string): string {
-  const diffMinutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  const diffMinutes = Math.floor(
+    (Date.now() - new Date(iso).getTime()) / 60000,
+  );
   if (diffMinutes < 1) return "just now";
   if (diffMinutes < 60) return `${diffMinutes}m ago`;
   const hours = Math.floor(diffMinutes / 60);
@@ -678,8 +686,8 @@ function ProviderRow({
         <p className="mt-2.5 text-[12px] leading-[1.5] text-[var(--login-text)]">
           Your key is encrypted before it&apos;s stored, decrypted only in
           memory at the moment we make a request to {provider.label} on your
-          behalf, and never shown again or logged in plaintext after you
-          enter it.
+          behalf, and never shown again or logged in plaintext after you enter
+          it.
         </p>
       )}
     </div>
@@ -735,9 +743,7 @@ function SessionsPanel() {
   }
   if (sessions === null) {
     return (
-      <p className="text-[13.5px] text-[var(--login-text-muted)]">
-        Loading…
-      </p>
+      <p className="text-[13.5px] text-[var(--login-text-muted)]">Loading…</p>
     );
   }
   if (sessions.length === 0) {

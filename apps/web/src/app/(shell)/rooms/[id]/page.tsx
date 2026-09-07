@@ -8,7 +8,10 @@ import {
   ArtifactPanel,
   type ArtifactContent,
 } from "@/components/ArtifactPanel";
-import { ArtifactsMenu, type ArtifactListItem } from "@/components/ArtifactsMenu";
+import {
+  ArtifactsMenu,
+  type ArtifactListItem,
+} from "@/components/ArtifactsMenu";
 import { AddAgentMenu } from "@/components/AddAgentMenu";
 import { Composer, type RoomAgent } from "@/components/Composer";
 import {
@@ -88,6 +91,7 @@ interface Snapshot {
 interface RoomSummary {
   id: string;
   name: string;
+  agent_cascading_enabled: boolean;
 }
 
 interface Me {
@@ -224,6 +228,7 @@ export default function RoomViewPage() {
     RoomAgentSummary[]
   >([]);
   const [roomName, setRoomName] = useState<string>("");
+  const [agentCascadingEnabled, setAgentCascadingEnabled] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
   const [connection, setConnection] = useState<
     "connecting" | "open" | "reconnecting"
@@ -234,9 +239,9 @@ export default function RoomViewPage() {
   const [infoOpen, setInfoOpen] = useState(false);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [pinError, setPinError] = useState<string | null>(null);
-  const [initialMessageCount, setInitialMessageCount] = useState<
-    number | null
-  >(null);
+  const [initialMessageCount, setInitialMessageCount] = useState<number | null>(
+    null,
+  );
 
   const timelineRef = useRef<HTMLDivElement>(null);
   // Tracked in a ref, not state: the entries-changed effect below reads
@@ -262,10 +267,29 @@ export default function RoomViewPage() {
     void apiFetch<RoomSummary[]>("/v1/rooms")
       .then((rooms) => {
         const match = rooms.find((r) => r.id === roomId);
-        if (match) setRoomName(match.name);
+        if (match) {
+          setRoomName(match.name);
+          setAgentCascadingEnabled(match.agent_cascading_enabled);
+        }
       })
       .catch(() => {});
   }, [roomId]);
+
+  const handleToggleCascading = async (enabled: boolean) => {
+    if (!roomId) return;
+    setAgentCascadingEnabled(enabled);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}`, {
+        method: "PATCH",
+        body: { agent_cascading_enabled: enabled },
+      });
+    } catch {
+      // Revert on failure — an optimistic toggle that silently didn't
+      // take would leave the panel showing a setting the room doesn't
+      // actually have.
+      setAgentCascadingEnabled(!enabled);
+    }
+  };
 
   // Full agent objects, not just {id, name}: the info panel wants
   // provider + capabilities too, and the cost pill needs provider to
@@ -537,7 +561,10 @@ export default function RoomViewPage() {
   // — mayBeIncomplete below reflects exactly that, surfaced as a plain
   // caption in the menu rather than silently presented as complete.
   const loadedMessages = entries
-    .filter((e): e is Extract<TimelineEntry, { kind: "message" }> => e.kind === "message")
+    .filter(
+      (e): e is Extract<TimelineEntry, { kind: "message" }> =>
+        e.kind === "message",
+    )
     .map((e) => e.message);
   const artifactListItems: ArtifactListItem[] = collectRoomArtifacts(
     loadedMessages,
@@ -711,7 +738,11 @@ export default function RoomViewPage() {
               className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] py-0.5 pl-1 pr-2.5 text-[12px] text-[var(--login-text-secondary)]"
             >
               <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
-                <AgentAvatarGlyph provider={a.provider} name={a.name} size={9} />
+                <AgentAvatarGlyph
+                  provider={a.provider}
+                  name={a.name}
+                  size={9}
+                />
               </span>
               {a.name}
             </span>
@@ -720,7 +751,11 @@ export default function RoomViewPage() {
             <AddAgentMenu
               roomId={roomId}
               onAdded={loadRoomAgents}
-              label={roomAgentSummaries.length === 0 ? "Add an agent to get started" : "Add agent"}
+              label={
+                roomAgentSummaries.length === 0
+                  ? "Add an agent to get started"
+                  : "Add agent"
+              }
             />
           )}
         </div>
@@ -779,6 +814,8 @@ export default function RoomViewPage() {
         decisions={decisions}
         roomId={roomId ?? ""}
         onAgentAdded={loadRoomAgents}
+        agentCascadingEnabled={agentCascadingEnabled}
+        onToggleCascading={handleToggleCascading}
       />
       <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
     </div>

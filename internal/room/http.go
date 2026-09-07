@@ -20,8 +20,9 @@ type createRequest struct {
 // body is distinguishable from an explicit false/empty-string — see
 // Store.Update.
 type updateRequest struct {
-	Name   *string `json:"name"`
-	Pinned *bool   `json:"pinned"`
+	Name                  *string `json:"name"`
+	Pinned                *bool   `json:"pinned"`
+	AgentCascadingEnabled *bool   `json:"agent_cascading_enabled"`
 }
 
 type errorResponse struct {
@@ -145,7 +146,7 @@ func (s *Store) UpdateHandler() http.HandlerFunc {
 			return
 		}
 
-		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned)
+		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned, req.AgentCascadingEnabled)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update room")
 			return

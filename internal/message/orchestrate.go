@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/provider/anthropic"
 	"github.com/chibuike-kt/harmonia/internal/provider/openai"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
+	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
@@ -26,6 +28,80 @@ import (
 // call doesn't leave a goroutine (and an agent stuck showing "running")
 // alive indefinitely.
 const generationTimeout = 2 * time.Minute
+
+// cascadeDepthCap bounds how many agent-to-agent hops (ADR-006 batch B)
+// can chain off a single human-triggered mention, enforced regardless of
+// a room's agent_cascading_enabled setting — that flag decides whether a
+// chain can start at all, this decides how far it can go once it does.
+// Two agents that always mention each other back is a real infinite-loop
+// shape; every hop is also a real charge against someone's own BYOK key.
+const cascadeDepthCap = 3
+
+// mentionAgentToolName is the one tool offered to a generation when its
+// room has cascading enabled — the structured way an agent's own reply
+// expresses "bring Agent X into this," never text-scanned out of the
+// reply the way ADR-004 already rejected for human mentions. Named
+// deliberately close to batch C's own create_task/request_handoff: one
+// tool-use mechanism, not a bespoke parallel one just for mentions.
+const mentionAgentToolName = "mention_agent"
+
+// mentionAgentTool is the tool definition offered to a generation when
+// its room has cascading enabled. Its schema takes the target's display
+// name, not an internal ID: a model only ever sees agents in the
+// conversation by name, the same way a human addressing another agent
+// does — resolveMentionToolCalls does the actual name-to-ID lookup,
+// scoped to this room, never trusting anything the model supplies as an
+// ID directly.
+func mentionAgentTool() provider.ToolDef {
+	return provider.ToolDef{
+		Name: mentionAgentToolName,
+		Description: "Bring another agent already in this room into the " +
+			"conversation, the same way a human @mentions someone. Only " +
+			"call this when that agent's specific expertise or action is " +
+			"genuinely needed to continue — not on every turn, and not " +
+			"more than once for the same agent.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"agent_name": map[string]any{
+					"type":        "string",
+					"description": "The exact display name of the agent to mention, as it appears in this room's conversation.",
+				},
+			},
+			"required": []string{"agent_name"},
+		},
+	}
+}
+
+// resolveMentionToolCalls turns a generation's mention_agent tool calls
+// into real agent IDs — matched by exact case-insensitive name against
+// every agent actually in this room, never a raw ID the model might
+// invent, the same non-leaking validation every mention path in this
+// package already uses. A call naming an agent that doesn't exist here,
+// or repeating one already resolved, is dropped rather than treated as a
+// failure: the reply itself already generated successfully, and a model
+// naming the wrong agent shouldn't cost the human a lost reply over it.
+func resolveMentionToolCalls(calls []provider.ToolCall, roomAgents []agent.Agent) []uuid.UUID {
+	byName := make(map[string]uuid.UUID, len(roomAgents))
+	for _, a := range roomAgents {
+		byName[strings.ToLower(a.Name)] = a.ID
+	}
+	seen := make(map[uuid.UUID]bool, len(calls))
+	var ids []uuid.UUID
+	for _, call := range calls {
+		if call.Name != mentionAgentToolName {
+			continue
+		}
+		name, _ := call.Input["agent_name"].(string)
+		id, ok := byName[strings.ToLower(strings.TrimSpace(name))]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
 
 // newProviderClientFunc builds the env-var-fallback provider client — a
 // field on Orchestrator, not a bare call to the package-level
@@ -47,24 +123,29 @@ type Orchestrator struct {
 	agents            *agent.Store
 	credentials       *credentials.Store
 	users             *user.Store
+	rooms             *room.Store
 	hub               realtime.Publisher
 	rdb               *redis.Client
 	newProviderClient newProviderClientFunc
 }
 
-func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, users *user.Store, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
+func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, users *user.Store, rooms *room.Store, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
 	return &Orchestrator{
-		messages: messages, agents: agents, credentials: creds, users: users, hub: hub, rdb: rdb,
+		messages: messages, agents: agents, credentials: creds, users: users, rooms: rooms, hub: hub, rdb: rdb,
 		newProviderClient: newProviderClient,
 	}
 }
 
 // TriggerReply launches, in a new goroutine, generation of
-// mentionedAgentID's reply to triggering — the human message that
-// @mentioned it. Returns immediately; the reply (or a visible failure
-// message, per ADR-004) is delivered later over hub. roomOwnerID is the
-// room's owner as already resolved by the HTTP handler's own ownership
-// check, passed through rather than re-fetched here.
+// mentionedAgentID's reply to triggering — the human (or, at depth > 0,
+// agent — ADR-006 batch B) message that mentioned it. Returns
+// immediately; the reply (or a visible failure message, per ADR-004) is
+// delivered later over hub. roomOwnerID is the room's owner as already
+// resolved by the caller's own ownership check, passed through rather
+// than re-fetched here. depth is how many agent-to-agent hops already
+// led to this invocation — 0 for every human-triggered mention,
+// incremented by one each time an agent's own reply cascades into
+// another; see invoke and cascadeDepthCap for where it's enforced.
 //
 // This goroutine can outlive the request that spawned it — the deferred
 // recover is not decorative. A panic here must never crash the process,
@@ -74,7 +155,7 @@ func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.St
 // The context is deliberately independent of the request's (which is
 // canceled the moment the response is written), bounded by its own
 // generationTimeout instead.
-func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message) {
+func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), generationTimeout)
 		defer cancel()
@@ -85,11 +166,11 @@ func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uui
 					"something went wrong generating this reply and it couldn't complete.")
 			}
 		}()
-		o.invoke(ctx, mentionedAgentID, roomOwnerID, triggering)
+		o.invoke(ctx, mentionedAgentID, roomOwnerID, triggering, depth)
 	}()
 }
 
-func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message) {
+func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int) {
 	o.setStatus(ctx, triggering.RoomID, agentID, agent.StatusRunning)
 
 	a, err := o.agents.GetByID(ctx, agentID)
@@ -113,14 +194,42 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		return
 	}
 
-	resp, err := client.Generate(ctx, buildGenerateRequest(a, history, o.loadCustomInstructions(ctx, roomOwnerID)))
+	// Cascading is opt-in per room (ADR-006 batch B) — the mention_agent
+	// tool is only ever offered when this room has turned it on. A lookup
+	// failure here is treated as "cascading off" rather than failing the
+	// whole reply: this is a secondary capability check, not something a
+	// human's mention should ever be lost over.
+	cascadingEnabled := false
+	rm, err := o.rooms.GetByID(ctx, triggering.RoomID)
+	if err != nil {
+		log.Printf("ERROR message: load room %s to check cascading: %v", triggering.RoomID, err)
+	} else {
+		cascadingEnabled = rm.AgentCascadingEnabled
+	}
+
+	req := buildGenerateRequest(a, history, o.loadCustomInstructions(ctx, roomOwnerID))
+	if cascadingEnabled {
+		req.Tools = []provider.ToolDef{mentionAgentTool()}
+	}
+
+	resp, err := client.Generate(ctx, req)
 	if err != nil {
 		log.Printf("ERROR message: generate reply for agent %s: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, fmt.Sprintf("the provider call failed: %v", err))
 		return
 	}
 
-	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, resp.Content, triggering.ID, &resp.InputTokens, &resp.OutputTokens)
+	var cascadeTargets []uuid.UUID
+	if cascadingEnabled && len(resp.ToolCalls) > 0 {
+		roomAgents, err := o.agents.ListByRoom(ctx, triggering.RoomID)
+		if err != nil {
+			log.Printf("ERROR message: load room %s agents to resolve mentions: %v", triggering.RoomID, err)
+		} else {
+			cascadeTargets = resolveMentionToolCalls(resp.ToolCalls, roomAgents)
+		}
+	}
+
+	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, resp.Content, triggering.ID, &resp.InputTokens, &resp.OutputTokens, cascadeTargets)
 	if err != nil {
 		log.Printf("ERROR message: store generated reply for agent %s: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "the reply was generated but couldn't be saved.")
@@ -128,6 +237,25 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	}
 	o.hub.Publish(triggering.RoomID, realtime.NewChatMessage(toChatMessage(reply)))
 	o.setStatus(ctx, triggering.RoomID, agentID, agent.StatusAvailable)
+
+	// Cascade into each mentioned agent — one invocation per mention, same
+	// as a human's own multi-mention (ADR-006 batch A) — unless the hop
+	// cap is hit, in which case that agent is never actually invoked: a
+	// plain, visible message says so instead of a silent stop (ADR-006
+	// batch B). cascadingEnabled is re-checked here rather than assumed
+	// from cascadeTargets being non-empty: cascadeTargets can only be
+	// non-empty when it was already true, but the guard is cheap and
+	// keeps this block correct even if that invariant ever changes.
+	for _, targetID := range cascadeTargets {
+		if !cascadingEnabled {
+			break
+		}
+		if depth+1 > cascadeDepthCap {
+			o.cascadeCapped(ctx, triggering.RoomID, targetID, reply.ID, cascadeDepthCap)
+			continue
+		}
+		o.TriggerReply(targetID, roomOwnerID, reply, depth+1)
+	}
 }
 
 // fail inserts and publishes a visible failure message — ADR-004: a
@@ -138,13 +266,31 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 // separate system-message concept this phase doesn't build.
 func (o *Orchestrator) fail(ctx context.Context, roomID, agentID uuid.UUID, replyToMessageID uuid.UUID, reason string) {
 	content := "I couldn't generate a reply — " + reason
-	msg, err := o.messages.CreateAgent(ctx, roomID, agentID, content, replyToMessageID, nil, nil)
+	msg, err := o.messages.CreateAgent(ctx, roomID, agentID, content, replyToMessageID, nil, nil, nil)
 	if err != nil {
 		log.Printf("ERROR message: store failure message for agent %s: %v", agentID, err)
 	} else {
 		o.hub.Publish(roomID, realtime.NewChatMessage(toChatMessage(msg)))
 	}
 	o.setStatus(ctx, roomID, agentID, agent.StatusAvailable)
+}
+
+// cascadeCapped posts the visible, honest stop message ADR-006 batch B
+// requires when a cascade hits its hop limit — mentionedAgentID is never
+// actually invoked here (no status transition, no generation, no cost):
+// this is purely a record that the chain stopped and why, framed as
+// coming from the agent that would have been invoked next so it reads
+// naturally in the timeline, the same convention fail already
+// establishes for a failed invocation rather than inventing a separate
+// system-message concept.
+func (o *Orchestrator) cascadeCapped(ctx context.Context, roomID, mentionedAgentID, replyToMessageID uuid.UUID, cap int) {
+	content := fmt.Sprintf("this room's automatic agent-to-agent chain reached its %d-hop limit here and stopped — a human can continue the conversation.", cap)
+	msg, err := o.messages.CreateAgent(ctx, roomID, mentionedAgentID, content, replyToMessageID, nil, nil, nil)
+	if err != nil {
+		log.Printf("ERROR message: store cascade-stopped message for agent %s: %v", mentionedAgentID, err)
+		return
+	}
+	o.hub.Publish(roomID, realtime.NewChatMessage(toChatMessage(msg)))
 }
 
 // setStatus persists agentID's new status and publishes the transition —

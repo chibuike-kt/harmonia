@@ -64,7 +64,7 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 		t.Fatalf("body.Messages = %+v, want %+v", gotBody.Messages, wantMessages)
 	}
 	for i, want := range wantMessages {
-		if gotBody.Messages[i] != want {
+		if gotBody.Messages[i].Role != want.Role || gotBody.Messages[i].Content != want.Content {
 			t.Errorf("body.Messages[%d] = %+v, want %+v", i, gotBody.Messages[i], want)
 		}
 	}

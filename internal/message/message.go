@@ -138,20 +138,35 @@ func (s *Store) CreateHuman(ctx context.Context, roomID, userID uuid.UUID, conte
 // CreateAgent inserts an agent-authored message: a generated reply on
 // success, or a visible failure explanation on error — ADR-004 requires
 // both to be real messages, never a silent drop, so both go through this
-// one insert path. replyToMessageID is always the human message that
-// triggered the invocation, so the UI can show "replying to X" once the
-// conversation has moved on before the reply lands. inputTokens/
-// outputTokens are the real usage from the provider response that
-// produced content — nil on the failure path, where no successful
-// generation exists to meter.
-func (s *Store) CreateAgent(ctx context.Context, roomID, agentID uuid.UUID, content string, replyToMessageID uuid.UUID, inputTokens, outputTokens *int) (Message, error) {
+// one insert path. replyToMessageID is always the human (or, for a
+// cascaded reply — ADR-006 batch B — agent) message that triggered the
+// invocation, so the UI can show "replying to X" once the conversation
+// has moved on before the reply lands. inputTokens/outputTokens are the
+// real usage from the provider response that produced content — nil on
+// the failure path, where no successful generation exists to meter.
+// mentionedAgentIDs is an agent's own cascaded mention (via the
+// mention_agent tool), stored through the exact same message_mentions
+// mechanism a human's mention uses — nil/empty for the ordinary case of
+// a reply that mentions no one.
+func (s *Store) CreateAgent(ctx context.Context, roomID, agentID uuid.UUID, content string, replyToMessageID uuid.UUID, inputTokens, outputTokens *int, mentionedAgentIDs []uuid.UUID) (Message, error) {
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO messages (room_id, sender_kind, agent_id, reply_to_message_id, content, input_tokens, output_tokens)
 		VALUES ($1, 'agent', $2, $3, $4, $5, $6)
 		RETURNING `+messageColumns,
 		roomID, agentID, replyToMessageID, content, inputTokens, outputTokens,
 	)
-	return scanMessage(row)
+	m, err := scanMessage(row)
+	if err != nil {
+		return Message{}, err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO message_mentions (message_id, agent_id)
+		SELECT $1, unnest($2::uuid[])
+	`, m.ID, mentionedAgentIDs); err != nil {
+		return Message{}, err
+	}
+	m.MentionedAgentIDs = mentionedAgentIDs
+	return m, nil
 }
 
 // GetByID fetches a single message. Returns ErrNotFound if no message

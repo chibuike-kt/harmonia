@@ -224,7 +224,11 @@ export function MessageRow({
       className={`group/msg flex gap-3 ${isFailure ? "border-l-2 border-[var(--room-warn)] pl-3" : ""}`}
     >
       <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[11px] font-semibold">
-        <AgentAvatarGlyph provider={senderProvider} name={senderName} size={13} />
+        <AgentAvatarGlyph
+          provider={senderProvider}
+          name={senderName}
+          size={13}
+        />
       </div>
       <div className="min-w-0 flex-1">
         {replyPreview && (

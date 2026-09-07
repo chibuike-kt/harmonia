@@ -247,7 +247,7 @@ func TestIntegration_ListHandler_PinnedFirst(t *testing.T) {
 		t.Fatalf("backdate stale room: %v", err)
 	}
 	pinTrue := true
-	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue); err != nil {
+	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil); err != nil {
 		t.Fatalf("pin stale room: %v", err)
 	}
 
@@ -360,6 +360,30 @@ func TestIntegration_UpdateHandler(t *testing.T) {
 	}
 	if got.PinnedAt != nil {
 		t.Fatalf("PinnedAt = %v after pinned:false, want nil", got.PinnedAt)
+	}
+
+	if got.AgentCascadingEnabled {
+		t.Fatal("expected agent_cascading_enabled to default false")
+	}
+	rec = doPatch(owner, rm.ID.String(), `{"agent_cascading_enabled":true}`)
+	got = Room{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode cascading-on response: %v", err)
+	}
+	if !got.AgentCascadingEnabled {
+		t.Fatal("expected agent_cascading_enabled to be true after enabling it")
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("Name = %q after cascading-only update, want unchanged %q", got.Name, "renamed")
+	}
+
+	rec = doPatch(owner, rm.ID.String(), `{"agent_cascading_enabled":false}`)
+	got = Room{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode cascading-off response: %v", err)
+	}
+	if got.AgentCascadingEnabled {
+		t.Fatal("expected agent_cascading_enabled to be false after disabling it")
 	}
 }
 
