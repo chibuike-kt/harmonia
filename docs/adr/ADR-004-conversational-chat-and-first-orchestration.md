@@ -107,6 +107,47 @@ exactly as already decided — no tool wiring here. Native web search
 and simple file attachment are the very next phase once this one is
 built and reviewed, not an indefinite "someday."
 
+## Addendum (2026-09-07): @mention is required only when it's ambiguous
+
+Real use surfaced what was flagged as a risk when @mention-only was
+first decided: in a room with exactly one agent, requiring an explicit
+mention on every message is pure friction with no offsetting benefit —
+there's no one else it could possibly be addressed to. A person
+couldn't send a plain "hi" and get a reply, which directly contradicts
+the product's own pitch of being seamless.
+
+**The fix is not "always respond to everything."** That was explicitly
+considered and rejected when this decision was first made, for a real
+reason that's still true the moment more than one agent is in the room:
+unprompted replies from every agent to every message is noisy and
+burns real BYOK spend nobody asked to spend. That risk doesn't go away
+just because it was annoying in the single-agent case.
+
+**The actual rule: a room with exactly one agent treats every message
+as implicitly addressed to it — no @mention required.** The moment a
+second agent is registered into the room, explicit @mention becomes
+required again, because ambiguity now genuinely exists and someone has
+to say who they mean. This preserves the original reasoning exactly
+where it still applies, and removes it exactly where it never should
+have applied in the first place.
+
+**Separately, agents currently have no framing about the room they're
+in.** Context assembly only ever passed a plain recency window of
+messages — nothing told a model it's one of several participants in a
+named room, working alongside specific other agents, on a specific
+objective. This is why two invocations of the same agent produced
+unrelated answers instead of anything resembling collaboration, even
+setting the duplicate-mention bug aside. Context assembly needs a real
+system-level framing: the room's name/objective, and who else (human
+and agent) is actually in it — not just the raw message history.
+
+## Revisit When
+
+A room's agent count changes at runtime in a way that could confuse an
+in-flight decision about whether a message needed a mention (a second
+agent added mid-conversation) — worth a specific look at that edge case
+during implementation, not deferred blindly.
+
 ## Addendum (2026-09-06): rooms are created nameless, named from their first message
 
 Creating a room used to mean typing a name before anything could
