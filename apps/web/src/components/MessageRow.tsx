@@ -1,17 +1,19 @@
 "use client";
 
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 import {
   collectRoomArtifacts,
   PASTED_TEXT_TAG,
   parseMessageContent,
 } from "@/lib/messageContent";
 import type { ArtifactContent } from "./ArtifactPanel";
+import { FileCard } from "./FileCard";
 import {
   CheckIcon,
-  CodeBracketsIcon,
   CopyIcon,
-  FileIcon,
   PinIcon,
   ReplyArrowIcon,
   RetryIcon,
@@ -19,6 +21,87 @@ import {
 } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
 import { Tooltip } from "./Tooltip";
+
+// Element overrides so headings/lists/links read at message-bubble scale
+// instead of react-markdown's un-styled browser defaults (a bare <h1>
+// would dwarf everything else in a 16px chat row) — this app has no
+// typography plugin installed, so every tag needs its own sizing here
+// rather than a blanket "prose" class. Only ever applied to a text
+// segment's own content — fenced code blocks are already extracted into
+// chips by parseMessageContent before this ever runs, so there's no
+// double-processing of real code; a single-backtick inline `code` span
+// is the one code-like thing this renders itself, deliberately, since
+// that's meant to stay inline text, not become a chip.
+const MARKDOWN_COMPONENTS: Components = {
+  p: ({ children }) => (
+    <p className="mb-2 whitespace-pre-wrap last:mb-0">{children}</p>
+  ),
+  h1: ({ children }) => (
+    <h1 className="mb-1.5 mt-3 text-[17px] font-semibold first:mt-0">
+      {children}
+    </h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mb-1.5 mt-3 text-[16px] font-semibold first:mt-0">
+      {children}
+    </h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mb-1 mt-2.5 text-[15px] font-semibold first:mt-0">
+      {children}
+    </h3>
+  ),
+  ul: ({ children }) => (
+    <ul className="mb-2 list-disc space-y-0.5 pl-5 last:mb-0">{children}</ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="mb-2 list-decimal space-y-0.5 pl-5 last:mb-0">{children}</ol>
+  ),
+  li: ({ children }) => <li className="leading-[1.6]">{children}</li>,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-[var(--login-accent)] underline hover:no-underline"
+    >
+      {children}
+    </a>
+  ),
+  code: ({ children }) => (
+    <code className="rounded bg-[var(--login-surface-2)] px-1 py-0.5 font-[family-name:var(--login-font-mono)] text-[0.9em]">
+      {children}
+    </code>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="mb-2 border-l-2 border-[var(--login-border-strong)] pl-3 text-[var(--login-text-secondary)] last:mb-0">
+      {children}
+    </blockquote>
+  ),
+  table: ({ children }) => (
+    <div className="mb-2 overflow-x-auto last:mb-0">
+      <table className="border-collapse text-[14px]">{children}</table>
+    </div>
+  ),
+  th: ({ children }) => (
+    <th className="border border-[var(--login-border-strong)] px-2 py-1 text-left font-semibold">
+      {children}
+    </th>
+  ),
+  td: ({ children }) => (
+    <td className="border border-[var(--login-border-strong)] px-2 py-1">
+      {children}
+    </td>
+  ),
+};
+
+function MarkdownProse({ text }: { text: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+      {text}
+    </ReactMarkdown>
+  );
+}
 
 // How long the copy button shows its checkmark before reverting — long
 // enough to register as feedback, short enough not to look stuck.
@@ -112,30 +195,6 @@ function CopyButton({ content }: { content: string }) {
   );
 }
 
-// Same visual language as the code-artifact chip below (icon + label in
-// a bordered box), just FileIcon instead of CodeBracketsIcon — this is
-// generic pasted text, not a code snippet, and the composer's own
-// pending-paste chip (Composer.tsx) uses this exact same look so the
-// two read as one consistent feature, not two unrelated ones.
-function PastedTextChip({
-  lines,
-  onClick,
-}: {
-  lines: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="mt-1.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-2 font-[family-name:var(--login-font-mono)] text-[12.5px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
-    >
-      <FileIcon />
-      Pasted text · {lines} line{lines === 1 ? "" : "s"}
-    </button>
-  );
-}
-
 // Shared by both the human bubble and the agent row: a message's
 // content, segment by segment — plain paragraphs for text, a code chip
 // for a real fenced code block, a pasted-text chip for a
@@ -161,46 +220,48 @@ function renderContent(
     if (seg.type === "text") {
       return (
         seg.text.trim() && (
-          <p key={i} className="mb-2 whitespace-pre-wrap last:mb-0">
-            {seg.text.trim()}
-          </p>
+          <div key={i}>
+            <MarkdownProse text={seg.text.trim()} />
+          </div>
         )
       );
     }
     const artifact = artifacts[artifactIndex++];
     if (seg.language === PASTED_TEXT_TAG) {
       return (
-        <PastedTextChip
-          key={i}
-          lines={seg.lines}
-          onClick={() =>
-            onOpenArtifact({
-              label: artifact.suggestedName,
-              language: "text",
-              code: seg.code,
-              kind: "text",
-            })
-          }
-        />
+        <div key={i} className="mt-1.5">
+          <FileCard
+            name={artifact.suggestedName}
+            subtitle={`Pasted text · ${seg.lines} line${seg.lines === 1 ? "" : "s"}`}
+            kind="text"
+            onClick={() =>
+              onOpenArtifact({
+                label: artifact.suggestedName,
+                language: "text",
+                code: seg.code,
+                kind: "text",
+              })
+            }
+          />
+        </div>
       );
     }
     return (
-      <button
-        key={i}
-        type="button"
-        onClick={() =>
-          onOpenArtifact({
-            label: artifact.suggestedName,
-            language: seg.language,
-            code: seg.code,
-            kind: "code",
-          })
-        }
-        className="mt-1.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-2 font-[family-name:var(--login-font-mono)] text-[12.5px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
-      >
-        <CodeBracketsIcon />
-        {seg.language} · {seg.lines} line{seg.lines === 1 ? "" : "s"}
-      </button>
+      <div key={i} className="mt-1.5">
+        <FileCard
+          name={artifact.suggestedName}
+          subtitle={`${seg.language} · ${seg.lines} line${seg.lines === 1 ? "" : "s"}`}
+          kind="code"
+          onClick={() =>
+            onOpenArtifact({
+              label: artifact.suggestedName,
+              language: seg.language,
+              code: seg.code,
+              kind: "code",
+            })
+          }
+        />
+      </div>
     );
   });
 }

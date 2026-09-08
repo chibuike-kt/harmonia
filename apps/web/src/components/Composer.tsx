@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { exceedsPasteThreshold, PASTED_TEXT_TAG } from "@/lib/messageContent";
+import { FileCard } from "./FileCard";
 import { FileIcon, PlusIcon, SearchIcon, SendIcon } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
 
@@ -201,26 +202,22 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
 
         {pastedAttachments.length > 0 && (
           <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
-            {pastedAttachments.map((p) => (
-              <span
+            {pastedAttachments.map((p, i) => (
+              <FileCard
                 key={p.id}
-                className="flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-1.5 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-secondary)]"
-              >
-                <FileIcon />
-                Pasted text · {p.lines} line{p.lines === 1 ? "" : "s"}
-                <button
-                  type="button"
-                  aria-label="Remove pasted text"
-                  onClick={() =>
-                    setPastedAttachments((prev) =>
-                      prev.filter((x) => x.id !== p.id),
-                    )
-                  }
-                  className="ml-0.5 text-[var(--login-text-muted)] hover:text-[var(--login-text)]"
-                >
-                  ×
-                </button>
-              </span>
+                name={
+                  pastedAttachments.length === 1
+                    ? "pasted-text.txt"
+                    : `pasted-text-${i + 1}.txt`
+                }
+                subtitle={`Pasted text · ${p.lines} line${p.lines === 1 ? "" : "s"}`}
+                kind="text"
+                onRemove={() =>
+                  setPastedAttachments((prev) =>
+                    prev.filter((x) => x.id !== p.id),
+                  )
+                }
+              />
             ))}
           </div>
         )}
