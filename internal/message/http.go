@@ -163,6 +163,35 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 			orch.TriggerReply(a.ID, rm.OwnerID, m, 0)
 		}
 
+		// Implicit single-agent addressing (ADR-004's 2026-09-07
+		// addendum): an unaddressed message in a room with exactly one
+		// agent is meant for it — no @mention required, since there's no
+		// one else it could possibly mean. The moment a second agent
+		// exists, that assumption stops holding and this room reverts to
+		// requiring an explicit mention (the pre-existing, unaffected
+		// behavior above and the empty-mentions-does-nothing behavior
+		// below).
+		//
+		// The addendum's own "Revisit When" flags the race explicitly: a
+		// message sent the instant a second agent is registered. This
+		// reads the room's agent count fresh, right here, after the
+		// human message's own commit — not the same transaction as agent
+		// registration, so whichever write actually lands first in the
+		// database is what decides it, the ordinary meaning of "read
+		// committed state." A message that loses that race gets no
+		// auto-reply — not a dropped reply, just no *implicit* one, the
+		// same outcome an unaddressed message in any already-ambiguous
+		// room has always had, and the message itself is still there for
+		// a human to @mention explicitly.
+		if len(mentioned) == 0 {
+			roomAgents, err := agents.ListByRoom(ctx, roomID)
+			if err != nil {
+				log.Printf("ERROR message: load room %s agents for implicit addressing: %v", roomID, err)
+			} else if len(roomAgents) == 1 {
+				orch.TriggerReply(roomAgents[0].ID, rm.OwnerID, m, 0)
+			}
+		}
+
 		// Auto-title trigger (ADR-004's nameless-room-creation addendum):
 		// fires once per room, on whichever message lands first — not on
 		// every message. A count query after commit, not a value derived

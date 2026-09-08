@@ -402,6 +402,302 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	}
 }
 
+// TestIntegration_CreateHandler_SingleAgentImplicitlyAddressed is
+// ADR-004's 2026-09-07 addendum central proof: a room with exactly one
+// agent treats an unaddressed message as implicitly meant for it — the
+// same full running/reply/available sequence a real @mention produces,
+// triggered here with no mentioned_agent_ids in the request at all.
+func TestIntegration_CreateHandler_SingleAgentImplicitlyAddressed(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-implicit-")
+	rm, err := rooms.Create(ctx, &owner.ID, "implicit-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-implicit")
+	if err != nil {
+		t.Fatalf("register the room's only agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Hi there, no mention needed."}, nil
+	}
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
+	}
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+
+	httpRec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"hi, can you help?"}`)
+	if httpRec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusCreated, httpRec.Body.String())
+	}
+	var human Message
+	if err := json.Unmarshal(httpRec.Body.Bytes(), &human); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(human.MentionedAgentIDs) != 0 {
+		t.Fatalf("MentionedAgentIDs = %v, want none — this message never mentioned anyone", human.MentionedAgentIDs)
+	}
+
+	first := rec.recv(t)
+	if first.Kind != realtime.KindMessage || first.Message == nil || first.Message.ID != human.ID {
+		t.Fatalf("first published message = %+v, want the human message %s", first, human.ID)
+	}
+	running := rec.recv(t)
+	if running.Kind != realtime.KindPresence || running.Presence.AgentID != a.ID || running.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("second published message = %+v, want presence running for %s", running, a.ID)
+	}
+	reply := rec.recv(t)
+	if reply.Kind != realtime.KindMessage || reply.Message == nil || reply.Message.AgentID == nil || *reply.Message.AgentID != a.ID {
+		t.Fatalf("third published message = %+v, want a reply from the room's only agent", reply)
+	}
+	if reply.Message.ReplyToMessageID == nil || *reply.Message.ReplyToMessageID != human.ID {
+		t.Fatalf("reply.ReplyToMessageID = %v, want %s", reply.Message.ReplyToMessageID, human.ID)
+	}
+	available := rec.recv(t)
+	if available.Kind != realtime.KindPresence || available.Presence.AgentID != a.ID || available.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("fourth published message = %+v, want presence available for %s", available, a.ID)
+	}
+}
+
+// TestIntegration_CreateHandler_TwoAgentsRequireExplicitMention is the
+// addendum's other half: the moment a second agent exists, an
+// unaddressed message goes to no one — ambiguity is real again, and
+// nothing should be triggered just because it once would have been.
+// Proven deterministically, not by sleeping and hoping: the decision of
+// whether to call TriggerReply at all happens synchronously inside the
+// HTTP handler, before it returns, so by the time doCreateMessage
+// returns there either is or is never going to be a second publish —
+// the bounded wait below is just how a test observes "nothing else is
+// coming," not a race it could flakily win or lose.
+func TestIntegration_CreateHandler_TwoAgentsRequireExplicitMention(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-ambiguous-")
+	rm, err := rooms.Create(ctx, &owner.ID, "ambiguous-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-ambiguous-claude"); err != nil {
+		t.Fatalf("register first agent: %v", err)
+	}
+	if _, err := agents.Register(ctx, rm.ID, "GPT", agent.ProviderOpenAI, nil, "hash-ambiguous-gpt"); err != nil {
+		t.Fatalf("register second agent: %v", err)
+	}
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		return nil, fmt.Errorf("no agent should be invoked for an unaddressed message in a %s-provider two-agent room", p)
+	}
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
+	}
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+
+	httpRec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"hi, can you help?"}`)
+	if httpRec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusCreated, httpRec.Body.String())
+	}
+
+	first := rec.recv(t)
+	if first.Kind != realtime.KindMessage {
+		t.Fatalf("first published message = %+v, want the human message", first)
+	}
+
+	select {
+	case msg := <-rec.ch:
+		t.Fatalf("unexpected second publish = %+v — nothing should have been triggered", msg)
+	case <-time.After(300 * time.Millisecond):
+		// Nothing else arrived — exactly what an ambiguous, unaddressed
+		// message in a two-agent room should produce.
+	}
+
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("stored messages = %d, want 1 (the human message only, no auto-reply)", len(stored))
+	}
+}
+
+// TestIntegration_Orchestrator_RoomFramingInSystemPrompt proves ADR-004's
+// 2026-09-07 addendum's other half reaches the actual provider call: the
+// room's name, its oldest-in-view message as an objective stand-in, its
+// other agents, and its human owner's name all appear in the assembled
+// SystemPrompt — not just a plain recency window of messages with no
+// framing at all.
+func TestIntegration_Orchestrator_RoomFramingInSystemPrompt(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-framing-")
+	preferredName := "Kingsley"
+	if _, err := users.UpdateMe(ctx, owner.ID, nil, &preferredName, nil, nil); err != nil {
+		t.Fatalf("set preferred_name: %v", err)
+	}
+
+	rm, err := rooms.Create(ctx, &owner.ID, "Widget Planning")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	claude, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-framing-claude")
+	if err != nil {
+		t.Fatalf("register Claude: %v", err)
+	}
+	if _, err := agents.Register(ctx, rm.ID, "GPT", agent.ProviderOpenAI, nil, "hash-framing-gpt"); err != nil {
+		t.Fatalf("register GPT: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	var captured provider.GenerateRequest
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
+	}
+
+	objective, err := s.CreateHuman(ctx, rm.ID, owner.ID, "Let's plan the new widget feature", []uuid.UUID{claude.ID})
+	if err != nil {
+		t.Fatalf("seed objective message: %v", err)
+	}
+
+	orch.TriggerReply(claude.ID, rm.OwnerID, objective, 0)
+	waitForReplyMessage(t, ctx, s, rm.ID, objective.ID)
+
+	for _, want := range []string{`"Widget Planning"`, "GPT", "Kingsley", "Let's plan the new widget feature"} {
+		if !strings.Contains(captured.SystemPrompt, want) {
+			t.Fatalf("SystemPrompt = %q, want it to contain %q", captured.SystemPrompt, want)
+		}
+	}
+}
+
+// TestIntegration_CreateHandler_DuplicateMentionOfSameAgentTriggersOneInvocation
+// directly proves ADR-006 batch A's original "a repeated mention
+// collapses to one" claim — never backed by a named test the way the
+// rest of that report was, unlike this one. This is a genuinely
+// different scenario from the duplicate-agent investigation (two
+// distinct agent rows that both happen to display as "ChatGPT"): here
+// the SAME agent ID appears twice in one request's mentioned_agent_ids,
+// which message_mentions' own (message_id, agent_id) primary key would
+// reject as a duplicate insert if CreateHandler's dedup didn't collapse
+// it first.
+func TestIntegration_CreateHandler_DuplicateMentionOfSameAgentTriggersOneInvocation(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-dup-mention-")
+	rm, err := rooms.Create(ctx, &owner.ID, "dup-mention-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-dup-mention")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "one reply, not two"}, nil
+	}
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
+	}
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+
+	// The same agent ID, twice, in one request — not two different
+	// agents that happen to share a display name.
+	body := fmt.Sprintf(`{"content":"@Claude @Claude are you there?","mentioned_agent_ids":[%q,%q]}`, a.ID, a.ID)
+	httpRec := doCreateMessage(h, owner, rm.ID.String(), body)
+	if httpRec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusCreated, httpRec.Body.String())
+	}
+	var human Message
+	if err := json.Unmarshal(httpRec.Body.Bytes(), &human); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(human.MentionedAgentIDs) != 1 {
+		t.Fatalf("MentionedAgentIDs = %v, want exactly one entry — the repeated ID collapsed", human.MentionedAgentIDs)
+	}
+
+	first := rec.recv(t)
+	if first.Kind != realtime.KindMessage || first.Message == nil || first.Message.ID != human.ID {
+		t.Fatalf("first published message = %+v, want the human message %s", first, human.ID)
+	}
+	running := rec.recv(t)
+	if running.Kind != realtime.KindPresence || running.Presence.AgentID != a.ID || running.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("second published message = %+v, want presence running for %s", running, a.ID)
+	}
+	reply := rec.recv(t)
+	if reply.Kind != realtime.KindMessage || reply.Message == nil || reply.Message.AgentID == nil || *reply.Message.AgentID != a.ID {
+		t.Fatalf("third published message = %+v, want the one reply", reply)
+	}
+	available := rec.recv(t)
+	if available.Kind != realtime.KindPresence || available.Presence.AgentID != a.ID || available.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("fourth published message = %+v, want presence available for %s", available, a.ID)
+	}
+
+	// Prove there's no second invocation queued up behind the first,
+	// rather than only proving the first one happened.
+	select {
+	case msg := <-rec.ch:
+		t.Fatalf("unexpected fifth publish = %+v — the duplicate mention should never have produced a second invocation", msg)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored messages = %d, want 2 (the mention plus exactly one reply)", len(stored))
+	}
+}
+
 // TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies
 // is ADR-006 batch A's central proof: one message mentioning two agents
 // produces exactly two independent replies, each running its own full
@@ -793,6 +1089,122 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 		if final.Status != agent.StatusAvailable {
 			t.Fatalf("%s final status = %s, want %s", a.Name, final.Status, agent.StatusAvailable)
 		}
+	}
+}
+
+// TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent is
+// ADR-007 batch A's central proof: an agent invoked while it's already
+// running another generation is told so in its own framing and, using
+// the exact same mention_agent tool-call mechanism ADR-006 batch B's
+// cascading already proved, redirects to a free agent instead of
+// answering itself — a real, visible message (its own actual reply,
+// not a synthetic one), followed by the redirected agent's own real
+// reply, correctly linked by reply_to_message_id. No new mechanism: this
+// is cascading, triggered by a different signal.
+func TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-busy-redirect-")
+	rm, err := rooms.Create(ctx, &owner.ID, "busy-redirect-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	enabled := true
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled); err != nil {
+		t.Fatalf("enable cascading: %v", err)
+	}
+	busy, err := agents.Register(ctx, rm.ID, "Busy", agent.ProviderAnthropic, nil, "hash-busy-redirect-busy")
+	if err != nil {
+		t.Fatalf("register Busy: %v", err)
+	}
+	free, err := agents.Register(ctx, rm.ID, "Free", agent.ProviderOpenAI, nil, "hash-busy-redirect-free")
+	if err != nil {
+		t.Fatalf("register Free: %v", err)
+	}
+	// Busy is already mid-generation on something else when the new
+	// mention below arrives — the exact precondition ADR-007 batch A's
+	// redirect is for.
+	if err := agents.SetStatus(ctx, busy.ID, agent.StatusRunning); err != nil {
+		t.Fatalf("mark Busy running: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	var busyCaptured, freeCaptured provider.GenerateRequest
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		switch p {
+		case agent.ProviderAnthropic:
+			return &fakeProviderAgent{
+				content:         "I'm already working on something else, so I'll let @Free take this one.",
+				toolCalls:       []provider.ToolCall{{Name: mentionAgentToolName, Input: map[string]any{"agent_name": "Free"}}},
+				capturedRequest: &busyCaptured,
+			}, nil
+		case agent.ProviderOpenAI:
+			return &fakeProviderAgent{content: "I've got it from here.", capturedRequest: &freeCaptured}, nil
+		default:
+			return nil, fmt.Errorf("unexpected provider %s", p)
+		}
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Busy can you look at this?", []uuid.UUID{busy.ID})
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(busy.ID, rm.OwnerID, triggering, 0)
+
+	// Busy's own hop: running, its real (redirecting) reply, available.
+	busyRunning := rec.recv(t)
+	if busyRunning.Kind != realtime.KindPresence || busyRunning.Presence.AgentID != busy.ID || busyRunning.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("first published message = %+v, want presence running for Busy", busyRunning)
+	}
+	redirectMsg := rec.recv(t)
+	if redirectMsg.Kind != realtime.KindMessage || redirectMsg.Message == nil || redirectMsg.Message.AgentID == nil || *redirectMsg.Message.AgentID != busy.ID {
+		t.Fatalf("second published message = %+v, want Busy's own redirect reply", redirectMsg)
+	}
+	if !strings.Contains(redirectMsg.Message.Content, "I'll let @Free take this one") {
+		t.Fatalf("redirect message content = %q, want it to visibly narrate the handoff", redirectMsg.Message.Content)
+	}
+	busyAvailable := rec.recv(t)
+	if busyAvailable.Kind != realtime.KindPresence || busyAvailable.Presence.AgentID != busy.ID || busyAvailable.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("third published message = %+v, want presence available for Busy", busyAvailable)
+	}
+
+	// Free's own hop, cascaded from Busy's redirect message.
+	freeRunning := rec.recv(t)
+	if freeRunning.Kind != realtime.KindPresence || freeRunning.Presence.AgentID != free.ID || freeRunning.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("fourth published message = %+v, want presence running for Free", freeRunning)
+	}
+	freeReply := rec.recv(t)
+	if freeReply.Kind != realtime.KindMessage || freeReply.Message == nil || freeReply.Message.AgentID == nil || *freeReply.Message.AgentID != free.ID {
+		t.Fatalf("fifth published message = %+v, want Free's real reply", freeReply)
+	}
+	if freeReply.Message.ReplyToMessageID == nil || *freeReply.Message.ReplyToMessageID != redirectMsg.Message.ID {
+		t.Fatalf("Free's reply.ReplyToMessageID = %v, want %s (Busy's own redirect message)", freeReply.Message.ReplyToMessageID, redirectMsg.Message.ID)
+	}
+	freeAvailable := rec.recv(t)
+	if freeAvailable.Kind != realtime.KindPresence || freeAvailable.Presence.AgentID != free.ID || freeAvailable.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("sixth published message = %+v, want presence available for Free", freeAvailable)
+	}
+
+	// The framing signal itself: Busy was told it's busy and may
+	// redirect; Free — invoked fresh, never busy — was never told that,
+	// so it has no reason to redirect a second time.
+	if !strings.Contains(busyCaptured.SystemPrompt, "already generating a reply to something else") {
+		t.Fatalf("Busy's SystemPrompt = %q, want it to contain the busy-redirect hint", busyCaptured.SystemPrompt)
+	}
+	if strings.Contains(freeCaptured.SystemPrompt, "already generating a reply to something else") {
+		t.Fatalf("Free's SystemPrompt = %q, want no busy-redirect hint — Free was never busy", freeCaptured.SystemPrompt)
 	}
 }
 

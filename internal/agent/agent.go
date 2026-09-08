@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,7 +58,20 @@ func NewStore(pool store.Querier) *Store {
 // API key. The caller is responsible for generating and returning the
 // plaintext key to the agent exactly once — it is never stored or logged
 // in plaintext.
+//
+// name is defaulted to a distinct one within this room, not rejected,
+// when it collides with an agent already here: two differently
+// configured agents on the same provider is a legitimate setup (a
+// person might genuinely want two ChatGPT agents with different system
+// behavior), and AddAgentMenu's one-click "add" flow has no naming step
+// of its own to ask for a distinguishing name up front — see
+// uniqueNameInRoom's own doc comment for what "distinct" means here and
+// its real limits.
 func (s *Store) Register(ctx context.Context, roomID uuid.UUID, name string, provider Provider, capabilities []string, apiKeyHash string) (Agent, error) {
+	name, err := s.uniqueNameInRoom(ctx, roomID, name)
+	if err != nil {
+		return Agent{}, err
+	}
 	if capabilities == nil {
 		// A nil slice marshals to JSON null, which pgx sends as SQL NULL —
 		// the capabilities column is NOT NULL. An agent with no declared
@@ -65,7 +79,7 @@ func (s *Store) Register(ctx context.Context, roomID uuid.UUID, name string, pro
 		capabilities = []string{}
 	}
 	var a Agent
-	err := s.pool.QueryRow(ctx, `
+	err = s.pool.QueryRow(ctx, `
 		INSERT INTO agents (room_id, name, provider, capabilities, status, api_key_hash)
 		VALUES ($1, $2, $3, $4, 'available', $5)
 		RETURNING id, room_id, name, provider, status, created_at
@@ -74,6 +88,46 @@ func (s *Store) Register(ctx context.Context, roomID uuid.UUID, name string, pro
 	)
 	a.Capabilities = capabilities
 	return a, err
+}
+
+// uniqueNameInRoom returns name unchanged if no agent in roomID already
+// has it, or the first "name 2", "name 3", … that's free otherwise. This
+// is a best-effort default, not a uniqueness guarantee: it's a plain
+// read-then-write, with a real (if narrow) gap if two registrations for
+// the same room and name land at literally the same instant — an
+// accepted gap for a human-paced, one-click UI action, not the
+// claim-under-contention path this codebase otherwise hardens with
+// conditional writes (task claims, handoffs). Worth revisiting with a
+// real DB constraint if agent registration ever becomes a programmatic,
+// concurrent path rather than a person clicking a button.
+func (s *Store) uniqueNameInRoom(ctx context.Context, roomID uuid.UUID, name string) (string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT name FROM agents WHERE room_id = $1`, roomID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return "", err
+		}
+		existing[n] = true
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+
+	if !existing[name] {
+		return name, nil
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s %d", name, i)
+		if !existing[candidate] {
+			return candidate, nil
+		}
+	}
 }
 
 // GetByID fetches a single agent. Returns ErrNotFound if no agent matches.

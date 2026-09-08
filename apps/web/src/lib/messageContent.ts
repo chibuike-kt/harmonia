@@ -68,6 +68,46 @@ export function parseMessageContent(content: string): ContentSegment[] {
   return segments;
 }
 
+// File extension per language — used both for the fallback filename
+// below and for the artifact panel's own download button. Good enough
+// for a plausible filename; there's no real filename in a message, just
+// a fenced code block's language tag.
+export const EXTENSION_BY_LANGUAGE: Record<string, string> = {
+  javascript: "js",
+  typescript: "ts",
+  python: "py",
+  go: "go",
+  json: "json",
+  bash: "sh",
+  sh: "sh",
+  css: "css",
+  html: "html",
+  xml: "xml",
+  sql: "sql",
+  yaml: "yml",
+  yml: "yml",
+  markdown: "md",
+};
+
+// Narrow, specific phrasings only — real observed reply patterns
+// ("Save the code in a file named `calculator.go`.", "save it as
+// index.html") — not a general-purpose filename extractor. Deliberately
+// strict: a pattern this loose is more valuable wrong-but-rare than
+// wrong-and-common, since a bad guess here is a wrong filename shown
+// with total confidence, not a visible error.
+const FILENAME_HINT_PATTERNS = [
+  /file (?:named|called)\s+`?([\w.-]+\.[A-Za-z0-9]{1,10})`?/i,
+  /save\s+(?:it|this|the code)?\s*as\s+`?([\w.-]+\.[A-Za-z0-9]{1,10})`?/i,
+];
+
+function suggestedFilenameFrom(text: string): string | undefined {
+  for (const pattern of FILENAME_HINT_PATTERNS) {
+    const match = pattern.exec(text);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
 export interface RoomArtifact {
   /** message id + segment index — stable within one parse of one
    *  message, which is all a room-wide artifact list ever needs: it's
@@ -80,6 +120,24 @@ export interface RoomArtifact {
   language: string;
   code: string;
   lines: number;
+  /** A filename for this artifact — the actual point of this field, not
+   *  a cosmetic label. Two sources, in order: (1) a filename the
+   *  model's own surrounding prose already suggests (checked in the
+   *  text right after the block first, then right before — "save this
+   *  as X" instructions observed in real replies land after the code,
+   *  not before), extracted by a narrow, specific pattern match, never
+   *  a general parser; (2) failing that, "{language}-{n}.{ext}" — a
+   *  running count per language/kind across everything collectRoomArtifacts
+   *  was given, so untitled snippets are at least numbered distinctly
+   *  instead of all sharing one indistinguishable name. This is a
+   *  heuristic with a graceful fallback, not a guaranteed-accurate
+   *  parser — same honesty standard as this codebase's other imperfect
+   *  heuristics (see exceedsPasteThreshold below). Computed once here so
+   *  every caller (inline chips, the room's artifacts menu, the
+   *  cross-room artifacts page) shows and downloads the exact same name
+   *  for the exact same artifact.
+   */
+  suggestedName: string;
 }
 
 /**
@@ -99,16 +157,40 @@ export function collectRoomArtifacts(
   messages: { id: string; content: string }[],
 ): RoomArtifact[] {
   const artifacts: RoomArtifact[] = [];
+  const sequenceByKey = new Map<string, number>();
   for (const m of messages) {
-    parseMessageContent(m.content).forEach((seg, i) => {
+    const segments = parseMessageContent(m.content);
+    segments.forEach((seg, i) => {
       if (seg.type !== "code") return;
+      const kind: "code" | "text" =
+        seg.language === PASTED_TEXT_TAG ? "text" : "code";
+
+      const nearby = [segments[i + 1], segments[i - 1]];
+      let suggestedName: string | undefined;
+      for (const candidate of nearby) {
+        if (candidate?.type !== "text") continue;
+        suggestedName = suggestedFilenameFrom(candidate.text);
+        if (suggestedName) break;
+      }
+
+      if (!suggestedName) {
+        const key = kind === "text" ? PASTED_TEXT_TAG : seg.language;
+        const n = (sequenceByKey.get(key) ?? 0) + 1;
+        sequenceByKey.set(key, n);
+        suggestedName =
+          kind === "text"
+            ? `pasted-text-${n}.txt`
+            : `${seg.language}-${n}.${EXTENSION_BY_LANGUAGE[seg.language] ?? seg.language}`;
+      }
+
       artifacts.push({
         id: `${m.id}-${i}`,
         messageId: m.id,
-        kind: seg.language === PASTED_TEXT_TAG ? "text" : "code",
+        kind,
         language: seg.language,
         code: seg.code,
         lines: seg.lines,
+        suggestedName,
       });
     });
   }

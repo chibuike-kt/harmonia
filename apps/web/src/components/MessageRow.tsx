@@ -1,7 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { PASTED_TEXT_TAG, parseMessageContent } from "@/lib/messageContent";
+import {
+  collectRoomArtifacts,
+  PASTED_TEXT_TAG,
+  parseMessageContent,
+} from "@/lib/messageContent";
 import type { ArtifactContent } from "./ArtifactPanel";
 import {
   CheckIcon,
@@ -142,10 +146,18 @@ function PastedTextChip({
 // the whole message's size.
 function renderContent(
   content: string,
-  senderName: string,
   onOpenArtifact: (artifact: ArtifactContent) => void,
 ) {
-  return parseMessageContent(content).map((seg, i) => {
+  const segments = parseMessageContent(content);
+  // Reruns the same content-derived heuristic collectRoomArtifacts uses
+  // room-wide, scoped to just this one message — the filename a chip
+  // opens with is the exact same one the room's artifacts menu and the
+  // cross-room artifacts page would show for it, not a third, separately
+  // computed label.
+  const artifacts = collectRoomArtifacts([{ id: "inline", content }]);
+  let artifactIndex = 0;
+
+  return segments.map((seg, i) => {
     if (seg.type === "text") {
       return (
         seg.text.trim() && (
@@ -155,6 +167,7 @@ function renderContent(
         )
       );
     }
+    const artifact = artifacts[artifactIndex++];
     if (seg.language === PASTED_TEXT_TAG) {
       return (
         <PastedTextChip
@@ -162,7 +175,7 @@ function renderContent(
           lines={seg.lines}
           onClick={() =>
             onOpenArtifact({
-              label: `${senderName.toLowerCase()}-pasted-text.txt`,
+              label: artifact.suggestedName,
               language: "text",
               code: seg.code,
               kind: "text",
@@ -177,7 +190,7 @@ function renderContent(
         type="button"
         onClick={() =>
           onOpenArtifact({
-            label: `${senderName.toLowerCase()}-snippet.${seg.language}`,
+            label: artifact.suggestedName,
             language: seg.language,
             code: seg.code,
             kind: "code",
@@ -226,7 +239,7 @@ export function MessageRow({
             </div>
           )}
           <div className="rounded-[14px_14px_3px_14px] border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3.5 py-2.5 text-[16px] leading-[1.6] text-[var(--login-text)]">
-            {renderContent(message.content, senderName, onOpenArtifact)}
+            {renderContent(message.content, onOpenArtifact)}
           </div>
           <div className="mt-1 flex items-center justify-end gap-2">
             <span className="font-[family-name:var(--login-font-mono)] text-[11.5px] text-[var(--login-text-muted)]">
@@ -294,7 +307,7 @@ export function MessageRow({
           )}
         </div>
         <div className="text-[16px] leading-[1.6] text-[var(--login-text)]">
-          {renderContent(message.content, senderName, onOpenArtifact)}
+          {renderContent(message.content, onOpenArtifact)}
         </div>
         <div className="mt-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
           <CopyButton content={message.content} />

@@ -50,6 +50,9 @@ interface GlobalArtifact {
   language: string;
   lines: number;
   code: string;
+  /** See lib/messageContent's RoomArtifact — a heuristic filename, not a
+   *  guaranteed-accurate one. */
+  suggestedName: string;
 }
 
 type Tab = "all" | "yours" | "shared";
@@ -75,12 +78,6 @@ function formatRelativeTime(iso: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function artifactLabel(a: GlobalArtifact): string {
-  return a.kind === "text"
-    ? `${a.senderName.toLowerCase()}-pasted-text.txt`
-    : `${a.senderName.toLowerCase()}-snippet.${a.language}`;
 }
 
 function codePreview(code: string): string {
@@ -143,6 +140,7 @@ export default function ArtifactsPage() {
                 language: a.language,
                 lines: a.lines,
                 code: a.code,
+                suggestedName: a.suggestedName,
               };
             });
             return {
@@ -256,7 +254,7 @@ export default function ArtifactsPage() {
                   type="button"
                   onClick={() =>
                     setOpenArtifact({
-                      label: artifactLabel(a),
+                      label: a.suggestedName,
                       language: a.language,
                       code: a.code,
                       kind: a.kind,

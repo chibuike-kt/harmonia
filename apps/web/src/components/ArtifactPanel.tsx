@@ -56,27 +56,6 @@ interface ArtifactPanelProps {
   onClose: () => void;
 }
 
-// File extension per language — good enough for a download filename;
-// there's no real filename in a message, just a fenced code block's
-// language tag (see messageContent.ts's own comment on why: no new
-// storage, this is re-derived from the message every time).
-const EXTENSIONS: Record<string, string> = {
-  javascript: "js",
-  typescript: "ts",
-  python: "py",
-  go: "go",
-  json: "json",
-  bash: "sh",
-  sh: "sh",
-  css: "css",
-  html: "html",
-  xml: "xml",
-  sql: "sql",
-  yaml: "yml",
-  yml: "yml",
-  markdown: "md",
-};
-
 const HTML_ESCAPES: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -164,12 +143,16 @@ function ArtifactPanelContent({
   };
 
   const handleDownload = () => {
-    const ext = EXTENSIONS[artifact.language] ?? "txt";
+    // artifact.label is already a complete filename with its own
+    // extension (lib/messageContent's suggestedName, real or a
+    // language-plus-sequence fallback) — appending one here on top of it
+    // used to produce "chatgpt-snippet.go.go"-style double extensions
+    // before that was true. Sanitized, not re-extended.
     const blob = new Blob([artifact.code], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${artifact.label.replace(/[^\w.-]+/g, "-")}.${ext}`;
+    a.download = artifact.label.replace(/[^\w.-]+/g, "-");
     document.body.appendChild(a);
     a.click();
     a.remove();

@@ -878,6 +878,7 @@ export default function RoomViewPage() {
       language: a.language,
       lines: a.lines,
       code: a.code,
+      suggestedName: a.suggestedName,
     };
   });
   const artifactsMayBeIncomplete =

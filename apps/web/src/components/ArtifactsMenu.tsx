@@ -13,6 +13,10 @@ export interface ArtifactListItem {
   language: string;
   lines: number;
   code: string;
+  /** See lib/messageContent's RoomArtifact — extracted from the model's
+   *  own prose when a narrow pattern matches, a language-plus-sequence
+   *  fallback otherwise. */
+  suggestedName: string;
 }
 
 interface ArtifactsMenuProps {
@@ -105,10 +109,7 @@ export function ArtifactsMenu({
                   type="button"
                   onClick={() => {
                     onOpenArtifact({
-                      label:
-                        a.kind === "text"
-                          ? `${a.senderName.toLowerCase()}-pasted-text.txt`
-                          : `${a.senderName.toLowerCase()}-snippet.${a.language}`,
+                      label: a.suggestedName,
                       language: a.language,
                       code: a.code,
                       kind: a.kind,

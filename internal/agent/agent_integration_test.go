@@ -84,3 +84,72 @@ func TestIntegration_SetStatus(t *testing.T) {
 		t.Fatalf("bystander Status = %q, want unchanged %q", gotBystander.Status, StatusAvailable)
 	}
 }
+
+// TestIntegration_Register_DefaultsToDistinctNameOnCollision is the real
+// fix for the duplicate-agent-display investigation: two same-provider
+// registrations in one room (AddAgentMenu's own default-name flow, one
+// click per credential, no naming step) used to both land as "ChatGPT"
+// with nothing to tell them apart — confirmed directly against
+// production data as two genuinely distinct agent rows, not the
+// mention-dedup bug manifesting differently. This isn't rejected as an
+// error (a person may genuinely want two differently configured agents
+// on the same provider) — it's defaulted to a distinct name instead.
+func TestIntegration_Register_DefaultsToDistinctNameOnCollision(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	rooms := room.NewStore(pool)
+	agents := NewStore(pool)
+
+	rm, err := rooms.Create(ctx, nil, "agent-distinct-name-test-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+
+	first, err := agents.Register(ctx, rm.ID, "ChatGPT", ProviderOpenAI, nil, "hash-distinct-1")
+	if err != nil {
+		t.Fatalf("register first ChatGPT: %v", err)
+	}
+	if first.Name != "ChatGPT" {
+		t.Fatalf("first agent Name = %q, want unchanged %q (no collision yet)", first.Name, "ChatGPT")
+	}
+
+	second, err := agents.Register(ctx, rm.ID, "ChatGPT", ProviderOpenAI, nil, "hash-distinct-2")
+	if err != nil {
+		t.Fatalf("register second ChatGPT: %v", err)
+	}
+	if second.Name != "ChatGPT 2" {
+		t.Fatalf("second agent Name = %q, want %q", second.Name, "ChatGPT 2")
+	}
+
+	third, err := agents.Register(ctx, rm.ID, "ChatGPT", ProviderOpenAI, nil, "hash-distinct-3")
+	if err != nil {
+		t.Fatalf("register third ChatGPT: %v", err)
+	}
+	if third.Name != "ChatGPT 3" {
+		t.Fatalf("third agent Name = %q, want %q — the first free suffix, not reused", third.Name, "ChatGPT 3")
+	}
+
+	// A different room's own "ChatGPT" is entirely unaffected — the
+	// collision check is scoped to one room, not global.
+	otherRoom, err := rooms.Create(ctx, nil, "agent-distinct-name-other-room")
+	if err != nil {
+		t.Fatalf("create other room: %v", err)
+	}
+	elsewhere, err := agents.Register(ctx, otherRoom.ID, "ChatGPT", ProviderOpenAI, nil, "hash-distinct-elsewhere")
+	if err != nil {
+		t.Fatalf("register ChatGPT in other room: %v", err)
+	}
+	if elsewhere.Name != "ChatGPT" {
+		t.Fatalf("agent in a different room Name = %q, want unchanged %q", elsewhere.Name, "ChatGPT")
+	}
+}

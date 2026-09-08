@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -174,14 +175,22 @@ func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uui
 }
 
 func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int) {
-	o.setStatus(ctx, triggering.RoomID, agentID, agent.StatusRunning)
-
 	a, err := o.agents.GetByID(ctx, agentID)
 	if err != nil {
 		log.Printf("ERROR message: load agent %s to generate reply: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "the mentioned agent couldn't be loaded.")
 		return
 	}
+	// Read before this invocation's own setStatus below overwrites it —
+	// ADR-007 batch A's busy-redirect signal is exactly "was this agent
+	// already running when THIS invocation started," which only this
+	// pre-overwrite read can answer. Whether it actually changes anything
+	// is decided later, once cascadingEnabled is known (redirecting only
+	// makes sense when the room's opted into agent-to-agent coordination
+	// at all — same gate ADR-006 batch B already uses, no new toggle).
+	wasBusy := a.Status == agent.StatusRunning
+
+	o.setStatus(ctx, triggering.RoomID, agentID, agent.StatusRunning)
 
 	client, err := o.resolveClient(ctx, roomOwnerID, a)
 	if err != nil {
@@ -237,7 +246,18 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		log.Printf("ERROR message: load room %s active tasks: %v", triggering.RoomID, err)
 	}
 
-	req := buildGenerateRequest(a, history, o.loadCustomInstructions(ctx, roomOwnerID))
+	customInstructions, ownerName := o.loadOwnerContext(ctx, roomOwnerID)
+	framing := roomFraming{
+		roomName:        rm.Name,
+		objective:       objectiveFrom(history),
+		ownerName:       ownerName,
+		otherAgentNames: agentNames(otherAgents),
+		// ADR-007 batch A: only worth telling the model it's busy and may
+		// redirect when there's a real mechanism for redirecting at all —
+		// mention_agent isn't even offered below unless cascading is on.
+		busy: wasBusy && cascadingEnabled,
+	}
+	req := buildGenerateRequest(a, history, customInstructions, framing)
 	req.Tools = append(req.Tools, createTaskTool())
 	if cascadingEnabled {
 		req.Tools = append(req.Tools, mentionAgentTool())
@@ -392,26 +412,130 @@ func (o *Orchestrator) resolveClient(ctx context.Context, roomOwnerID *uuid.UUID
 	return o.newProviderClient(a.Provider, apiKey)
 }
 
-// loadCustomInstructions returns roomOwnerID's custom instructions
-// (ADR-005), or "" if there's no owner, none are set, or the lookup
-// fails. This is a soft dependency, not a hard requirement: a human's
-// @mention is waiting on a real reply either way, and custom
-// instructions are a nice-to-have refinement of that reply's tone, not
-// something worth failing the whole generation over if this one lookup
-// has a transient problem.
-func (o *Orchestrator) loadCustomInstructions(ctx context.Context, roomOwnerID *uuid.UUID) string {
+// loadOwnerContext returns roomOwnerID's custom instructions (ADR-005)
+// and casual display name (ADR-004's 2026-09-07 room-framing addendum)
+// in one lookup — "" for either if there's no owner, the field isn't
+// set, or the lookup fails. Both are soft context, not a hard
+// requirement: a human's message is waiting on a real reply either way,
+// and neither is worth failing the whole generation over if this one
+// lookup has a transient problem.
+func (o *Orchestrator) loadOwnerContext(ctx context.Context, roomOwnerID *uuid.UUID) (customInstructions, ownerName string) {
 	if roomOwnerID == nil {
-		return ""
+		return "", ""
 	}
 	owner, err := o.users.GetByID(ctx, *roomOwnerID)
 	if err != nil {
-		log.Printf("ERROR message: load owner %s for custom instructions: %v", *roomOwnerID, err)
+		log.Printf("ERROR message: load owner %s for room context: %v", *roomOwnerID, err)
+		return "", ""
+	}
+	if owner.CustomInstructions != nil {
+		customInstructions = *owner.CustomInstructions
+	}
+	return customInstructions, ownerDisplayName(owner)
+}
+
+// ownerDisplayName picks what an agent should call the room's human
+// owner — PreferredName first (ADR-005: "what agents/the app call
+// someone casually"), falling back through DisplayName to the OAuth
+// Username, which always exists.
+func ownerDisplayName(u user.User) string {
+	if u.PreferredName != nil && *u.PreferredName != "" {
+		return *u.PreferredName
+	}
+	if u.DisplayName != nil && *u.DisplayName != "" {
+		return *u.DisplayName
+	}
+	return u.Username
+}
+
+// agentNames extracts display names, in order — shared by roomFraming
+// assembly and (already, elsewhere in this package) tool descriptions
+// that list a room's other agents by name.
+func agentNames(agents []agent.Agent) []string {
+	names := make([]string, len(agents))
+	for i, a := range agents {
+		names[i] = a.Name
+	}
+	return names
+}
+
+// framingObjectiveCap bounds how much of the stand-in "objective"
+// message reaches the system prompt — a large pasted block as a room's
+// first message shouldn't balloon every subsequent invocation's framing.
+const framingObjectiveCap = 300
+
+// objectiveFrom mirrors the frontend's own RoomInfoPanel convention
+// exactly (see its own comment): there is no real captured "objective"
+// field on a room, so the oldest message in the currently-loaded history
+// stands in for one. That's the room's true first message only while
+// the room has fewer messages than recencyLimit — past that, this is
+// honestly just "the oldest message still in view," not a guarantee of
+// the room's actual original objective. Good enough for framing context,
+// not offered anywhere as a claim of precision.
+func objectiveFrom(history []Message) string {
+	if len(history) == 0 {
 		return ""
 	}
-	if owner.CustomInstructions == nil {
-		return ""
+	content := history[0].Content
+	if len(content) > framingObjectiveCap {
+		return content[:framingObjectiveCap] + "…"
 	}
-	return *owner.CustomInstructions
+	return content
+}
+
+// roomFraming carries the "what room is this, and who else is in it"
+// context ADR-004's 2026-09-07 addendum requires: without it, a model
+// invoked twice in the same room has no idea it's one of several
+// participants in anything — the addendum names this directly as why
+// two invocations of the same agent could produce unrelated,
+// uncoordinated answers even setting the duplicate-mention bug aside.
+// Assembled fresh per invocation, not cached: a room's name and agent
+// roster can both change between calls.
+type roomFraming struct {
+	roomName        string
+	objective       string
+	ownerName       string
+	otherAgentNames []string
+	// busy is ADR-007 batch A's own addition: true only when this
+	// invocation's agent was already running another generation when
+	// this one started, AND the room has cascading enabled (the only
+	// case where mention_agent — the redirect mechanism — is actually
+	// offered as a tool below). Never true otherwise, so describe()
+	// never dangles a redirect instruction with nothing to back it.
+	busy bool
+}
+
+// describe renders the framing as a short paragraph appended to the
+// system prompt — plain prose, not a structured block, so it reads
+// naturally alongside the generic role sentence it follows.
+func (f roomFraming) describe() string {
+	var b strings.Builder
+	name := f.roomName
+	if name == "" {
+		name = "this room"
+	}
+	fmt.Fprintf(&b, "You're in a room called %q.", name)
+	if f.objective != "" {
+		fmt.Fprintf(&b, " It started with: %q.", f.objective)
+	}
+	if len(f.otherAgentNames) > 0 {
+		fmt.Fprintf(&b, " Other agents also in this room: %s.", strings.Join(f.otherAgentNames, ", "))
+	} else {
+		b.WriteString(" You're currently the only agent in this room.")
+	}
+	if f.ownerName != "" {
+		fmt.Fprintf(&b, " Its human owner is %s.", f.ownerName)
+	}
+	// ADR-007 batch A: reuses ADR-006 batch B's mention_agent mechanism
+	// entirely — no new tool, no new plumbing, just telling the model
+	// the one fact it needs to decide whether redirecting is the right
+	// call. The visible "redirect" message this produces is simply this
+	// agent's own real reply, cascading into the target exactly the way
+	// any other mention_agent call already does.
+	if f.busy {
+		b.WriteString(" You're currently already generating a reply to something else in this room. If another agent here is free and better placed to answer this new message, you may hand it off with mention_agent instead of answering it yourself — say so plainly in your reply (for example: \"I'm already working on something else, so I'll let @Name take this one.\"). If no one else is free or suitable, just answer normally.")
+	}
+	return b.String()
 }
 
 // resolveFailureReason turns a resolveClient error into the visible
@@ -464,10 +588,11 @@ func newProviderClient(providerName agent.Provider, apiKey string) (provider.Age
 // APIs support. This phase proves the loop with one agent without
 // hard-coding it, but doesn't build multi-agent conversational depth
 // (name-attributing a third party's turns) — that's real, later work.
-func buildGenerateRequest(a agent.Agent, history []Message, customInstructions string) provider.GenerateRequest {
+func buildGenerateRequest(a agent.Agent, history []Message, customInstructions string, framing roomFraming) provider.GenerateRequest {
 	systemPrompt := fmt.Sprintf(
-		"You are %s, an AI agent participating in a chat room in Harmonia, a tool for coordinating work between humans and AI agents. Respond naturally and helpfully to the conversation below.",
+		"You are %s, an AI agent participating in a chat room in Harmonia, a tool for coordinating work between humans and AI agents. Respond naturally and helpfully to the conversation below.\n\n%s",
 		a.Name,
+		framing.describe(),
 	)
 	// Prepended, not appended: the room owner's own standing preference
 	// for how any agent should respond takes precedence over this
