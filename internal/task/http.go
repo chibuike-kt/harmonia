@@ -118,6 +118,7 @@ func (s *Store) CreateHandler(pool store.Beginner, hub realtime.Publisher) http.
 			payload["parent_task_id"] = t.ParentTaskID.String()
 		}
 		env := protocol.NewEnvelope(t.RoomID, protocol.OpTaskCreate, protocol.Participant{AgentID: a.ID}, payload)
+		env.TaskID = &t.ID
 
 		txEvents := event.NewStore(tx)
 		if err := txEvents.Record(ctx, t.RoomID, &t.ID, &a.ID, EventTaskCreated, env.Payload); err != nil {
@@ -202,6 +203,7 @@ func (s *Store) ClaimHandler(pool store.Beginner, hub realtime.Publisher, rdb *r
 		}
 
 		env := protocol.NewEnvelope(claimed.RoomID, protocol.OpTaskClaim, protocol.Participant{AgentID: a.ID}, map[string]any{})
+		env.TaskID = &claimed.ID
 
 		txEvents := event.NewStore(tx)
 		if err := txEvents.Record(ctx, claimed.RoomID, &claimed.ID, &a.ID, EventTaskClaimed, env.Payload); err != nil {
@@ -290,6 +292,7 @@ func (s *Store) CompleteHandler(pool store.Beginner, hub realtime.Publisher, rdb
 		}
 
 		env := protocol.NewEnvelope(completed.RoomID, protocol.OpTaskComplete, protocol.Participant{AgentID: a.ID}, map[string]any{})
+		env.TaskID = &completed.ID
 
 		txEvents := event.NewStore(tx)
 		if err := txEvents.Record(ctx, completed.RoomID, &completed.ID, &a.ID, EventTaskCompleted, env.Payload); err != nil {

@@ -26,6 +26,13 @@ const (
 	OpContextResponse  Operation = "CONTEXT.RESPONSE"
 	OpHandoffRequest   Operation = "HANDOFF.REQUEST"
 	OpHandoffAccept    Operation = "HANDOFF.ACCEPT"
+	// OpActionPropose/OpActionResolve are ADR-006 batch C's addition — an
+	// agent's own request_handoff tool call becomes a pending proposal
+	// (ACTION.PROPOSE), and a human's later approve/reject resolves it
+	// (ACTION.RESOLVE, payload carrying which). Genuinely new operations
+	// for a phase actually being built now, not speculative additions.
+	OpActionPropose Operation = "ACTION.PROPOSE"
+	OpActionResolve Operation = "ACTION.RESOLVE"
 )
 
 // ProtocolVersion is pre-stable. Bump deliberately; this is not tied to

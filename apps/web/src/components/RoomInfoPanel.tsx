@@ -3,6 +3,7 @@
 import { AddAgentMenu, type AddedAgent } from "./AddAgentMenu";
 import { CloseIcon } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
+import { Tooltip } from "./Tooltip";
 
 export interface RoomAgentSummary {
   id: string;
@@ -68,14 +69,15 @@ export function RoomInfoPanel({
             <span className="text-[14px] font-semibold text-[var(--login-text)]">
               Room info
             </span>
-            <button
-              type="button"
-              title="Close"
-              onClick={onClose}
-              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            >
-              <CloseIcon />
-            </button>
+            <Tooltip label="Close">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <CloseIcon />
+              </button>
+            </Tooltip>
           </div>
 
           <div className="no-scrollbar flex-1 overflow-auto p-4">

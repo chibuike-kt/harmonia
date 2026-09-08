@@ -179,3 +179,135 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		writeJSON(w, http.StatusCreated, m)
 	}
 }
+
+// ListByRoomHandler returns the handler for GET
+// /v1/rooms/{room_id}/messages — the artifacts page's cross-room source
+// (there is no per-room artifacts storage; every artifact is re-derived
+// from message content, and this is what lets that happen for a room
+// that isn't the one currently open in the SSE stream). Mount behind
+// user.Authenticate; ownership checked the same 404-then-403 way as
+// decision.ListByRoomHandler.
+func (s *Store) ListByRoomHandler(rooms *room.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		roomID, err := uuid.Parse(chi.URLParam(r, "room_id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid room_id")
+			return
+		}
+
+		ctx := r.Context()
+		rm, err := rooms.GetByID(ctx, roomID)
+		if errors.Is(err, room.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to look up room")
+			return
+		}
+		if rm.OwnerID == nil || *rm.OwnerID != u.ID {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		msgs, err := s.ListByRoom(ctx, roomID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list messages")
+			return
+		}
+		if msgs == nil {
+			msgs = []Message{}
+		}
+
+		writeJSON(w, http.StatusOK, msgs)
+	}
+}
+
+// RetryHandler returns the handler for POST
+// /v1/rooms/{room_id}/messages/{message_id}/retry — a human asking the
+// agent behind message_id to generate a fresh reply to the same
+// triggering message, in place of one that failed or wasn't good enough.
+// Mount behind user.Authenticate; ownership is checked the same
+// 404-then-403 way as decision.PinHandler, message_id's own room
+// membership the same non-leaking 404 as message.CreateHandler's
+// mentioned-agent check.
+//
+// This reuses TriggerReply exactly as CreateHandler does — a fresh
+// invocation, asynchronous, off this request goroutine (ADR-004) — rather
+// than any new generation path. It doesn't delete or replace
+// message_id's own row: the retried reply lands as a new agent message,
+// the same as any other reply, leaving the earlier attempt visible in
+// history rather than rewriting it.
+func (s *Store) RetryHandler(rooms *room.Store, orch *Orchestrator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := user.FromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		roomID, err := uuid.Parse(chi.URLParam(r, "room_id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid room_id")
+			return
+		}
+		messageID, err := uuid.Parse(chi.URLParam(r, "message_id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid message_id")
+			return
+		}
+
+		ctx := r.Context()
+		rm, err := rooms.GetByID(ctx, roomID)
+		if errors.Is(err, room.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "room not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to look up room")
+			return
+		}
+		if rm.OwnerID == nil || *rm.OwnerID != u.ID {
+			writeError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+
+		m, err := s.GetByID(ctx, messageID)
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to look up message")
+			return
+		}
+		if m.RoomID != roomID {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		if m.SenderKind != SenderAgent || m.AgentID == nil {
+			writeError(w, http.StatusBadRequest, "only an agent's reply can be retried")
+			return
+		}
+		if m.ReplyToMessageID == nil {
+			writeError(w, http.StatusBadRequest, "this message has nothing to retry")
+			return
+		}
+
+		triggering, err := s.GetByID(ctx, *m.ReplyToMessageID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to look up the message this reply was to")
+			return
+		}
+
+		orch.TriggerReply(*m.AgentID, rm.OwnerID, triggering, 0)
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}

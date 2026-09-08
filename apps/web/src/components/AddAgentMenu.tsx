@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { PlusIcon } from "./icons";
 import { PROVIDER_LABELS, PROVIDER_LOGOS } from "./providerLogos";
+import { Tooltip } from "./Tooltip";
 
 interface Credential {
   id: string;
@@ -106,19 +107,20 @@ export function AddAgentMenu({ roomId, onAdded, label }: AddAgentMenuProps) {
 
   return (
     <div ref={menuRef} className="relative">
-      <button
-        type="button"
-        title="Add agent"
-        onClick={handleToggle}
-        className={
-          label
-            ? "flex items-center gap-1.5 rounded-full border border-dashed border-[var(--login-border-strong)] px-2.5 py-1 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
-            : "flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-[var(--login-border-strong)] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
-        }
-      >
-        <PlusIcon size={12} strokeWidth={1.8} />
-        {label}
-      </button>
+      <Tooltip label="Add agent" disabled={!!label}>
+        <button
+          type="button"
+          onClick={handleToggle}
+          className={
+            label
+              ? "flex items-center gap-1.5 rounded-full border border-dashed border-[var(--login-border-strong)] px-2.5 py-1 text-[12px] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+              : "flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-[var(--login-border-strong)] text-[var(--login-text-secondary)] hover:border-[var(--login-accent)] hover:text-[var(--login-text)]"
+          }
+        >
+          <PlusIcon size={12} strokeWidth={1.8} />
+          {label}
+        </button>
+      </Tooltip>
 
       {open && (
         <div className="absolute left-0 top-full z-10 mt-1.5 w-[260px] rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">

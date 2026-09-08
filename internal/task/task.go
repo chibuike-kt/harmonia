@@ -120,6 +120,35 @@ func (s *Store) Complete(ctx context.Context, taskID uuid.UUID) error {
 	return nil
 }
 
+// ListActiveByRoom returns roomID's tasks that are still open — anything
+// short of a terminal status (COMPLETED/FAILED). This is the set ADR-006
+// batch C's request_handoff tool offers an agent to hand off, and the
+// only set its task_id is validated against: a completed or failed task
+// isn't a real handoff candidate.
+func (s *Store) ListActiveByRoom(ctx context.Context, roomID uuid.UUID) ([]Task, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, room_id, owner_agent_id, parent_task_id, objective, status, created_at, claimed_at, completed_at
+		FROM tasks WHERE room_id = $1 AND status NOT IN ('COMPLETED', 'FAILED')
+		ORDER BY created_at ASC
+	`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]Task, 0)
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(
+			&t.ID, &t.RoomID, &t.OwnerAgentID, &t.ParentTaskID, &t.Objective, &t.Status, &t.CreatedAt, &t.ClaimedAt, &t.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
 // GetByID fetches a single task. Returns ErrNotFound if no task matches.
 func (s *Store) GetByID(ctx context.Context, taskID uuid.UUID) (Task, error) {
 	var t Task

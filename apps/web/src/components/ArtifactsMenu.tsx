@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ArtifactContent } from "./ArtifactPanel";
 import { CodeBracketsIcon, FileIcon } from "./icons";
+import { Tooltip } from "./Tooltip";
 
 export interface ArtifactListItem {
   id: string;
@@ -72,18 +73,19 @@ export function ArtifactsMenu({
 
   return (
     <div ref={menuRef} className="relative">
-      <button
-        type="button"
-        title="Artifacts"
-        onClick={() => setOpen((o) => !o)}
-        className={`flex rounded-md p-1.5 ${
-          open
-            ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-            : "text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-        }`}
-      >
-        <FileIcon />
-      </button>
+      <Tooltip label={open ? "Hide artifacts" : "Artifacts in this room"}>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className={`flex rounded-md p-1.5 ${
+            open
+              ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+              : "text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+          }`}
+        >
+          <FileIcon />
+        </button>
+      </Tooltip>
 
       {open && (
         <div className="absolute right-0 top-full z-10 mt-1.5 w-[300px] rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">

@@ -8,6 +8,10 @@ interface TooltipProps {
   /** Never render the tooltip — used for a room name that isn't actually truncated. */
   disabled?: boolean;
   className?: string;
+  /** For a label too long to read as one nowrap line (an explanatory
+   *  sentence, not a short action name) — wraps to a fixed-width block
+   *  instead of stretching off-screen. */
+  wrap?: boolean;
 }
 
 // CSS-only show/hide (group-hover), same philosophy as the rest of this
@@ -20,6 +24,7 @@ export function Tooltip({
   children,
   disabled,
   className,
+  wrap,
 }: TooltipProps) {
   if (disabled) return <>{children}</>;
 
@@ -28,7 +33,11 @@ export function Tooltip({
       {children}
       <span
         role="tooltip"
-        className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 whitespace-nowrap rounded-md border border-[var(--login-border-strong)] bg-[var(--login-surface)] px-2 py-1 text-[12px] text-[var(--login-text)] opacity-0 shadow-[0_4px_16px_rgba(0,0,0,0.4)] transition-opacity delay-300 duration-100 group-hover/tooltip:opacity-100"
+        className={`pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-md border border-[var(--login-border-strong)] bg-[var(--login-surface)] px-2 py-1 text-[12px] text-[var(--login-text)] opacity-0 shadow-[0_4px_16px_rgba(0,0,0,0.4)] transition-opacity delay-300 duration-100 group-hover/tooltip:opacity-100 ${
+          wrap
+            ? "w-64 whitespace-normal text-left leading-[1.4]"
+            : "whitespace-nowrap"
+        }`}
       >
         {label}
       </span>

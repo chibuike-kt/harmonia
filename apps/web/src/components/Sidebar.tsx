@@ -12,6 +12,7 @@ import { Tooltip } from "./Tooltip";
 import {
   AgentsIcon,
   ActivityIcon,
+  ArtifactsIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -446,6 +447,16 @@ export function Sidebar() {
     // Same "ref must cover the trigger too, not just the panel" fix the
     // profile menu above needed — but with N rows instead of one fixed
     // element, a data-attribute query is simpler than juggling N refs.
+    //
+    // Capture phase is deliberate: onRequestDelete's own click handler
+    // (bubble phase, fired first if we listened on bubble) synchronously
+    // swaps the Delete button for the confirmation panel, detaching the
+    // clicked button from the DOM before this listener would otherwise
+    // run — a detached node's closest() can no longer find its former
+    // [data-room-menu] ancestor, so a bubble-phase listener misreads the
+    // very click that opens the confirmation as an outside click and
+    // immediately closes it. Capture runs before React's handler mutates
+    // anything, while target is still attached.
     function onDocumentClick(event: MouseEvent) {
       const target = event.target as HTMLElement;
       if (!target.closest("[data-room-menu]")) {
@@ -453,8 +464,8 @@ export function Sidebar() {
         setConfirmDeleteFor(null);
       }
     }
-    document.addEventListener("click", onDocumentClick);
-    return () => document.removeEventListener("click", onDocumentClick);
+    document.addEventListener("click", onDocumentClick, true);
+    return () => document.removeEventListener("click", onDocumentClick, true);
   }, []);
 
   const handleResizeStart = useCallback(
@@ -687,6 +698,17 @@ export function Sidebar() {
             <AgentsIcon />
             Agents
           </button>
+          <Link
+            href="/artifacts"
+            className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
+              pathname === "/artifacts"
+                ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            }`}
+          >
+            <ArtifactsIcon />
+            Artifacts
+          </Link>
           {QUICK_NAV.filter(({ href }) => href !== "/dashboard").map(
             ({ label, href, Icon }) => {
               const active = pathname === href;
@@ -755,7 +777,7 @@ export function Sidebar() {
           // always-present hidden label's width becomes real horizontal
           // scroll content — the sidebar scrolls sideways for a long
           // name even though the name span itself truncates correctly.
-          <div className="flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2.5">
+          <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2.5">
             {rooms === null &&
               Array.from({ length: 3 }).map((_, i) => (
                 <div

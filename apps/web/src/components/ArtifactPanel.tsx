@@ -14,6 +14,7 @@ import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import { CloseIcon, CopyIcon, DownloadIcon, EnlargeIcon } from "./icons";
+import { Tooltip } from "./Tooltip";
 
 // A fixed, common subset registered up front rather than highlight.js's
 // full ~190-language bundle — real tokenization (accurate keyword/
@@ -189,49 +190,56 @@ function ArtifactPanelContent({
       }
     >
       {!enlarged && (
-        <div
-          onMouseDown={handleResizeStart}
-          title="Resize"
-          className="absolute -left-[3px] top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
-        />
+        <div className="absolute -left-[3px] top-0 z-10 h-full">
+          <Tooltip label="Resize" className="h-full">
+            <div
+              onMouseDown={handleResizeStart}
+              className="h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
+            />
+          </Tooltip>
+        </div>
       )}
       <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-3.5 py-3">
         <span className="truncate font-[family-name:var(--login-font-mono)] text-[13px] text-[var(--login-text-secondary)]">
           {artifact.label}
         </span>
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            title={copied ? "Copied" : "Copy"}
-            onClick={() => void handleCopy()}
-            className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-          >
-            <CopyIcon />
-          </button>
-          <button
-            type="button"
-            title="Download"
-            onClick={handleDownload}
-            className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-          >
-            <DownloadIcon />
-          </button>
-          <button
-            type="button"
-            title="Enlarge"
-            onClick={() => setEnlarged((v) => !v)}
-            className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-          >
-            <EnlargeIcon />
-          </button>
-          <button
-            type="button"
-            title="Close"
-            onClick={onClose}
-            className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-          >
-            <CloseIcon />
-          </button>
+          <Tooltip label={copied ? "Copied!" : "Copy"}>
+            <button
+              type="button"
+              onClick={() => void handleCopy()}
+              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <CopyIcon />
+            </button>
+          </Tooltip>
+          <Tooltip label="Download">
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <DownloadIcon />
+            </button>
+          </Tooltip>
+          <Tooltip label={enlarged ? "Shrink" : "Enlarge"}>
+            <button
+              type="button"
+              onClick={() => setEnlarged((v) => !v)}
+              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <EnlargeIcon />
+            </button>
+          </Tooltip>
+          <Tooltip label="Close">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <CloseIcon />
+            </button>
+          </Tooltip>
         </div>
       </div>
       <pre className="hljs no-scrollbar m-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words p-4 font-[family-name:var(--login-font-mono)] text-[12.5px] leading-[1.6]">

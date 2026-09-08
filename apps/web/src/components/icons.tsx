@@ -137,6 +137,30 @@ export function GridIcon() {
   );
 }
 
+// Distinct from FileIcon (a single pasted-text chip) and
+// CodeBracketsIcon (a single code chip) — this one reads as a
+// collection, a stack of layered items, for the nav entry that
+// aggregates every artifact across every room rather than one message's
+// own content.
+export function ArtifactsIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 1.5l6 3.25L8 8 2 4.75z" />
+      <path d="M2 8l6 3.25L14 8" />
+      <path d="M2 11.25l6 3.25 6-3.25" />
+    </svg>
+  );
+}
+
 export function PlusIcon({
   size = 16,
   strokeWidth = 1.6,
@@ -529,6 +553,49 @@ export function CopyIcon() {
     >
       <rect x="5" y="5" width="9" height="9" rx="1.5" />
       <path d="M11 5V3.5A1.5 1.5 0 009.5 2h-6A1.5 1.5 0 002 3.5v6A1.5 1.5 0 003.5 11H5" />
+    </svg>
+  );
+}
+
+export function CheckIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 8.5l3 3 7-7" />
+    </svg>
+  );
+}
+
+// The standard two-arrow "refresh/retry" glyph (Feather/Lucide's own
+// refresh-cw, scaled to this icon set's 16x16 grid) — recognizable at a
+// glance as retry/regenerate, unlike a single hand-drawn arc-plus-hook
+// which reads as an arbitrary squiggle at 14px.
+export function RetryIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 8a6 6 0 00-6-6 6.5 6.5 0 00-4.5 1.83L2 5.3" />
+      <path d="M2 2v3.3h3.3" />
+      <path d="M14 14.7v-3.3h-3.3" />
+      <path d="M2 8a6 6 0 006 6 6.5 6.5 0 004.5-1.83L14 10.7" />
     </svg>
   );
 }

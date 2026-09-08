@@ -25,6 +25,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
 	"github.com/chibuike-kt/harmonia/internal/store"
+	"github.com/chibuike-kt/harmonia/internal/task"
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
@@ -143,6 +144,27 @@ func doCreateMessage(h http.HandlerFunc, u user.User, roomID, body string) *http
 	return rec
 }
 
+func doListMessages(h http.HandlerFunc, u user.User, roomID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(user.NewContext(context.Background(), u), http.MethodGet, "/v1/rooms/"+roomID+"/messages", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("room_id", roomID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func doRetryMessage(h http.HandlerFunc, u user.User, roomID, messageID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(user.NewContext(context.Background(), u), http.MethodPost, "/v1/rooms/"+roomID+"/messages/"+messageID+"/retry", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("room_id", roomID)
+	rctx.URLParams.Add("message_id", messageID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
 // TestIntegration_CreateHandler_HumanOnly exercises POST
 // /v1/rooms/{room_id}/messages with no mention: the message is created
 // and published, and no agent is ever touched.
@@ -163,7 +185,8 @@ func TestIntegration_CreateHandler_HumanOnly(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, realtime.NewHub(), rdb)
+	tasks := task.NewStore(pool)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
@@ -215,7 +238,8 @@ func TestIntegration_CreateHandler_RoomOwnership(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, realtime.NewHub(), rdb)
+	tasks := task.NewStore(pool)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
@@ -256,7 +280,8 @@ func TestIntegration_CreateHandler_MentionedAgentNotFound(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, realtime.NewHub(), rdb)
+	tasks := task.NewStore(pool)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
 	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
 
@@ -306,8 +331,9 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Hello — this is the generated reply."}, nil
 	}
@@ -409,8 +435,9 @@ func TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies(t *
 	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	// Distinguishes replies by provider, since two real agents mentioned
 	// together are a realistic case this fake needs to tell apart — the
 	// seam's signature has no agent identity, only the provider being
@@ -577,8 +604,10 @@ func TestIntegration_Orchestrator_CascadingDisabledByDefault_MentionInReplyDoesN
 	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	pongCalled := false
 	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
 		switch p {
@@ -682,8 +711,10 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
 		switch p {
 		case agent.ProviderAnthropic:
@@ -796,8 +827,10 @@ func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *t
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	var captured provider.GenerateRequest
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
@@ -842,8 +875,10 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{err: errors.New("simulated provider error: rate limited")}, nil
 	}
@@ -894,8 +929,10 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
 
 	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
 	rec := newRecordingHub(rm.ID)
-	orch := NewOrchestrator(s, agents, creds, users, rooms, rec, rdb)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
 	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{shouldPanic: true}, nil
 	}
@@ -1009,6 +1046,212 @@ func TestIntegration_StreamHandler_SnapshotIncludesMessages(t *testing.T) {
 	}
 	if len(got.Messages) != 1 || got.Messages[0].ID != seeded.ID {
 		t.Fatalf("snapshot Messages = %+v, want exactly the seeded message %s", got.Messages, seeded.ID)
+	}
+}
+
+// TestIntegration_RetryHandler_TriggersFreshReply proves retry re-runs a
+// full invocation against the same triggering message an existing agent
+// reply already answered — a second, independent reply, not a mutation
+// of the first, with the same running/reply/available publish sequence
+// any other invocation produces.
+func TestIntegration_RetryHandler_TriggersFreshReply(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-retry-")
+	rm, err := rooms.Create(ctx, &owner.ID, "retry-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-retry")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "the retried reply"}, nil
+	}
+	h := s.RetryHandler(rooms, orch)
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude can you help?", []uuid.UUID{a.ID})
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	firstReply, err := s.CreateAgent(ctx, rm.ID, a.ID, "the original, unsatisfying reply", triggering.ID, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed original reply: %v", err)
+	}
+
+	httpRec := doRetryMessage(h, owner, rm.ID.String(), firstReply.ID.String())
+	if httpRec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusNoContent, httpRec.Body.String())
+	}
+
+	running := rec.recv(t)
+	if running.Kind != realtime.KindPresence || running.Presence.AgentID != a.ID || running.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("first published message = %+v, want presence running for %s", running, a.ID)
+	}
+	reply := rec.recv(t)
+	if reply.Kind != realtime.KindMessage || reply.Message == nil {
+		t.Fatalf("second published message = %+v, want the retried reply", reply)
+	}
+	if reply.Message.ID == firstReply.ID {
+		t.Fatal("retried reply reused the original message's ID — it should be a new, independent message")
+	}
+	if reply.Message.Content != "the retried reply" {
+		t.Fatalf("retried reply content = %q, want %q", reply.Message.Content, "the retried reply")
+	}
+	if reply.Message.ReplyToMessageID == nil || *reply.Message.ReplyToMessageID != triggering.ID {
+		t.Fatalf("retried reply.ReplyToMessageID = %v, want %s (the original triggering message)", reply.Message.ReplyToMessageID, triggering.ID)
+	}
+	available := rec.recv(t)
+	if available.Kind != realtime.KindPresence || available.Presence.AgentID != a.ID || available.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("third published message = %+v, want presence available for %s", available, a.ID)
+	}
+
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Fatalf("stored messages = %d, want 3 (the trigger, the original reply, and the retried reply)", len(stored))
+	}
+}
+
+// TestIntegration_RetryHandler_RejectsNonAgentMessage proves retry is only
+// ever offered for an agent's own reply — there's nothing to regenerate
+// for a human's own message.
+func TestIntegration_RetryHandler_RejectsNonAgentMessage(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-retry-non-agent-")
+	rm, err := rooms.Create(ctx, &owner.ID, "retry-non-agent-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
+	h := s.RetryHandler(rooms, orch)
+
+	human, err := s.CreateHuman(ctx, rm.ID, owner.ID, "just a note", nil)
+	if err != nil {
+		t.Fatalf("seed human message: %v", err)
+	}
+
+	rec := doRetryMessage(h, owner, rm.ID.String(), human.ID.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// TestIntegration_RetryHandler_RoomOwnership exercises the same
+// 404-then-403 ownership pattern every other room-scoped route uses.
+func TestIntegration_RetryHandler_RoomOwnership(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-retry-ownership-owner-")
+	other := seedMessageTestUser(t, ctx, users, "msg-retry-ownership-other-")
+	rm, err := rooms.Create(ctx, &owner.ID, "retry-ownership-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-retry-ownership")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
+	h := s.RetryHandler(rooms, orch)
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude go", []uuid.UUID{a.ID})
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	reply, err := s.CreateAgent(ctx, rm.ID, a.ID, "a reply", triggering.ID, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("seed reply: %v", err)
+	}
+
+	if rec := doRetryMessage(h, owner, uuid.New().String(), reply.ID.String()); rec.Code != http.StatusNotFound {
+		t.Fatalf("nonexistent room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if rec := doRetryMessage(h, other, rm.ID.String(), reply.ID.String()); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+// TestIntegration_ListByRoomHandler_ReturnsStoredMessages proves the
+// artifacts page's cross-room data source: every message in a room, in
+// the same shape CreateHandler itself returns, with the same ownership
+// check every other room-scoped route uses.
+func TestIntegration_ListByRoomHandler_ReturnsStoredMessages(t *testing.T) {
+	pool, _ := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-list-")
+	other := seedMessageTestUser(t, ctx, users, "msg-list-other-")
+	rm, err := rooms.Create(ctx, &owner.ID, "list-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+
+	s := NewStore(pool)
+	seeded, err := s.CreateHuman(ctx, rm.ID, owner.ID, "a message with a snippet", nil)
+	if err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+
+	h := s.ListByRoomHandler(rooms)
+
+	rec := doListMessages(h, owner, rm.ID.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []Message
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != seeded.ID {
+		t.Fatalf("got = %+v, want exactly the one seeded message %s", got, seeded.ID)
+	}
+
+	if rec := doListMessages(h, owner, uuid.New().String()); rec.Code != http.StatusNotFound {
+		t.Fatalf("nonexistent room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if rec := doListMessages(h, other, rm.ID.String()); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
 

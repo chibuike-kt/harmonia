@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
+	"github.com/chibuike-kt/harmonia/internal/actionproposal"
 	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
 	"github.com/chibuike-kt/harmonia/internal/credentials"
@@ -88,11 +89,13 @@ func NewRouter(st *store.Store) http.Handler {
 	creds := credentials.NewStore(st.Pool, cipher)
 
 	messages := message.NewStore(st.Pool)
-	orchestrator := message.NewOrchestrator(messages, agents, creds, users, rooms, hub, st.Redis)
+	orchestrator := message.NewOrchestrator(messages, agents, creds, users, rooms, tasks, beginner, hub, st.Redis)
 	titleGen := message.NewTitleGenerator(rooms, creds, users, hub)
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
 		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator, titleGen))
+		pr.Get("/v1/rooms/{room_id}/messages", messages.ListByRoomHandler(rooms))
+		pr.Post("/v1/rooms/{room_id}/messages/{message_id}/retry", messages.RetryHandler(rooms, orchestrator))
 	})
 
 	decisions := decision.NewStore(st.Pool)
@@ -113,6 +116,13 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Use(agent.Authenticate(agents))
 		pr.Post("/v1/handoffs", handoffs.RequestHandler(tasks, agents, beginner, hub))
 		pr.Post("/v1/handoffs/{id}/accept", handoffs.AcceptHandler(beginner, hub))
+	})
+
+	proposals := actionproposal.NewStore(st.Pool)
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/action_proposals/{id}/approve", proposals.ApproveHandler(rooms, beginner, hub))
+		pr.Post("/v1/action_proposals/{id}/reject", proposals.RejectHandler(rooms, beginner, hub))
 	})
 
 	r.Group(func(pr chi.Router) {

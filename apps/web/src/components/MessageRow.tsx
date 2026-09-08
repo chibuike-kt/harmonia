@@ -1,16 +1,24 @@
 "use client";
 
+import { useState } from "react";
 import { PASTED_TEXT_TAG, parseMessageContent } from "@/lib/messageContent";
 import type { ArtifactContent } from "./ArtifactPanel";
 import {
+  CheckIcon,
   CodeBracketsIcon,
   CopyIcon,
   FileIcon,
   PinIcon,
   ReplyArrowIcon,
+  RetryIcon,
   WarnIcon,
 } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
+import { Tooltip } from "./Tooltip";
+
+// How long the copy button shows its checkmark before reverting — long
+// enough to register as feedback, short enough not to look stuck.
+const COPY_FEEDBACK_MS = 1500;
 
 export interface ChatMessage {
   id: string;
@@ -52,6 +60,9 @@ interface MessageRowProps {
    *  phase builds (see the build brief: manual pin only, no unpin). */
   pinned: boolean;
   onPinDecision: () => void;
+  /** Undefined for a human message — there's nothing to regenerate for
+   *  one of the human's own messages, only for an agent's reply. */
+  onRetry?: () => void;
 }
 
 function formatTime(iso: string): string {
@@ -61,12 +72,40 @@ function formatTime(iso: string): string {
   });
 }
 
-async function copyText(text: string) {
+async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
+    return true;
   } catch {
     // No clipboard access — nothing more useful to do than leave it be.
+    return false;
   }
+}
+
+// Copy button shared by both the human bubble and the agent row: briefly
+// swaps to a checkmark after a successful copy, then reverts on its own —
+// the state is local to this button, never lifted, since it's purely
+// transient per-click feedback with nothing else in the room depending
+// on it.
+function CopyButton({ content }: { content: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Tooltip label={copied ? "Copied!" : "Copy"}>
+      <button
+        type="button"
+        onClick={() =>
+          void copyText(content).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
+          })
+        }
+        className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </button>
+    </Tooltip>
+  );
 }
 
 // Same visual language as the code-artifact chip below (icon + label in
@@ -172,6 +211,7 @@ export function MessageRow({
   onOpenArtifact,
   pinned,
   onPinDecision,
+  onRetry,
 }: MessageRowProps) {
   const isHuman = message.sender_kind === "human";
 
@@ -193,23 +233,19 @@ export function MessageRow({
               {formatTime(message.created_at)}
             </span>
             <div className="flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
-              <button
-                type="button"
-                title="Copy"
-                onClick={() => void copyText(message.content)}
-                className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+              <CopyButton content={message.content} />
+              <Tooltip
+                label={pinned ? "Pinned as decision" : "Pin as decision"}
               >
-                <CopyIcon />
-              </button>
-              <button
-                type="button"
-                title={pinned ? "Pinned as decision" : "Pin as decision"}
-                disabled={pinned}
-                onClick={onPinDecision}
-                className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] disabled:cursor-default disabled:text-[var(--login-accent)] disabled:hover:bg-transparent"
-              >
-                <PinIcon filled={pinned} />
-              </button>
+                <button
+                  type="button"
+                  disabled={pinned}
+                  onClick={onPinDecision}
+                  className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] disabled:cursor-default disabled:text-[var(--login-accent)] disabled:hover:bg-transparent"
+                >
+                  <PinIcon filled={pinned} />
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -261,23 +297,28 @@ export function MessageRow({
           {renderContent(message.content, senderName, onOpenArtifact)}
         </div>
         <div className="mt-1.5 flex gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100">
-          <button
-            type="button"
-            title="Copy"
-            onClick={() => void copyText(message.content)}
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
-          >
-            <CopyIcon />
-          </button>
-          <button
-            type="button"
-            title={pinned ? "Pinned as decision" : "Pin as decision"}
-            disabled={pinned}
-            onClick={onPinDecision}
-            className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] disabled:cursor-default disabled:text-[var(--login-accent)] disabled:hover:bg-transparent"
-          >
-            <PinIcon filled={pinned} />
-          </button>
+          <CopyButton content={message.content} />
+          {onRetry && (
+            <Tooltip label="Retry">
+              <button
+                type="button"
+                onClick={onRetry}
+                className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+              >
+                <RetryIcon />
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip label={pinned ? "Pinned as decision" : "Pin as decision"}>
+            <button
+              type="button"
+              disabled={pinned}
+              onClick={onPinDecision}
+              className="flex h-[26px] w-[26px] items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] disabled:cursor-default disabled:text-[var(--login-accent)] disabled:hover:bg-transparent"
+            >
+              <PinIcon filled={pinned} />
+            </button>
+          </Tooltip>
         </div>
       </div>
     </div>

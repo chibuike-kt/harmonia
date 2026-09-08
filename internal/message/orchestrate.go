@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +18,8 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/provider/openai"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
+	"github.com/chibuike-kt/harmonia/internal/store"
+	"github.com/chibuike-kt/harmonia/internal/task"
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
@@ -82,10 +83,6 @@ func mentionAgentTool() provider.ToolDef {
 // failure: the reply itself already generated successfully, and a model
 // naming the wrong agent shouldn't cost the human a lost reply over it.
 func resolveMentionToolCalls(calls []provider.ToolCall, roomAgents []agent.Agent) []uuid.UUID {
-	byName := make(map[string]uuid.UUID, len(roomAgents))
-	for _, a := range roomAgents {
-		byName[strings.ToLower(a.Name)] = a.ID
-	}
 	seen := make(map[uuid.UUID]bool, len(calls))
 	var ids []uuid.UUID
 	for _, call := range calls {
@@ -93,7 +90,7 @@ func resolveMentionToolCalls(calls []provider.ToolCall, roomAgents []agent.Agent
 			continue
 		}
 		name, _ := call.Input["agent_name"].(string)
-		id, ok := byName[strings.ToLower(strings.TrimSpace(name))]
+		id, ok := resolveAgentName(name, roomAgents)
 		if !ok || seen[id] {
 			continue
 		}
@@ -124,14 +121,20 @@ type Orchestrator struct {
 	credentials       *credentials.Store
 	users             *user.Store
 	rooms             *room.Store
+	tasks             *task.Store
 	hub               realtime.Publisher
 	rdb               *redis.Client
+	// beginner starts the transactions create_task/request_handoff need
+	// (ADR-006 batch C) — everything before batch C only ever needed
+	// plain reads/writes through the Stores above, no transaction of its
+	// own to open.
+	beginner          store.Beginner
 	newProviderClient newProviderClientFunc
 }
 
-func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, users *user.Store, rooms *room.Store, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
+func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, users *user.Store, rooms *room.Store, tasks *task.Store, beginner store.Beginner, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
 	return &Orchestrator{
-		messages: messages, agents: agents, credentials: creds, users: users, rooms: rooms, hub: hub, rdb: rdb,
+		messages: messages, agents: agents, credentials: creds, users: users, rooms: rooms, tasks: tasks, beginner: beginner, hub: hub, rdb: rdb,
 		newProviderClient: newProviderClient,
 	}
 }
@@ -207,9 +210,40 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		cascadingEnabled = rm.AgentCascadingEnabled
 	}
 
+	// Loaded once, up front — needed both to build request_handoff's own
+	// description (the model can only ever hand off to an agent it's
+	// actually been told the name of, the same reasoning mention_agent's
+	// own resolution already applies) and, after the call, to resolve
+	// whatever name the model actually supplied. A lookup failure here
+	// degrades to "no other agents visible this turn" rather than
+	// failing the whole reply over a secondary capability.
+	roomAgents, err := o.agents.ListByRoom(ctx, triggering.RoomID)
+	if err != nil {
+		log.Printf("ERROR message: load room %s agents: %v", triggering.RoomID, err)
+	}
+	otherAgents := make([]agent.Agent, 0, len(roomAgents))
+	for _, ra := range roomAgents {
+		if ra.ID != agentID {
+			otherAgents = append(otherAgents, ra)
+		}
+	}
+
+	// create_task is always offered (ADR-006 batch C: low-stakes, already
+	// an ordinary operation) — request_handoff only when there's both a
+	// real open task and a real other agent to reference, since its
+	// task_id/to_agent_name are validated against exactly those sets.
+	activeTasks, err := o.tasks.ListActiveByRoom(ctx, triggering.RoomID)
+	if err != nil {
+		log.Printf("ERROR message: load room %s active tasks: %v", triggering.RoomID, err)
+	}
+
 	req := buildGenerateRequest(a, history, o.loadCustomInstructions(ctx, roomOwnerID))
+	req.Tools = append(req.Tools, createTaskTool())
 	if cascadingEnabled {
-		req.Tools = []provider.ToolDef{mentionAgentTool()}
+		req.Tools = append(req.Tools, mentionAgentTool())
+	}
+	if len(activeTasks) > 0 && len(otherAgents) > 0 {
+		req.Tools = append(req.Tools, requestHandoffTool(activeTasks, otherAgents))
 	}
 
 	resp, err := client.Generate(ctx, req)
@@ -220,12 +254,16 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	}
 
 	var cascadeTargets []uuid.UUID
-	if cascadingEnabled && len(resp.ToolCalls) > 0 {
-		roomAgents, err := o.agents.ListByRoom(ctx, triggering.RoomID)
-		if err != nil {
-			log.Printf("ERROR message: load room %s agents to resolve mentions: %v", triggering.RoomID, err)
-		} else {
-			cascadeTargets = resolveMentionToolCalls(resp.ToolCalls, roomAgents)
+	var createTaskCalls, requestHandoffCalls []provider.ToolCall
+	if cascadingEnabled {
+		cascadeTargets = resolveMentionToolCalls(resp.ToolCalls, roomAgents)
+	}
+	for _, call := range resp.ToolCalls {
+		switch call.Name {
+		case createTaskToolName:
+			createTaskCalls = append(createTaskCalls, call)
+		case requestHandoffToolName:
+			requestHandoffCalls = append(requestHandoffCalls, call)
 		}
 	}
 
@@ -237,6 +275,21 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	}
 	o.hub.Publish(triggering.RoomID, realtime.NewChatMessage(toChatMessage(reply)))
 	o.setStatus(ctx, triggering.RoomID, agentID, agent.StatusAvailable)
+
+	// create_task executes immediately (ADR-006 batch C) — the same
+	// effect as a human hitting POST /v1/tasks directly, including the
+	// same TASK_CREATED audit event, so it shows up in the timeline
+	// exactly like any other task, chat-triggered or not.
+	for _, call := range createTaskCalls {
+		o.executeCreateTask(ctx, triggering.RoomID, agentID, call.Input)
+	}
+	// request_handoff only ever creates a pending proposal here — ADR-006
+	// is explicit that this does not execute a real handoff. See
+	// executeApprovedHandoff for the one place that actually does, gated
+	// on a human's approval.
+	for _, call := range requestHandoffCalls {
+		o.executeRequestHandoff(ctx, triggering.RoomID, agentID, call.Input)
+	}
 
 	// Cascade into each mentioned agent — one invocation per mention, same
 	// as a human's own multi-mention (ADR-006 batch A) — unless the hop

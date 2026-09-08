@@ -13,6 +13,9 @@ import {
   type ArtifactListItem,
 } from "@/components/ArtifactsMenu";
 import { AddAgentMenu } from "@/components/AddAgentMenu";
+import { ApprovalCard } from "@/components/ApprovalCard";
+import { HandoffCard } from "@/components/HandoffCard";
+import { TaskCard } from "@/components/TaskCard";
 import { Composer, type RoomAgent } from "@/components/Composer";
 import {
   MessageRow,
@@ -28,6 +31,7 @@ import {
 import { ChevronDownIcon, CoinIcon, InfoIcon } from "@/components/icons";
 import { collectRoomArtifacts } from "@/lib/messageContent";
 import { AgentAvatarGlyph } from "@/components/providerLogos";
+import { Tooltip } from "@/components/Tooltip";
 import {
   estimateCostUSD,
   formatCostUSD,
@@ -101,6 +105,22 @@ interface Me {
 
 type Category = "task" | "handoff" | "other";
 
+// HandoffInfo is only ever set on a "card" entry whose type is
+// HANDOFF_REQUESTED/HANDOFF.REQUEST — the one handoff transition with a
+// real payload to render from (see internal/handoff/http.go's own
+// AcceptHandler, which publishes an empty payload — nothing to enrich an
+// "accepted" card with today, so that one stays the plain label
+// fallback). fromAgentId/toAgentId/summary/risks are exactly what
+// internal/handoff.RequestHandler's own envelope carries, and what
+// internal/actionproposal's executeApprovedHandoff publishes on
+// approval too — one payload shape, one place that knows how to render it.
+interface HandoffInfo {
+  fromAgentId: string;
+  toAgentId?: string;
+  summary?: string;
+  risks?: string[];
+}
+
 type TimelineEntry =
   | {
       id: string;
@@ -108,8 +128,37 @@ type TimelineEntry =
       timestamp: string;
       category: Category;
       label: string;
+      handoff?: HandoffInfo;
     }
-  | { id: string; kind: "message"; timestamp: string; message: ChatMessage };
+  | { id: string; kind: "message"; timestamp: string; message: ChatMessage }
+  | {
+      id: string;
+      kind: "approval";
+      timestamp: string;
+      proposalId: string;
+      proposingAgentId: string;
+      actionType: string;
+      payload: Record<string, unknown>;
+      // pending until an ACTION_RESOLVED/ACTION.RESOLVE for this same
+      // proposal_id updates this entry in place — never a second,
+      // separate entry (see the snapshot handler and the "event"
+      // listener below, both of which enforce that by construction).
+      status: "pending" | "approved" | "rejected";
+    }
+  | {
+      id: string;
+      kind: "task";
+      timestamp: string;
+      taskId: string;
+      objective: string;
+      // Only the three transitions this codebase's own task.Store
+      // actually performs (Create inserts QUEUED directly, Claim moves
+      // QUEUED -> CLAIMED, Complete moves CLAIMED -> COMPLETED) — never
+      // a second entry for the same taskId once TASK_CLAIMED/
+      // TASK_COMPLETED update this one in place, same as "approval".
+      status: "QUEUED" | "CLAIMED" | "COMPLETED";
+      ownerAgentId?: string;
+    };
 
 // Maps both the historical (TASK_CREATED) and live (TASK.CREATE) type
 // formats to one label, so the timeline doesn't visually distinguish
@@ -131,6 +180,25 @@ function classify(type: string): { category: Category; label: string } {
   return TYPE_LABELS[type] ?? { category: "other", label: type };
 }
 
+function buildHandoffInfo(
+  type: string,
+  fromAgentId: string | undefined,
+  payload: Record<string, unknown>,
+): HandoffInfo | undefined {
+  if (
+    (type !== "HANDOFF_REQUESTED" && type !== "HANDOFF.REQUEST") ||
+    !fromAgentId
+  ) {
+    return undefined;
+  }
+  return {
+    fromAgentId,
+    toAgentId: payload.to_agent_id as string | undefined,
+    summary: payload.summary as string | undefined,
+    risks: payload.risks as string[] | undefined,
+  };
+}
+
 function fromHistorical(e: HistoricalEvent): TimelineEntry {
   const { category, label } = classify(e.type);
   return {
@@ -139,16 +207,149 @@ function fromHistorical(e: HistoricalEvent): TimelineEntry {
     category,
     label,
     timestamp: e.created_at,
+    handoff: buildHandoffInfo(e.type, e.agent_id, e.payload),
+  };
+}
+
+// ACTION_PROPOSED/ACTION.PROPOSE don't route through classify()'s
+// generic card treatment the way every other event type does — a
+// proposal needs Approve/Reject affordances while pending, and a
+// resolved-state badge once it isn't, not a plain historical label —
+// so it becomes its own "approval" timeline entry instead.
+// ACTION_RESOLVED/ACTION.RESOLVE never produce their own entry at all:
+// both the snapshot handler and the live "event" listener update the
+// matching "approval" entry (by proposal_id) in place instead — the
+// same card throughout its life, never replaced or removed.
+function fromProposedEvent(
+  id: string,
+  timestamp: string,
+  proposingAgentId: string,
+  payload: Record<string, unknown>,
+): TimelineEntry {
+  return {
+    id: `proposal-${payload.proposal_id}`,
+    kind: "approval",
+    timestamp,
+    proposalId: payload.proposal_id as string,
+    proposingAgentId,
+    actionType: payload.action_type as string,
+    payload,
+    status: "pending",
+  };
+}
+
+// TASK_CREATED/TASK.CREATE become their own "task" timeline entry for
+// the same reason ACTION_PROPOSED does — a real title/status card, not
+// a plain historical label. TASK_CLAIMED/TASK_COMPLETED (and their live
+// TASK.CLAIM/TASK.COMPLETE forms) never produce their own entry: both
+// the snapshot handler and the live "event" listener update the
+// matching "task" entry (by task_id — a real column on every task
+// event, not something parsed out of payload) in place instead.
+function fromCreatedTaskEvent(
+  id: string,
+  timestamp: string,
+  taskId: string,
+  payload: Record<string, unknown>,
+): TimelineEntry {
+  return {
+    id: `task-${taskId}`,
+    kind: "task",
+    timestamp,
+    taskId,
+    objective: (payload.objective as string) || "",
+    status: "QUEUED",
   };
 }
 
 function fromEnvelope(e: Envelope): TimelineEntry {
+  if (e.type === "ACTION.PROPOSE") {
+    return fromProposedEvent(e.id, e.timestamp, e.sender.agent_id, e.payload);
+  }
+  if (e.type === "TASK.CREATE" && e.task_id) {
+    return fromCreatedTaskEvent(e.id, e.timestamp, e.task_id, e.payload);
+  }
   const { category, label } = classify(e.type);
-  return { id: e.id, kind: "card", category, label, timestamp: e.timestamp };
+  return {
+    id: e.id,
+    kind: "card",
+    category,
+    label,
+    timestamp: e.timestamp,
+    handoff: buildHandoffInfo(e.type, e.sender.agent_id, e.payload),
+  };
 }
 
 function fromMessage(m: ChatMessage): TimelineEntry {
   return { id: m.id, kind: "message", timestamp: m.created_at, message: m };
+}
+
+// buildEventEntries turns the snapshot's full historical event list (no
+// recency cap, unlike messages — see event.Store.ListByRoom) into
+// timeline entries, correlating ACTION_PROPOSED with its later
+// ACTION_RESOLVED (if any) into the one "approval" entry at its
+// original position rather than two separate entries: events are
+// already chronological (created_at ASC), so a proposal's own
+// ACTION_PROPOSED is guaranteed to appear before any ACTION_RESOLVED
+// for it, making a single left-to-right pass sufficient.
+function buildEventEntries(events: HistoricalEvent[]): TimelineEntry[] {
+  const entries: TimelineEntry[] = [];
+  const approvalsByProposalId = new Map<
+    string,
+    Extract<TimelineEntry, { kind: "approval" }>
+  >();
+  const tasksByTaskId = new Map<
+    string,
+    Extract<TimelineEntry, { kind: "task" }>
+  >();
+  for (const e of events) {
+    if (e.type === "ACTION_PROPOSED") {
+      const entry = fromProposedEvent(
+        `h-${e.id}`,
+        e.created_at,
+        e.agent_id ?? "",
+        e.payload,
+      ) as Extract<TimelineEntry, { kind: "approval" }>;
+      approvalsByProposalId.set(entry.proposalId, entry);
+      entries.push(entry);
+      continue;
+    }
+    if (e.type === "ACTION_RESOLVED") {
+      const proposalId = e.payload.proposal_id as string;
+      const existing = approvalsByProposalId.get(proposalId);
+      if (existing) {
+        existing.status = e.payload.status as "approved" | "rejected";
+      }
+      continue;
+    }
+    if (e.type === "TASK_CREATED" && e.task_id) {
+      const entry = fromCreatedTaskEvent(
+        `h-${e.id}`,
+        e.created_at,
+        e.task_id,
+        e.payload,
+      ) as Extract<TimelineEntry, { kind: "task" }>;
+      tasksByTaskId.set(entry.taskId, entry);
+      entries.push(entry);
+      continue;
+    }
+    if (e.type === "TASK_CLAIMED" && e.task_id) {
+      const existing = tasksByTaskId.get(e.task_id);
+      if (existing) {
+        existing.status = "CLAIMED";
+        existing.ownerAgentId = e.agent_id;
+      }
+      continue;
+    }
+    if (e.type === "TASK_COMPLETED" && e.task_id) {
+      const existing = tasksByTaskId.get(e.task_id);
+      if (existing) {
+        existing.status = "COMPLETED";
+      }
+      continue;
+    }
+    entries.push(fromHistorical(e));
+  }
+  return entries;
 }
 
 const CATEGORY_STYLES: Record<Category, string> = {
@@ -239,6 +440,10 @@ export default function RoomViewPage() {
   const [infoOpen, setInfoOpen] = useState(false);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [pinError, setPinError] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [resolvingProposalId, setResolvingProposalId] = useState<string | null>(
+    null,
+  );
   const [initialMessageCount, setInitialMessageCount] = useState<number | null>(
     null,
   );
@@ -363,7 +568,7 @@ export default function RoomViewPage() {
       // Defensive, not just trusting the backend: a Go nil slice encodes
       // as JSON null, not [], so a brand-new room with nothing in it yet
       // is exactly the case this needs to survive.
-      const cardEntries = (data.events ?? []).map(fromHistorical);
+      const cardEntries = buildEventEntries(data.events ?? []);
       const messageEntries = (data.messages ?? []).map(fromMessage);
       const merged = [...cardEntries, ...messageEntries].sort((a, b) =>
         a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
@@ -390,9 +595,56 @@ export default function RoomViewPage() {
 
     source.addEventListener("event", (e) => {
       const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      if (msg.event) {
-        setEntries((prev) => [...prev, fromEnvelope(msg.event!)]);
+      if (!msg.event) return;
+      // ACTION.RESOLVE (ADR-006 batch C) never becomes its own timeline
+      // entry — it updates the "approval" entry ACTION.PROPOSE already
+      // created, in place: same card, same position, its badge and
+      // buttons swapping for a resolved-state badge (see ApprovalCard's
+      // own resolution prop). It never disappears and never gets
+      // replaced by a second entry — this is the one thing a page reload
+      // (rebuilding the same state from buildEventEntries) must also
+      // reproduce exactly, not just the live path.
+      if (msg.event.type === "ACTION.RESOLVE") {
+        const proposalId = msg.event.payload.proposal_id as string;
+        const status = msg.event.payload.status as "approved" | "rejected";
+        setEntries((prev) =>
+          prev.map((entry) =>
+            entry.kind === "approval" && entry.proposalId === proposalId
+              ? { ...entry, status }
+              : entry,
+          ),
+        );
+        return;
       }
+      // TASK.CLAIM/TASK.COMPLETE update the "task" entry TASK.CREATE
+      // already produced, in place — same card, same position, its
+      // status badge changing. Same reasoning as ACTION.RESOLVE above:
+      // this is exactly what buildEventEntries must also reproduce from
+      // history on reload, not just here on the live path.
+      if (msg.event.type === "TASK.CLAIM" && msg.event.task_id) {
+        const taskId = msg.event.task_id;
+        const ownerAgentId = msg.event.sender.agent_id;
+        setEntries((prev) =>
+          prev.map((entry) =>
+            entry.kind === "task" && entry.taskId === taskId
+              ? { ...entry, status: "CLAIMED", ownerAgentId }
+              : entry,
+          ),
+        );
+        return;
+      }
+      if (msg.event.type === "TASK.COMPLETE" && msg.event.task_id) {
+        const taskId = msg.event.task_id;
+        setEntries((prev) =>
+          prev.map((entry) =>
+            entry.kind === "task" && entry.taskId === taskId
+              ? { ...entry, status: "COMPLETED" }
+              : entry,
+          ),
+        );
+        return;
+      }
+      setEntries((prev) => [...prev, fromEnvelope(msg.event!)]);
     });
 
     source.addEventListener("presence", (e) => {
@@ -541,6 +793,54 @@ export default function RoomViewPage() {
     }
   };
 
+  const handleRetryMessage = async (messageId: string) => {
+    if (!roomId) return;
+    setRetryError(null);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}/messages/${messageId}/retry`, {
+        method: "POST",
+      });
+      // No local state update here: the retried reply arrives as an
+      // ordinary agent message over the SSE stream, the same as any
+      // other reply — this call only has to kick the invocation off.
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : "Failed to retry.");
+    }
+  };
+
+  const handleResolveProposal = async (
+    proposalId: string,
+    action: "approve" | "reject",
+  ) => {
+    setResolvingProposalId(proposalId);
+    try {
+      await apiFetch(`/v1/action_proposals/${proposalId}/${action}`, {
+        method: "POST",
+      });
+      // Updated in place here directly rather than waiting on the
+      // ACTION.RESOLVE event this same call also triggers over the
+      // stream — the card's buttons shouldn't stay live for however long
+      // that round-trip takes. The stream event still arrives and
+      // applies the same update again (a no-op once status already
+      // matches), which is what keeps a second browser tab on the same
+      // room in sync too.
+      const status = action === "approve" ? "approved" : "rejected";
+      setEntries((prev) =>
+        prev.map((entry) =>
+          entry.kind === "approval" && entry.proposalId === proposalId
+            ? { ...entry, status }
+            : entry,
+        ),
+      );
+    } catch {
+      // Left in place on failure — the human can just try again, same as
+      // any other action button in this app that doesn't have a
+      // dedicated error surface of its own.
+    } finally {
+      setResolvingProposalId(null);
+    }
+  };
+
   // Objective: the room's first message, per the build brief's explicit
   // scope call — "no new capture needed," not a real captured field.
   const firstMessageEntry = entries.find((e) => e.kind === "message");
@@ -629,6 +929,27 @@ export default function RoomViewPage() {
     }
 
     if (entry.kind === "card") {
+      if (entry.category === "handoff" && entry.handoff) {
+        const fromName = agentNames[entry.handoff.fromAgentId] || "An agent";
+        const toName = entry.handoff.toAgentId
+          ? agentNames[entry.handoff.toAgentId] || "another agent"
+          : "another agent";
+        rendered.push(
+          <HandoffCard
+            key={entry.id}
+            status="REQUESTED"
+            fromName={fromName}
+            toName={toName}
+            title={entry.handoff.summary || entry.label}
+            meta={
+              entry.handoff.risks?.[0]
+                ? `Risk noted: ${entry.handoff.risks[0]}`
+                : undefined
+            }
+          />,
+        );
+        return;
+      }
       rendered.push(
         <div
           key={entry.id}
@@ -641,6 +962,54 @@ export default function RoomViewPage() {
             {new Date(entry.timestamp).toLocaleTimeString()}
           </div>
         </div>,
+      );
+      return;
+    }
+
+    if (entry.kind === "task") {
+      const ownerName = entry.ownerAgentId
+        ? agentNames[entry.ownerAgentId]
+        : undefined;
+      rendered.push(
+        <TaskCard
+          key={entry.id}
+          status={entry.status}
+          title={entry.objective}
+          meta={
+            ownerName
+              ? `${ownerName} · ${entry.status === "COMPLETED" ? "completed" : "claimed"}`
+              : undefined
+          }
+        />,
+      );
+      return;
+    }
+
+    if (entry.kind === "approval") {
+      // Only request_handoff exists today (ADR-006 batch C) — objective/
+      // to_agent_id/summary are exactly what executeRequestHandoff's own
+      // ACTION.PROPOSE envelope carries.
+      const fromName = agentNames[entry.proposingAgentId] || "An agent";
+      const toAgentId = entry.payload.to_agent_id as string | undefined;
+      const toName = toAgentId
+        ? agentNames[toAgentId] || "another agent"
+        : "another agent";
+      const objective = (entry.payload.objective as string) || "a task";
+      const summary = (entry.payload.summary as string) || "";
+      rendered.push(
+        <ApprovalCard
+          key={entry.id}
+          title={`Hand off "${objective}" to ${toName}`}
+          meta={`${fromName}${summary ? `: ${summary}` : ""}`}
+          pending={resolvingProposalId === entry.proposalId}
+          resolution={entry.status === "pending" ? undefined : entry.status}
+          onApprove={() =>
+            void handleResolveProposal(entry.proposalId, "approve")
+          }
+          onReject={() =>
+            void handleResolveProposal(entry.proposalId, "reject")
+          }
+        />,
       );
       return;
     }
@@ -679,6 +1048,11 @@ export default function RoomViewPage() {
         onOpenArtifact={setArtifact}
         pinned={pinnedMessageIds.has(m.id)}
         onPinDecision={() => void handlePinDecision(m.id)}
+        onRetry={
+          m.sender_kind === "agent"
+            ? () => void handleRetryMessage(m.id)
+            : undefined
+        }
       />,
     );
   });
@@ -692,32 +1066,36 @@ export default function RoomViewPage() {
           </h1>
           <div className="flex shrink-0 items-center gap-3.5">
             {hasUsageData && (
-              <span
-                title="Estimated cost — not authoritative, see this room's actual token usage on your provider's own dashboard for a real figure"
-                className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-2.5 py-1 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-muted)]"
+              <Tooltip
+                label="Estimated cost — not authoritative, see this room's actual token usage on your provider's own dashboard for a real figure"
+                wrap
               >
-                <CoinIcon />
-                {formatCostUSD(totalCostUSD)} ·{" "}
-                {formatTokenCount(totalInputTokens + totalOutputTokens)} tokens
-              </span>
+                <span className="flex items-center gap-1.5 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-2.5 py-1 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-muted)]">
+                  <CoinIcon />
+                  {formatCostUSD(totalCostUSD)} ·{" "}
+                  {formatTokenCount(totalInputTokens + totalOutputTokens)}{" "}
+                  tokens
+                </span>
+              </Tooltip>
             )}
             <ArtifactsMenu
               artifacts={artifactListItems}
               mayBeIncomplete={artifactsMayBeIncomplete}
               onOpenArtifact={setArtifact}
             />
-            <button
-              type="button"
-              title="Room info"
-              onClick={() => setInfoOpen((o) => !o)}
-              className={`flex rounded-md p-1.5 ${
-                infoOpen
-                  ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-                  : "text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-              }`}
-            >
-              <InfoIcon />
-            </button>
+            <Tooltip label={infoOpen ? "Hide room info" : "Room info"}>
+              <button
+                type="button"
+                onClick={() => setInfoOpen((o) => !o)}
+                className={`flex rounded-md p-1.5 ${
+                  infoOpen
+                    ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                    : "text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+                }`}
+              >
+                <InfoIcon />
+              </button>
+            </Tooltip>
             <span className="text-[13px] text-[var(--login-text-muted)]">
               {connection === "open"
                 ? "● Live"
@@ -794,9 +1172,9 @@ export default function RoomViewPage() {
           </button>
         )}
 
-        {(sendError || pinError) && (
+        {(sendError || pinError || retryError) && (
           <p className="mx-auto w-full max-w-[720px] px-6 text-[13px] text-[var(--room-warn)]">
-            {sendError || pinError}
+            {sendError || pinError || retryError}
           </p>
         )}
 
