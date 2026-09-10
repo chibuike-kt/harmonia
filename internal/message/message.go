@@ -191,6 +191,58 @@ func (s *Store) GetByID(ctx context.Context, messageID uuid.UUID) (Message, erro
 	return m, nil
 }
 
+// ClaimForPickup atomically claims messageID for agentID's autonomous
+// pickup (ADR-007 batch B, phase 2) — the same "conditional UPDATE,
+// check rows affected" idiom task.Store.Claim already uses for WHERE
+// status = 'QUEUED', with pickup_claimed_by IS NULL as the "unclaimed"
+// sentinel instead (an ordinary message has no pre-existing queued
+// state a task row already has). Returns true only for whichever
+// caller's UPDATE actually matched the row first; every other
+// concurrent caller sees zero rows affected and gets false, never an
+// error — losing this race is the normal, expected outcome of two
+// agents both flagging the same message "yes" in phase 1, not a
+// failure to surface.
+func (s *Store) ClaimForPickup(ctx context.Context, messageID, agentID uuid.UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE messages
+		SET pickup_claimed_by = $1, pickup_claimed_at = now()
+		WHERE id = $2 AND pickup_claimed_by IS NULL
+	`, agentID, messageID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// RecordPickupEvaluationUsage persists one phase-1 classification
+// call's real token usage (ADR-007 batch B, build brief item 7) —
+// agent_pickup_evaluations, not the messages table: a classification
+// call is real spend but never a conversation turn, so it gets its own
+// ledger rather than diluting ListByRoom's recency window or needing
+// the frontend to hide a "message" that was never meant to be one. See
+// migrations/0012_autonomous_pickup.up.sql's own comment for the full
+// reasoning.
+func (s *Store) RecordPickupEvaluationUsage(ctx context.Context, roomID, agentID uuid.UUID, inputTokens, outputTokens int) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO agent_pickup_evaluations (room_id, agent_id, input_tokens, output_tokens)
+		VALUES ($1, $2, $3, $4)
+	`, roomID, agentID, inputTokens, outputTokens)
+	return err
+}
+
+// SumPickupEvaluationUsage returns roomID's running total phase-1 token
+// usage — the SSE snapshot's own seed value for the cost pill's running
+// total, which live PickupUsage messages (realtime.NewPickupUsageMessage)
+// then increment for whoever already has the room open.
+func (s *Store) SumPickupEvaluationUsage(ctx context.Context, roomID uuid.UUID) (inputTokens, outputTokens int, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+		FROM agent_pickup_evaluations
+		WHERE room_id = $1
+	`, roomID).Scan(&inputTokens, &outputTokens)
+	return inputTokens, outputTokens, err
+}
+
 // ListByRoom returns roomID's most recent messages, oldest first — ready
 // to format directly as a conversation for provider.GenerateRequest, and
 // as the SSE snapshot's message history. Capped at recencyLimit.

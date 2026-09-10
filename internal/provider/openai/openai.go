@@ -127,8 +127,13 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 		toolChoice = "required"
 	}
 
+	model := c.model
+	if req.Model != "" {
+		model = req.Model
+	}
+
 	body, err := json.Marshal(chatCompletionsRequest{
-		Model:      c.model,
+		Model:      model,
 		Messages:   messages,
 		Tools:      tools,
 		ToolChoice: toolChoice,

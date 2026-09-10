@@ -78,24 +78,42 @@ interface RoomUpdate {
   name: string;
 }
 
+interface PickupUsage {
+  room_id: string;
+  agent_id: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
 interface RealtimeMessage {
-  kind: "event" | "presence" | "message" | "room";
+  kind: "event" | "presence" | "message" | "room" | "pickup_usage";
   event?: Envelope;
   presence?: AgentPresence;
   message?: ChatMessage;
   room?: RoomUpdate;
+  pickup_usage?: PickupUsage;
 }
 
 interface Snapshot {
   events: HistoricalEvent[];
   presence: AgentPresence[];
   messages: ChatMessage[];
+  // ADR-007 batch B: this room's running total phase-1 classification
+  // spend as of connect time — the cost pill's seed value. Counted
+  // toward the pill's token total, but not its $ estimate: a snapshot
+  // aggregate has no per-agent/provider breakdown to price accurately
+  // (unlike a live pickup_usage event, which does), so a reload-time
+  // total stays honestly token-only rather than guessing a blended
+  // rate. See the cost pill's own comment where this is summed.
+  pickup_eval_input_tokens: number;
+  pickup_eval_output_tokens: number;
 }
 
 interface RoomSummary {
   id: string;
   name: string;
   agent_cascading_enabled: boolean;
+  autonomous_pickup_enabled: boolean;
 }
 
 interface Me {
@@ -424,12 +442,23 @@ export default function RoomViewPage() {
   const [agentProviders, setAgentProviders] = useState<Record<string, string>>(
     {},
   );
+  // Mirrored from agentProviders below — the SSE effect mounts once per
+  // roomId (see its own dependency array) and its pickup_usage listener
+  // needs whatever agentProviders is at the moment an event actually
+  // arrives, not whatever it was when that effect last ran; a plain
+  // closure over the state variable would go stale the instant agents
+  // load in afterward.
+  const agentProvidersRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    agentProvidersRef.current = agentProviders;
+  }, [agentProviders]);
   const [roomAgents, setRoomAgents] = useState<RoomAgent[]>([]);
   const [roomAgentSummaries, setRoomAgentSummaries] = useState<
     RoomAgentSummary[]
   >([]);
   const [roomName, setRoomName] = useState<string>("");
   const [agentCascadingEnabled, setAgentCascadingEnabled] = useState(false);
+  const [autonomousPickupEnabled, setAutonomousPickupEnabled] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
   const [connection, setConnection] = useState<
     "connecting" | "open" | "reconnecting"
@@ -447,6 +476,19 @@ export default function RoomViewPage() {
   const [initialMessageCount, setInitialMessageCount] = useState<number | null>(
     null,
   );
+  // ADR-007 batch B's own running total, separate from the per-message
+  // sum below: a phase-1 classification is real spend but never a
+  // ChatMessage (see internal/message.Store.RecordPickupEvaluationUsage's
+  // own doc comment for why). costUSD only ever grows from a live
+  // pickup_usage event, which carries a real agent_id to price against —
+  // the snapshot's own seed has no such per-agent breakdown to price
+  // accurately, so it seeds tokens only, not cost. See the cost pill's
+  // own comment below for how both are combined.
+  const [pickupUsage, setPickupUsage] = useState({
+    inputTokens: 0,
+    outputTokens: 0,
+    costUSD: 0,
+  });
 
   const timelineRef = useRef<HTMLDivElement>(null);
   // Tracked in a ref, not state: the entries-changed effect below reads
@@ -475,6 +517,7 @@ export default function RoomViewPage() {
         if (match) {
           setRoomName(match.name);
           setAgentCascadingEnabled(match.agent_cascading_enabled);
+          setAutonomousPickupEnabled(match.autonomous_pickup_enabled);
         }
       })
       .catch(() => {});
@@ -493,6 +536,19 @@ export default function RoomViewPage() {
       // take would leave the panel showing a setting the room doesn't
       // actually have.
       setAgentCascadingEnabled(!enabled);
+    }
+  };
+
+  const handleTogglePickup = async (enabled: boolean) => {
+    if (!roomId) return;
+    setAutonomousPickupEnabled(enabled);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}`, {
+        method: "PATCH",
+        body: { autonomous_pickup_enabled: enabled },
+      });
+    } catch {
+      setAutonomousPickupEnabled(!enabled);
     }
   };
 
@@ -580,6 +636,11 @@ export default function RoomViewPage() {
       // cut off older history, which a later, larger entries.length
       // couldn't answer on its own.
       setInitialMessageCount((data.messages ?? []).length);
+      setPickupUsage({
+        inputTokens: data.pickup_eval_input_tokens ?? 0,
+        outputTokens: data.pickup_eval_output_tokens ?? 0,
+        costUSD: 0,
+      });
 
       const byId: Record<string, ChatMessage> = {};
       for (const m of data.messages ?? []) byId[m.id] = m;
@@ -693,6 +754,25 @@ export default function RoomViewPage() {
       window.dispatchEvent(
         new CustomEvent("harmonia:room-updated", { detail: msg.room }),
       );
+    });
+
+    // ADR-007 batch B: one phase-1 classification call's real token
+    // usage, live — priced immediately since this event carries a real
+    // agent_id to look up a provider for, unlike the snapshot's own
+    // blended aggregate (see the Snapshot type's own comment).
+    source.addEventListener("pickup_usage", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      if (!msg.pickup_usage) return;
+      const { agent_id, input_tokens, output_tokens } = msg.pickup_usage;
+      const providerName = agentProvidersRef.current[agent_id];
+      const deltaCostUSD = providerName
+        ? estimateCostUSD(providerName, input_tokens, output_tokens)
+        : 0;
+      setPickupUsage((prev) => ({
+        inputTokens: prev.inputTokens + input_tokens,
+        outputTokens: prev.outputTokens + output_tokens,
+        costUSD: prev.costUSD + deltaCostUSD,
+      }));
     });
 
     // EventSource retries on its own; a drop just means "not open right
@@ -909,6 +989,15 @@ export default function RoomViewPage() {
       );
     }
   }
+  // ADR-007 batch B: phase-1 classification calls are real spend too
+  // (build brief item 7) — folded into the same pill total, not a
+  // separate figure, even though they're never ChatMessage rows (see
+  // the pickupUsage state's own comment on why its cost component can
+  // lag its token component slightly for pre-existing, reload-time
+  // usage specifically).
+  totalInputTokens += pickupUsage.inputTokens;
+  totalOutputTokens += pickupUsage.outputTokens;
+  totalCostUSD += pickupUsage.costUSD;
   const hasUsageData = totalInputTokens > 0 || totalOutputTokens > 0;
 
   const rendered: ReactNode[] = [];
@@ -1195,6 +1284,8 @@ export default function RoomViewPage() {
         onAgentAdded={loadRoomAgents}
         agentCascadingEnabled={agentCascadingEnabled}
         onToggleCascading={handleToggleCascading}
+        autonomousPickupEnabled={autonomousPickupEnabled}
+        onTogglePickup={handleTogglePickup}
       />
       <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
     </div>

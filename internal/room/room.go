@@ -41,6 +41,14 @@ type Room struct {
 	// regardless of this setting; this setting alone doesn't bound a
 	// cascade, it only permits one to start.
 	AgentCascadingEnabled bool `json:"agent_cascading_enabled"`
+	// AutonomousPickupEnabled opts this room into every agent evaluating
+	// every unaddressed message for whether it needs a response (ADR-007
+	// batch B) — off by default, gated independently of
+	// AgentCascadingEnabled: the two have fundamentally different cost
+	// profiles (cascading only spends when an agent was already going to
+	// act; pickup spends evaluating every message whether or not anyone
+	// responds), so they're separate deliberate opt-ins, never coupled.
+	AutonomousPickupEnabled bool `json:"autonomous_pickup_enabled"`
 }
 
 type Store struct {
@@ -59,8 +67,8 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO rooms (name, status, owner_id) VALUES ($1, 'active', $2)
-		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled
-	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled)
+		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled
+	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled)
 	return r, err
 }
 
@@ -68,8 +76,8 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled FROM rooms WHERE id = $1
-	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled)
+		SELECT id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled FROM rooms WHERE id = $1
+	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -84,7 +92,7 @@ func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 // it, nil (omitted in the request) leaves it alone. Returns ErrNotFound
 // if no room matches roomID — ownership is the caller's job, same as
 // every other room-scoped handler (see realtime.StreamHandler).
-func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool, agentCascadingEnabled *bool) (Room, error) {
+func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool, agentCascadingEnabled *bool, autonomousPickupEnabled *bool) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		UPDATE rooms
@@ -94,10 +102,11 @@ func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinn
 		        WHEN $3::boolean THEN now()
 		        ELSE NULL
 		    END,
-		    agent_cascading_enabled = COALESCE($4, agent_cascading_enabled)
+		    agent_cascading_enabled = COALESCE($4, agent_cascading_enabled),
+		    autonomous_pickup_enabled = COALESCE($5, autonomous_pickup_enabled)
 		WHERE id = $1
-		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled
-	`, roomID, name, pinned, agentCascadingEnabled).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled)
+		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled
+	`, roomID, name, pinned, agentCascadingEnabled, autonomousPickupEnabled).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -113,8 +122,9 @@ type Summary struct {
 	Name                  string     `json:"name"`
 	LastActivityAt        time.Time  `json:"last_activity_at"`
 	HasRunningAgent       bool       `json:"has_running_agent"`
-	PinnedAt              *time.Time `json:"pinned_at,omitempty"`
-	AgentCascadingEnabled bool       `json:"agent_cascading_enabled"`
+	PinnedAt                *time.Time `json:"pinned_at,omitempty"`
+	AgentCascadingEnabled   bool       `json:"agent_cascading_enabled"`
+	AutonomousPickupEnabled bool       `json:"autonomous_pickup_enabled"`
 }
 
 // ListByOwner returns ownerID's rooms, pinned first, then most recently
@@ -124,7 +134,7 @@ type Summary struct {
 // has, not N+1.
 func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.name, r.last_activity_at, r.pinned_at, r.agent_cascading_enabled,
+		SELECT r.id, r.name, r.last_activity_at, r.pinned_at, r.agent_cascading_enabled, r.autonomous_pickup_enabled,
 		       EXISTS (
 		           SELECT 1 FROM agents a WHERE a.room_id = r.id AND a.status = 'running'
 		       ) AS has_running_agent
@@ -143,7 +153,7 @@ func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, 
 	summaries := make([]Summary, 0)
 	for rows.Next() {
 		var sm Summary
-		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.AgentCascadingEnabled, &sm.HasRunningAgent); err != nil {
+		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.AgentCascadingEnabled, &sm.AutonomousPickupEnabled, &sm.HasRunningAgent); err != nil {
 			return nil, err
 		}
 		summaries = append(summaries, sm)

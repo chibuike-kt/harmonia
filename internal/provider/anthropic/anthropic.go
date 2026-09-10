@@ -111,8 +111,13 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 		choice = &toolChoice{Type: "any"}
 	}
 
+	model := c.model
+	if req.Model != "" {
+		model = req.Model
+	}
+
 	body, err := json.Marshal(messagesRequest{
-		Model:      c.model,
+		Model:      model,
 		MaxTokens:  defaultMaxTokens,
 		System:     req.SystemPrompt,
 		Messages:   messages,

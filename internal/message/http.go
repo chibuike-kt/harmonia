@@ -189,6 +189,13 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 				log.Printf("ERROR message: load room %s agents for implicit addressing: %v", roomID, err)
 			} else if len(roomAgents) == 1 {
 				orch.TriggerReply(roomAgents[0].ID, rm.OwnerID, m, 0)
+			} else if len(roomAgents) > 1 && rm.AutonomousPickupEnabled {
+				// ADR-007 batch B: real ambiguity (2+ agents, still
+				// unaddressed) is exactly the case implicit single-agent
+				// addressing doesn't cover — autonomous pickup is the
+				// room's own opt-in answer to it, off by default, never
+				// substituting for an explicit mention on its own.
+				orch.EvaluateForPickup(roomAgents, rm.OwnerID, m)
 			}
 		}
 

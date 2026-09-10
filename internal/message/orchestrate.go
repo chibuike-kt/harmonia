@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -131,12 +132,23 @@ type Orchestrator struct {
 	// own to open.
 	beginner          store.Beginner
 	newProviderClient newProviderClientFunc
+	// lastPickupEvalAt rate-limits ADR-007 batch B's own phase 1 — the
+	// last time each agent ran a classification call, in-memory only
+	// (not persisted: a server restart clearing this just means the
+	// next few evaluations aren't throttled, the same acceptable
+	// imprecision as presence's own best-effort mirroring, not a
+	// correctness concern). Guarded by pickupEvalMu since multiple
+	// invocation goroutines can race to read/update the same agent's
+	// entry concurrently.
+	pickupEvalMu     sync.Mutex
+	lastPickupEvalAt map[uuid.UUID]time.Time
 }
 
 func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.Store, users *user.Store, rooms *room.Store, tasks *task.Store, beginner store.Beginner, hub realtime.Publisher, rdb *redis.Client) *Orchestrator {
 	return &Orchestrator{
 		messages: messages, agents: agents, credentials: creds, users: users, rooms: rooms, tasks: tasks, beginner: beginner, hub: hub, rdb: rdb,
 		newProviderClient: newProviderClient,
+		lastPickupEvalAt:  make(map[uuid.UUID]time.Time),
 	}
 }
 
@@ -329,6 +341,221 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		}
 		o.TriggerReply(targetID, roomOwnerID, reply, depth+1)
 	}
+}
+
+// pickupEvalCooldown bounds how often one agent's own phase-1
+// classification can fire (ADR-007 batch B, build brief item 6) — a
+// fast burst of ordinary conversation shouldn't multiply cost linearly
+// with message count. 5 seconds: short enough that a genuinely new
+// topic a few messages later still gets evaluated promptly, long enough
+// to collapse a rapid multi-message burst from one human into a small,
+// bounded number of calls per agent rather than one per message. An
+// agent skipped by its own cooldown just never evaluates that message —
+// another, less-recently-evaluated agent in the same room may still
+// catch it, the same tolerant-drop philosophy a dropped mention already
+// gets elsewhere in this package.
+const pickupEvalCooldown = 5 * time.Second
+
+// pickupMinContentLength is the cost safeguard's length floor (ADR-007
+// batch B, build brief item 4) — a message shorter than this is never
+// going to be a real actionable request, so phase 1 never runs at all
+// for it. Deliberately short: this only exists to catch the trivially
+// tiny ("ok", "np"), not to second-guess anything with real content.
+const pickupMinContentLength = 12
+
+// pickupAcknowledgements is the other half of that same safeguard — a
+// message that's nothing but a short acknowledgement never needs
+// screening either, even on the rare case its length clears
+// pickupMinContentLength ("sounds good!" or "perfect, thanks"). Matched
+// as a whole, trimmed and case-folded, deliberately not a substring
+// check: "yes, and can you also look at this" must NOT match, since
+// it's a real continuation with a real request in it, not filler.
+var pickupAcknowledgements = map[string]bool{
+	"ok": true, "okay": true, "k": true, "kk": true,
+	"thanks": true, "thank you": true, "thx": true, "ty": true,
+	"yes": true, "yeah": true, "yep": true, "yup": true,
+	"no": true, "nope": true, "nah": true,
+	"cool": true, "nice": true, "great": true, "perfect": true,
+	"got it": true, "sounds good": true, "sure": true, "alright": true,
+}
+
+func skipPickupEvaluation(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if len(trimmed) < pickupMinContentLength {
+		return true
+	}
+	normalized := strings.ToLower(strings.Trim(trimmed, ".!? "))
+	return pickupAcknowledgements[normalized]
+}
+
+// allowPickupEval enforces pickupEvalCooldown per agent — returns false
+// (and touches nothing) for a call within the window of that same
+// agent's last one; returns true and records this moment as the new
+// "last" otherwise. The lock is held only for this map access, never
+// across the actual provider call.
+func (o *Orchestrator) allowPickupEval(agentID uuid.UUID) bool {
+	o.pickupEvalMu.Lock()
+	defer o.pickupEvalMu.Unlock()
+	if last, ok := o.lastPickupEvalAt[agentID]; ok && time.Since(last) < pickupEvalCooldown {
+		return false
+	}
+	o.lastPickupEvalAt[agentID] = time.Now()
+	return true
+}
+
+const pickupClassifyToolName = "classify_message"
+
+// pickupClassifyTool is phase 1's entire job description: decide,
+// don't answer. RequireToolCall is always set alongside this (see
+// evaluateOnePickup) — provider.GenerateRequest.RequireToolCall's own
+// doc comment covers why that's correct here specifically, unlike any
+// real reply.
+func pickupClassifyTool() provider.ToolDef {
+	return provider.ToolDef{
+		Name: pickupClassifyToolName,
+		Description: "Decide whether the message below needs a response from you " +
+			"specifically. Do not write that response here — only classify.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"needs_response": map[string]any{
+					"type": "boolean",
+					"description": "True if this is an actionable request or question " +
+						"you could meaningfully help with. False for casual chatter, " +
+						"something clearly addressed to someone else, or anything that " +
+						"doesn't need a reply.",
+				},
+			},
+			"required": []string{"needs_response"},
+		},
+	}
+}
+
+// pickupClassificationModel names the cheapest/fastest model this
+// provider offers for a minimal yes/no classification call, distinct
+// from whatever model an agent's own real replies use. Anthropic has a
+// genuinely separate, meaningfully cheaper tier (Haiku) than this
+// codebase's own Sonnet default. OpenAI's own already-configured
+// default (gpt-4o-mini, see provider/openai's own defaultModel) is
+// itself the cost-effective tier — "" here leaves the client's default
+// in place rather than guessing at another OpenAI model id this
+// codebase has never verified exists, per the build brief's own
+// instruction to say so plainly rather than guess.
+func pickupClassificationModel(p agent.Provider) string {
+	switch p {
+	case agent.ProviderAnthropic:
+		return "claude-haiku-4-5-20251001"
+	default:
+		return ""
+	}
+}
+
+// EvaluateForPickup runs ADR-007 batch B's phase 1 for every agent in
+// roomAgents against triggering, one independent goroutine per agent —
+// the same "never block the request that received the message"
+// reasoning as TriggerReply. Only ever called when the room's own
+// autonomous_pickup_enabled is on and the message wasn't addressed to
+// anyone (CreateHandler's own gate); this has no opinion on either of
+// those, it just runs the evaluation once asked to.
+func (o *Orchestrator) EvaluateForPickup(roomAgents []agent.Agent, roomOwnerID *uuid.UUID, triggering Message) {
+	if skipPickupEvaluation(triggering.Content) {
+		return
+	}
+	for _, a := range roomAgents {
+		go o.evaluateOnePickup(a, roomOwnerID, triggering)
+	}
+}
+
+// evaluateOnePickup is one agent's own phase 1 + (conditionally) phase
+// 2. Phase 1 is a minimal, distinct call — a fresh system prompt and
+// just the one message being screened, no room framing, no history, no
+// create_task/request_handoff tools, nothing this agent's own real
+// reply path builds — deliberately not a reuse of buildGenerateRequest,
+// per the build brief's own "a distinct, minimal call, not a reuse of
+// the full reply-generation path." Phase 2 (a real invoke()) only ever
+// runs for whichever agent's own atomic ClaimForPickup actually wins —
+// see that method's own doc comment for the concurrency guarantee.
+func (o *Orchestrator) evaluateOnePickup(a agent.Agent, roomOwnerID *uuid.UUID, triggering Message) {
+	ctx, cancel := context.WithTimeout(context.Background(), generationTimeout)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ERROR message: panic during pickup classification for agent %s: %v", a.ID, r)
+		}
+	}()
+
+	if !o.allowPickupEval(a.ID) {
+		return
+	}
+
+	client, err := o.resolveClient(ctx, roomOwnerID, a)
+	if err != nil {
+		log.Printf("ERROR message: resolve provider client for agent %s pickup classification: %v", a.ID, err)
+		return
+	}
+
+	resp, err := client.Generate(ctx, provider.GenerateRequest{
+		SystemPrompt: fmt.Sprintf(
+			"You are silently screening one message in a chat room, on %s's behalf. "+
+				"Decide only whether it needs a response from %s — do not write a reply.",
+			a.Name, a.Name,
+		),
+		Messages:        []provider.Message{{Role: "user", Content: triggering.Content}},
+		Tools:           []provider.ToolDef{pickupClassifyTool()},
+		RequireToolCall: true,
+		Model:           pickupClassificationModel(a.Provider),
+	})
+	if err != nil {
+		log.Printf("ERROR message: pickup classification call for agent %s: %v", a.ID, err)
+		return
+	}
+
+	// Real spend, recorded and published the same as any other real
+	// call (ADR-007 batch B, build brief item 7) — never silently
+	// excluded from the cost pill just because it produced no visible
+	// reply. See RecordPickupEvaluationUsage's own doc comment for why
+	// this is a dedicated ledger, not a messages row.
+	if err := o.messages.RecordPickupEvaluationUsage(ctx, triggering.RoomID, a.ID, resp.InputTokens, resp.OutputTokens); err != nil {
+		log.Printf("ERROR message: record pickup evaluation usage for agent %s: %v", a.ID, err)
+	} else {
+		o.hub.Publish(triggering.RoomID, realtime.NewPickupUsageMessage(triggering.RoomID, a.ID, resp.InputTokens, resp.OutputTokens))
+	}
+
+	needsResponse := false
+	for _, call := range resp.ToolCalls {
+		if call.Name != pickupClassifyToolName {
+			continue
+		}
+		if v, ok := call.Input["needs_response"].(bool); ok {
+			needsResponse = v
+		}
+	}
+	if !needsResponse {
+		return
+	}
+
+	// Phase 2's atomic claim (build brief item 5) — exactly one agent
+	// that said "yes" gets to actually generate a real reply, the same
+	// "conditional UPDATE, check rows affected" guarantee
+	// task.Store.Claim already proves safe under real concurrency.
+	// Losing this race is normal, not an error: it means another agent
+	// got there first.
+	claimed, err := o.messages.ClaimForPickup(ctx, triggering.ID, a.ID)
+	if err != nil {
+		log.Printf("ERROR message: claim message %s for pickup by agent %s: %v", triggering.ID, a.ID, err)
+		return
+	}
+	if !claimed {
+		return
+	}
+
+	// TriggerReply, not a direct invoke() call: phase 2 is a genuinely
+	// fresh invocation and gets the full generationTimeout budget of its
+	// own goroutine/context, exactly like any other real reply —
+	// reusing this function's own ctx here would hand phase 2 whatever
+	// time phase 1's own call happened to leave on its already-ticking
+	// timeout instead.
+	o.TriggerReply(a.ID, roomOwnerID, triggering, 0)
 }
 
 // fail inserts and publishes a visible failure message — ADR-004: a

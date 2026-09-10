@@ -17,19 +17,45 @@ import "context"
 type GenerateRequest struct {
 	SystemPrompt string
 	Messages     []Message
+	// Model overrides the client's own default model for this call only
+	// — "" leaves the client's configured default in place, its usual
+	// state for every real reply. Exists for ADR-007 batch B's phase-1
+	// pickup classification, a distinct, minimal, cheap call each
+	// provider client's caller can point at that provider's own
+	// cheaper/faster tier without needing a second Client instance
+	// (and a second resolved credential) just to change one string.
+	Model string
 	// Tools the model may call this turn. Nil/empty means no tool-use
 	// capability is offered at all — not merely unused: a model can only
 	// call a tool that was actually declared for this specific request.
 	Tools []ToolDef
 	// RequireToolCall forces the model to call one of Tools rather than
 	// leaving that to its own judgment (each provider's default, "auto",
-	// left in place when this is false). No production caller in this
-	// codebase sets it: an agent deciding *not* to call mention_agent (or,
-	// batch C, create_task/request_handoff) is a legitimate, expected
-	// outcome, never something to force past. It exists for exactly one
-	// real use — a test that needs a live provider call to deterministically
-	// exercise the tool-call parsing path can't rely on prompt-following
-	// alone to guarantee that.
+	// left in place when this is false).
+	//
+	// Banned for any call whose output is itself the real, visible
+	// product of the turn — a reply, or an agent's own judgment call
+	// about whether to use mention_agent/create_task/request_handoff.
+	// An agent deciding *not* to call one of those tools is a legitimate,
+	// expected outcome, never something to force past; forcing a tool
+	// call there would distort the actual conversational answer a human
+	// is waiting on. Test-only for exactly this reason: a live-provider
+	// test exercising the tool-call parsing path can't rely on prompt-
+	// following alone to guarantee one arrives.
+	//
+	// Correct default, including in production, for a call that was
+	// never going to produce a free-text reply in the first place — a
+	// dedicated classification/decision step whose entire output is
+	// meant to be a structured signal a caller acts on programmatically
+	// (ADR-007 batch B's phase-1 pickup classification is exactly this).
+	// ADR-007's own build brief names the direct lesson: batch A found
+	// that free-text advisory framing asking a model to narrate an
+	// action *and* separately call the tool that would make it real
+	// isn't reliably honored — the model can narrate a hand-off in text
+	// without ever calling mention_agent. That gap is about protecting a
+	// real reply's own content; it doesn't apply here, since phase 1 has
+	// no reply content to protect — only a decision the calling code
+	// needs to be able to act on every time.
 	RequireToolCall bool
 }
 

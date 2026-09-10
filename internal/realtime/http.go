@@ -26,6 +26,12 @@ import (
 // this package rather than imported from internal/message.
 type MessageLister func(ctx context.Context, roomID uuid.UUID) ([]ChatMessage, error)
 
+// PickupUsageSummer returns roomID's running total phase-1 classification
+// token usage (ADR-007 batch B) for the stream's initial snapshot — a
+// function type for the same reason MessageLister is one: internal/message
+// already imports realtime, so realtime can't import back.
+type PickupUsageSummer func(ctx context.Context, roomID uuid.UUID) (inputTokens, outputTokens int, err error)
+
 type errorResponse struct {
 	Error string `json:"error"`
 }
@@ -57,6 +63,13 @@ type snapshot struct {
 	Events   []event.Event   `json:"events"`
 	Presence []agentPresence `json:"presence"`
 	Messages []ChatMessage   `json:"messages"`
+	// PickupEvalInputTokens/PickupEvalOutputTokens are ADR-007 batch B's
+	// running total for this room as of connect time — the cost pill's
+	// seed value; live PickupUsage messages increment it from there for
+	// whoever's already watching (see realtime.PickupUsage's own doc
+	// comment).
+	PickupEvalInputTokens  int `json:"pickup_eval_input_tokens"`
+	PickupEvalOutputTokens int `json:"pickup_eval_output_tokens"`
 }
 
 // StreamHandler returns the handler for GET /v1/rooms/{room_id}/stream.
@@ -87,7 +100,7 @@ type snapshot struct {
 // far longer. It narrows the gap; it doesn't eliminate it — a fully
 // robust bound on that needs an application-level ping/pong (WebSocket),
 // which ADR-003 explicitly defers.
-func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, listMessages MessageLister, hub *Hub, rdb *redis.Client) http.HandlerFunc {
+func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, listMessages MessageLister, sumPickupUsage PickupUsageSummer, hub *Hub, rdb *redis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := user.FromContext(r.Context())
 		if !ok {
@@ -175,12 +188,24 @@ func StreamHandler(rooms *room.Store, agents *agent.Store, events *event.Store, 
 			recentMessages = []ChatMessage{}
 		}
 
+		pickupInputTokens, pickupOutputTokens, err := sumPickupUsage(ctx, roomID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to sum pickup evaluation usage")
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.WriteHeader(http.StatusOK)
 
-		if !writeSSEEvent(w, flusher, "snapshot", snapshot{Events: recentEvents, Presence: presence, Messages: recentMessages}) {
+		if !writeSSEEvent(w, flusher, "snapshot", snapshot{
+			Events:                 recentEvents,
+			Presence:               presence,
+			Messages:               recentMessages,
+			PickupEvalInputTokens:  pickupInputTokens,
+			PickupEvalOutputTokens: pickupOutputTokens,
+		}) {
 			return
 		}
 

@@ -124,7 +124,7 @@ func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID
 		return
 	}
 
-	updated, err := t.rooms.Update(ctx, roomID, &title, nil, nil)
+	updated, err := t.rooms.Update(ctx, roomID, &title, nil, nil, nil)
 	if err != nil {
 		log.Printf("ERROR message: apply generated title for room %s: %v", roomID, err)
 		return

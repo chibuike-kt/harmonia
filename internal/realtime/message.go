@@ -17,10 +17,11 @@ import (
 type Kind string
 
 const (
-	KindEvent    Kind = "event"
-	KindPresence Kind = "presence"
-	KindMessage  Kind = "message"
-	KindRoom     Kind = "room"
+	KindEvent       Kind = "event"
+	KindPresence    Kind = "presence"
+	KindMessage     Kind = "message"
+	KindRoom        Kind = "room"
+	KindPickupUsage Kind = "pickup_usage"
 )
 
 // Message is what flows through the Hub — a tagged union of the distinct
@@ -33,11 +34,12 @@ const (
 // single tagged type rather than separate ones, so a subscriber has one
 // channel type to read regardless of which kind arrives.
 type Message struct {
-	Kind     Kind               `json:"kind"`
-	Event    *protocol.Envelope `json:"event,omitempty"`
-	Presence *Presence          `json:"presence,omitempty"`
-	Message  *ChatMessage       `json:"message,omitempty"`
-	Room     *RoomUpdate        `json:"room,omitempty"`
+	Kind        Kind               `json:"kind"`
+	Event       *protocol.Envelope `json:"event,omitempty"`
+	Presence    *Presence          `json:"presence,omitempty"`
+	Message     *ChatMessage       `json:"message,omitempty"`
+	Room        *RoomUpdate        `json:"room,omitempty"`
+	PickupUsage *PickupUsage       `json:"pickup_usage,omitempty"`
 }
 
 // ChatMessage mirrors internal/message.Message's wire shape. Defined
@@ -76,6 +78,23 @@ type RoomUpdate struct {
 	Name   string    `json:"name"`
 }
 
+// PickupUsage is one phase-1 classification call's real token usage
+// (ADR-007 batch B) — published live so a room that's already open
+// reflects the cost pill's running total without waiting for a reload,
+// the same reasoning ChatMessage's own InputTokens/OutputTokens serve
+// for a real reply. Never persisted as a Message itself (see
+// internal/message.Store.RecordPickupEvaluationUsage's own doc comment
+// for why it's a dedicated ledger, not a messages row) — this is purely
+// the live half of that same data, an incremental delta for whoever's
+// already watching, not the source of truth (a fresh snapshot's own
+// aggregate is).
+type PickupUsage struct {
+	RoomID       uuid.UUID `json:"room_id"`
+	AgentID      uuid.UUID `json:"agent_id"`
+	InputTokens  int       `json:"input_tokens"`
+	OutputTokens int       `json:"output_tokens"`
+}
+
 // Presence is an agent's status transition. Ephemeral by design — never
 // persisted to the append-only events table (see ADR-003) — mirrored
 // instead into a short-lived Redis key for a client connecting mid-session.
@@ -109,4 +128,14 @@ func NewChatMessage(msg ChatMessage) Message {
 // same ordering rule as NewEventMessage.
 func NewRoomRenamedMessage(roomID uuid.UUID, name string) Message {
 	return Message{Kind: KindRoom, Room: &RoomUpdate{RoomID: roomID, Name: name}}
+}
+
+// NewPickupUsageMessage wraps one phase-1 classification call's real
+// token usage for publishing. Call this only after
+// RecordPickupEvaluationUsage's own insert has committed — same
+// ordering rule as NewEventMessage.
+func NewPickupUsageMessage(roomID, agentID uuid.UUID, inputTokens, outputTokens int) Message {
+	return Message{Kind: KindPickupUsage, PickupUsage: &PickupUsage{
+		RoomID: roomID, AgentID: agentID, InputTokens: inputTokens, OutputTokens: outputTokens,
+	}}
 }

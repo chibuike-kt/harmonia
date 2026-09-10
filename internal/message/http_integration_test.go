@@ -54,6 +54,18 @@ type fakeProviderAgent struct {
 	// cascade when a room hasn't opted in, not merely that the fake
 	// cooperated by staying quiet.
 	toolCalls []provider.ToolCall
+	// pickupClassifyAs, if set, makes this fake answer ADR-007 batch B's
+	// own phase-1 classify_message tool call distinctly from its
+	// ordinary content/toolCalls above — needed so one fake client can
+	// serve both a phase-1 classification request (recognized by
+	// classify_message being one of req.Tools) and, for whichever agent
+	// actually wins phase 2's claim, a real phase-2 reply request, each
+	// with the response appropriate to what was actually asked.
+	pickupClassifyAs *bool
+	// pickupUsage is the fixed (input, output) token pair returned
+	// alongside pickupClassifyAs's tool call — real-looking usage a test
+	// can assert RecordPickupEvaluationUsage actually persisted.
+	pickupUsage [2]int
 }
 
 func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
@@ -68,6 +80,17 @@ func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateReq
 	}
 	if f.err != nil {
 		return provider.GenerateResponse{}, f.err
+	}
+	if f.pickupClassifyAs != nil {
+		for _, t := range req.Tools {
+			if t.Name == pickupClassifyToolName {
+				return provider.GenerateResponse{
+					ToolCalls:    []provider.ToolCall{{Name: pickupClassifyToolName, Input: map[string]any{"needs_response": *f.pickupClassifyAs}}},
+					InputTokens:  f.pickupUsage[0],
+					OutputTokens: f.pickupUsage[1],
+				}, nil
+			}
+		}
 	}
 	return provider.GenerateResponse{Content: f.content, ToolCalls: f.toolCalls}, nil
 }
@@ -546,6 +569,207 @@ func TestIntegration_CreateHandler_TwoAgentsRequireExplicitMention(t *testing.T)
 	}
 }
 
+// TestIntegration_CreateHandler_PickupDisabledByDefault_DoesNothing is
+// ADR-007 batch B's own suppression proof, the same discipline
+// TestIntegration_Orchestrator_CascadingDisabledByDefault_MentionInReplyDoesNothing
+// already applies to cascading: autonomous_pickup_enabled defaults
+// false, and an unaddressed, genuinely actionable-looking message in a
+// two-agent room triggers no phase-1 evaluation at all while it's off —
+// not because a cooperative fake stays quiet, but because CreateHandler
+// itself never calls EvaluateForPickup when the room hasn't opted in.
+func TestIntegration_CreateHandler_PickupDisabledByDefault_DoesNothing(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-pickup-disabled-")
+	rm, err := rooms.Create(ctx, &owner.ID, "pickup-disabled-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if rm.AutonomousPickupEnabled {
+		t.Fatal("expected autonomous_pickup_enabled to default false")
+	}
+	if _, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-pickup-disabled-1"); err != nil {
+		t.Fatalf("register first agent: %v", err)
+	}
+	if _, err := agents.Register(ctx, rm.ID, "GPT", agent.ProviderOpenAI, nil, "hash-pickup-disabled-2"); err != nil {
+		t.Fatalf("register second agent: %v", err)
+	}
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		return nil, fmt.Errorf("no agent should ever be invoked while autonomous pickup is disabled (provider %s)", p)
+	}
+	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
+	}
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+
+	httpRec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"does anyone want to help with this important task?"}`)
+	if httpRec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body = %s", httpRec.Code, http.StatusCreated, httpRec.Body.String())
+	}
+
+	first := rec.recv(t)
+	if first.Kind != realtime.KindMessage {
+		t.Fatalf("first published message = %+v, want the human message", first)
+	}
+
+	select {
+	case msg := <-rec.ch:
+		t.Fatalf("unexpected second publish = %+v — pickup is disabled, nothing should have been evaluated", msg)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	inputTokens, outputTokens, err := s.SumPickupEvaluationUsage(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("SumPickupEvaluationUsage: %v", err)
+	}
+	if inputTokens != 0 || outputTokens != 0 {
+		t.Fatalf("SumPickupEvaluationUsage = (%d, %d), want (0, 0) — no evaluation should have run", inputTokens, outputTokens)
+	}
+}
+
+// TestIntegration_Orchestrator_PickupEnabled_ExactlyOneClaimsAndRepliesWithCostRecorded
+// is the build brief's own central proof for batch B: two agents, both
+// flagging the same unaddressed message "yes" in phase 1, only one of
+// which actually claims it and generates a real reply — and both
+// agents' phase-1 spend is captured (build brief item 7), regardless of
+// which one won phase 2. The exactly-one-wins guarantee itself is
+// proven at higher concurrency, independent of any fake provider, by
+// tests/concurrency's own TestIntegration_OnlyOneMessagePickupClaimSucceeds
+// — this test proves the end-to-end wiring around that guarantee, not
+// the guarantee's own atomicity a second time.
+func TestIntegration_Orchestrator_PickupEnabled_ExactlyOneClaimsAndRepliesWithCostRecorded(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-pickup-enabled-")
+	rm, err := rooms.Create(ctx, &owner.ID, "pickup-enabled-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	enabled := true
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, &enabled); err != nil {
+		t.Fatalf("enable autonomous pickup: %v", err)
+	}
+
+	yes1, err := agents.Register(ctx, rm.ID, "Yes1", agent.ProviderAnthropic, nil, "hash-pickup-yes1")
+	if err != nil {
+		t.Fatalf("register Yes1: %v", err)
+	}
+	yes2, err := agents.Register(ctx, rm.ID, "Yes2", agent.ProviderOpenAI, nil, "hash-pickup-yes2")
+	if err != nil {
+		t.Fatalf("register Yes2: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+	t.Setenv("OPENAI_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+
+	trueVal := true
+	orch.newProviderClient = func(p agent.Provider, _ string) (provider.Agent, error) {
+		switch p {
+		case agent.ProviderAnthropic:
+			return &fakeProviderAgent{content: "Yes1's real reply", pickupClassifyAs: &trueVal, pickupUsage: [2]int{12, 3}}, nil
+		case agent.ProviderOpenAI:
+			return &fakeProviderAgent{content: "Yes2's real reply", pickupClassifyAs: &trueVal, pickupUsage: [2]int{15, 4}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected provider %s", p)
+		}
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "does anyone want to help review this?", nil)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.EvaluateForPickup([]agent.Agent{yes1, yes2}, rm.OwnerID, triggering)
+
+	// 2 phase-1 usage publishes (one per agent) + running/reply/available
+	// for whichever one agent's own claim actually won phase 2 — 5
+	// messages total, arriving in whatever order two independent
+	// goroutines racing against each other happen to complete in.
+	var usageMsgs []realtime.PickupUsage
+	var winnerReply *realtime.ChatMessage
+	sawRunning := map[uuid.UUID]bool{}
+	sawAvailable := map[uuid.UUID]bool{}
+	for i := 0; i < 5; i++ {
+		msg := rec.recv(t)
+		switch msg.Kind {
+		case realtime.KindPickupUsage:
+			usageMsgs = append(usageMsgs, *msg.PickupUsage)
+		case realtime.KindPresence:
+			if msg.Presence.Status == string(agent.StatusRunning) {
+				sawRunning[msg.Presence.AgentID] = true
+			} else {
+				sawAvailable[msg.Presence.AgentID] = true
+			}
+		case realtime.KindMessage:
+			winnerReply = msg.Message
+		default:
+			t.Fatalf("unexpected message kind %q", msg.Kind)
+		}
+	}
+
+	if len(usageMsgs) != 2 {
+		t.Fatalf("got %d pickup usage messages, want 2 (one per agent)", len(usageMsgs))
+	}
+	if winnerReply == nil {
+		t.Fatal("no real reply arrived — expected exactly one agent to claim and reply")
+	}
+	if winnerReply.AgentID == nil {
+		t.Fatal("winning reply has no AgentID")
+	}
+	winnerID := *winnerReply.AgentID
+	if winnerID != yes1.ID && winnerID != yes2.ID {
+		t.Fatalf("winner %s is neither Yes1 nor Yes2", winnerID)
+	}
+	if !sawRunning[winnerID] || !sawAvailable[winnerID] {
+		t.Fatalf("winner %s missing running/available presence: running=%v available=%v", winnerID, sawRunning[winnerID], sawAvailable[winnerID])
+	}
+	if len(sawRunning) != 1 || len(sawAvailable) != 1 {
+		t.Fatalf("expected exactly one agent to actually run a real generation, got running=%v available=%v", sawRunning, sawAvailable)
+	}
+
+	// Cost visibility (build brief item 7): both agents' phase-1 spend
+	// is captured regardless of who won phase 2 — the loser's own
+	// evaluation was still a real call.
+	inputTokens, outputTokens, err := s.SumPickupEvaluationUsage(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("SumPickupEvaluationUsage: %v", err)
+	}
+	if inputTokens != 12+15 || outputTokens != 3+4 {
+		t.Fatalf("SumPickupEvaluationUsage = (%d, %d), want (27, 7) — both agents' phase-1 usage", inputTokens, outputTokens)
+	}
+
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored messages = %d, want 2 (the trigger + exactly one real reply)", len(stored))
+	}
+}
+
 // TestIntegration_Orchestrator_RoomFramingInSystemPrompt proves ADR-004's
 // 2026-09-07 addendum's other half reaches the actual provider call: the
 // room's name, its oldest-in-view message as an objective stand-in, its
@@ -992,7 +1216,7 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil); err != nil {
 		t.Fatalf("enable cascading: %v", err)
 	}
 	ping, err := agents.Register(ctx, rm.ID, "Ping", agent.ProviderAnthropic, nil, "hash-cascade-cap-ping")
@@ -1116,7 +1340,7 @@ func TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent(t *testing.T
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil); err != nil {
 		t.Fatalf("enable cascading: %v", err)
 	}
 	busy, err := agents.Register(ctx, rm.ID, "Busy", agent.ProviderAnthropic, nil, "hash-busy-redirect-busy")
@@ -1403,8 +1627,12 @@ func TestIntegration_StreamHandler_SnapshotIncludesMessages(t *testing.T) {
 		return out, nil
 	}
 
+	sumPickupUsage := func(ctx context.Context, roomID uuid.UUID) (int, int, error) {
+		return s.SumPickupEvaluationUsage(ctx, roomID)
+	}
+
 	hub := realtime.NewHub()
-	streamHandler := realtime.StreamHandler(rooms, agents, events, listMessages, hub, rdb)
+	streamHandler := realtime.StreamHandler(rooms, agents, events, listMessages, sumPickupUsage, hub, rdb)
 
 	sessionPlaintext, sessionHash, err := user.GenerateSessionToken()
 	if err != nil {

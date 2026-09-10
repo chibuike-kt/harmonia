@@ -29,6 +29,8 @@ interface RoomInfoPanelProps {
   onAgentAdded: (agent: AddedAgent) => void;
   agentCascadingEnabled: boolean;
   onToggleCascading: (enabled: boolean) => void;
+  autonomousPickupEnabled: boolean;
+  onTogglePickup: (enabled: boolean) => void;
 }
 
 /**
@@ -54,6 +56,8 @@ export function RoomInfoPanel({
   onAgentAdded,
   agentCascadingEnabled,
   onToggleCascading,
+  autonomousPickupEnabled,
+  onTogglePickup,
 }: RoomInfoPanelProps) {
   return (
     <div
@@ -154,6 +158,39 @@ export function RoomInfoPanel({
                   <span
                     className={`absolute top-0.5 h-4 w-4 rounded-full bg-[var(--login-bg)] transition-transform ${
                       agentCascadingEnabled
+                        ? "translate-x-[18px]"
+                        : "translate-x-0.5"
+                    }`}
+                  />
+                </span>
+              </button>
+            </div>
+
+            <div className="mb-5">
+              <div className="mb-2 font-[family-name:var(--login-font-mono)] text-[11px] uppercase tracking-wide text-[var(--login-text-muted)]">
+                Autonomous pickup
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autonomousPickupEnabled}
+                onClick={() => onTogglePickup(!autonomousPickupEnabled)}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-[var(--login-border-strong)] px-3 py-2 text-left hover:border-[var(--login-accent)]"
+              >
+                <span className="text-[13px] leading-[1.4] text-[var(--login-text)]">
+                  Let every agent evaluate unaddressed messages and pick up ones
+                  that need a reply. Real spend per evaluation. Off by default.
+                </span>
+                <span
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                    autonomousPickupEnabled
+                      ? "bg-[var(--login-accent)]"
+                      : "bg-[var(--login-border-strong)]"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-[var(--login-bg)] transition-transform ${
+                      autonomousPickupEnabled
                         ? "translate-x-[18px]"
                         : "translate-x-0.5"
                     }`}

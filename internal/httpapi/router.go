@@ -158,9 +158,15 @@ func NewRouter(st *store.Store) http.Handler {
 		}
 		return out, nil
 	}
+	// sumPickupUsage adapts message.Store.SumPickupEvaluationUsage to
+	// realtime.PickupUsageSummer — same cycle-avoidance reasoning as
+	// listMessages above.
+	sumPickupUsage := func(ctx context.Context, roomID uuid.UUID) (int, int, error) {
+		return messages.SumPickupEvaluationUsage(ctx, roomID)
+	}
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
-		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, listMessages, hub, st.Redis))
+		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, listMessages, sumPickupUsage, hub, st.Redis))
 	})
 
 	githubCfg := user.NewGitHubConfig(

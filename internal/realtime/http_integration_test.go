@@ -29,6 +29,12 @@ func noMessages(context.Context, uuid.UUID) ([]ChatMessage, error) {
 	return []ChatMessage{}, nil
 }
 
+// noPickupUsage is a PickupUsageSummer stub for tests that don't
+// exercise ADR-007 batch B's pickup-evaluation cost tracking.
+func noPickupUsage(context.Context, uuid.UUID) (int, int, error) {
+	return 0, 0, nil
+}
+
 // subscriberCount reads h's internal subscriber count for roomID
 // directly — the most reliable way to assert "the leak is gone" is to
 // look at the exact state a leak would corrupt, not an indirect proxy
@@ -101,7 +107,7 @@ func TestIntegration_StreamHandler_DisconnectUnsubscribes(t *testing.T) {
 	}
 
 	hub := NewHub()
-	streamHandler := StreamHandler(rooms, agents, events, noMessages, hub, rdb)
+	streamHandler := StreamHandler(rooms, agents, events, noMessages, noPickupUsage, hub, rdb)
 
 	// StreamHandler reads chi.URLParam("room_id") — inject a route
 	// context directly rather than standing up a full chi.Router, since
@@ -213,7 +219,7 @@ func TestIntegration_StreamHandler_RoomOwnershipAndSnapshot(t *testing.T) {
 	}
 
 	hub := NewHub()
-	h := StreamHandler(rooms, agents, events, noMessages, hub, rdb)
+	h := StreamHandler(rooms, agents, events, noMessages, noPickupUsage, hub, rdb)
 
 	withRoomIDParam := func(roomID uuid.UUID, next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

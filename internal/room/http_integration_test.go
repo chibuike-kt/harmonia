@@ -247,7 +247,7 @@ func TestIntegration_ListHandler_PinnedFirst(t *testing.T) {
 		t.Fatalf("backdate stale room: %v", err)
 	}
 	pinTrue := true
-	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil); err != nil {
+	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil, nil); err != nil {
 		t.Fatalf("pin stale room: %v", err)
 	}
 
