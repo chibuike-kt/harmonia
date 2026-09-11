@@ -10,11 +10,13 @@ const PROTECTED_PREFIXES = ["/dashboard", "/rooms", "/connect-agents"];
 
 // Fast, cookie-presence-only redirect — this cannot tell an expired or
 // revoked session from a valid one, only whether a cookie exists at all.
-// Middleware runs on the Edge runtime with no access to the Go backend's
-// database, so that's as far as it can go; useRequireAuth (see
-// lib/useRequireAuth.ts) closes the gap with a real GET /v1/users/me
-// check once the page itself loads.
-export function middleware(request: NextRequest) {
+// This runs on proxy.ts's own request-interception layer (Node.js
+// runtime as of Next.js 16, no longer Edge — see the middleware-to-proxy
+// migration) with no access to the Go backend's database either way, so
+// that's as far as it can go; useRequireAuth (see lib/useRequireAuth.ts)
+// closes the gap with a real GET /v1/users/me check once the page itself
+// loads.
+export function proxy(request: NextRequest) {
   const hasSessionCookie = request.cookies.has(SESSION_COOKIE);
   const { pathname } = request.nextUrl;
 

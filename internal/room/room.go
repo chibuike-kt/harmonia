@@ -28,6 +28,13 @@ type Room struct {
 	ID     uuid.UUID `json:"id"`
 	Name   string    `json:"name"`
 	Status string    `json:"status"`
+	// Objective is nil until either a human sets it (PATCH, same as
+	// name/pinned) or the async objective-generation job
+	// (internal/message.ObjectiveGenerator) produces one from the room's
+	// early messages once there's enough content. Unlike Name, there's no
+	// non-nil placeholder — NULL itself is the "not yet set" sentinel; see
+	// migrations/0013_room_objective.up.sql.
+	Objective *string `json:"objective,omitempty"`
 	// OwnerID is nullable only for rooms created before Phase 2 — every
 	// room created through CreateHandler has one (see ADR-002).
 	OwnerID   *uuid.UUID `json:"owner_id,omitempty"`
@@ -67,8 +74,8 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO rooms (name, status, owner_id) VALUES ($1, 'active', $2)
-		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled
-	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled)
+		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, objective
+	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.Objective)
 	return r, err
 }
 
@@ -76,23 +83,27 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled FROM rooms WHERE id = $1
-	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled)
+		SELECT id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, objective FROM rooms WHERE id = $1
+	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.Objective)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
 	return r, err
 }
 
-// Update partially updates a room's name and/or pinned state — nil
-// leaves that field unchanged, same COALESCE pattern as
+// Update partially updates a room's name, pinned state, and/or
+// objective — nil leaves that field unchanged, same COALESCE pattern as
 // internal/user.Store.UpdateMe. pinned is a bool at this API boundary
 // (what a PATCH body naturally carries) but maps to the nullable
 // pinned_at timestamp underneath: true sets it to now(), false clears
-// it, nil (omitted in the request) leaves it alone. Returns ErrNotFound
-// if no room matches roomID — ownership is the caller's job, same as
-// every other room-scoped handler (see realtime.StreamHandler).
-func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool, agentCascadingEnabled *bool, autonomousPickupEnabled *bool) (Room, error) {
+// it, nil (omitted in the request) leaves it alone. objective follows
+// the plain COALESCE pattern the other nullable fields use — same as
+// name, there's no way to clear it back to NULL through this method, only
+// to set it, which is all either a human PATCH or the auto-generation job
+// ever needs to do. Returns ErrNotFound if no room matches roomID —
+// ownership is the caller's job, same as every other room-scoped handler
+// (see realtime.StreamHandler).
+func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool, agentCascadingEnabled *bool, autonomousPickupEnabled *bool, objective *string) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		UPDATE rooms
@@ -103,10 +114,11 @@ func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinn
 		        ELSE NULL
 		    END,
 		    agent_cascading_enabled = COALESCE($4, agent_cascading_enabled),
-		    autonomous_pickup_enabled = COALESCE($5, autonomous_pickup_enabled)
+		    autonomous_pickup_enabled = COALESCE($5, autonomous_pickup_enabled),
+		    objective = COALESCE($6, objective)
 		WHERE id = $1
-		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled
-	`, roomID, name, pinned, agentCascadingEnabled, autonomousPickupEnabled).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled)
+		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, objective
+	`, roomID, name, pinned, agentCascadingEnabled, autonomousPickupEnabled, objective).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.Objective)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -118,13 +130,14 @@ func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinn
 // own rooms, and status/name are all a dashboard room-list item needs
 // beyond recency and live state).
 type Summary struct {
-	ID                    uuid.UUID  `json:"id"`
-	Name                  string     `json:"name"`
-	LastActivityAt        time.Time  `json:"last_activity_at"`
-	HasRunningAgent       bool       `json:"has_running_agent"`
+	ID                      uuid.UUID  `json:"id"`
+	Name                    string     `json:"name"`
+	LastActivityAt          time.Time  `json:"last_activity_at"`
+	HasRunningAgent         bool       `json:"has_running_agent"`
 	PinnedAt                *time.Time `json:"pinned_at,omitempty"`
 	AgentCascadingEnabled   bool       `json:"agent_cascading_enabled"`
 	AutonomousPickupEnabled bool       `json:"autonomous_pickup_enabled"`
+	Objective               *string    `json:"objective,omitempty"`
 }
 
 // ListByOwner returns ownerID's rooms, pinned first, then most recently
@@ -134,7 +147,7 @@ type Summary struct {
 // has, not N+1.
 func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.name, r.last_activity_at, r.pinned_at, r.agent_cascading_enabled, r.autonomous_pickup_enabled,
+		SELECT r.id, r.name, r.last_activity_at, r.pinned_at, r.agent_cascading_enabled, r.autonomous_pickup_enabled, r.objective,
 		       EXISTS (
 		           SELECT 1 FROM agents a WHERE a.room_id = r.id AND a.status = 'running'
 		       ) AS has_running_agent
@@ -153,7 +166,7 @@ func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, 
 	summaries := make([]Summary, 0)
 	for rows.Next() {
 		var sm Summary
-		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.AgentCascadingEnabled, &sm.AutonomousPickupEnabled, &sm.HasRunningAgent); err != nil {
+		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.AgentCascadingEnabled, &sm.AutonomousPickupEnabled, &sm.Objective, &sm.HasRunningAgent); err != nil {
 			return nil, err
 		}
 		summaries = append(summaries, sm)

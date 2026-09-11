@@ -57,7 +57,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // and published: this handler returns as soon as the human message is
 // durable, never blocking on a live provider call (ADR-004), regardless
 // of how many agents it addresses (ADR-006 batch A).
-func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store.Beginner, hub realtime.Publisher, orch *Orchestrator, titleGen *TitleGenerator) http.HandlerFunc {
+func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store.Beginner, hub realtime.Publisher, orch *Orchestrator, titleGen *TitleGenerator, objectiveGen *ObjectiveGenerator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := user.FromContext(r.Context())
 		if !ok {
@@ -206,10 +206,18 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		// room have now" is exactly what answers "was this the first,"
 		// and a fresh count is simpler and just as correct as threading
 		// that fact out of CreateHuman's own insert.
+		// Auto-objective trigger reuses this same post-commit count, one
+		// fixed threshold higher (see ObjectiveGenerator's own doc
+		// comment for why 1 message isn't enough) — fires exactly once,
+		// on whichever message first brings the room to that count, the
+		// same "count, don't thread a flag through the transaction"
+		// reasoning as the title trigger above.
 		if count, err := s.CountByRoom(ctx, roomID); err != nil {
-			log.Printf("ERROR message: count messages for room %s to check auto-title trigger: %v", roomID, err)
+			log.Printf("ERROR message: count messages for room %s to check auto-title/objective triggers: %v", roomID, err)
 		} else if count == 1 {
 			titleGen.GenerateTitle(roomID, rm.OwnerID, m.Content)
+		} else if count == objectiveGenerationThreshold {
+			objectiveGen.GenerateObjective(roomID, rm.OwnerID)
 		}
 
 		writeJSON(w, http.StatusCreated, m)

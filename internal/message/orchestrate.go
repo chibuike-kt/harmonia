@@ -261,7 +261,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	customInstructions, ownerName := o.loadOwnerContext(ctx, roomOwnerID)
 	framing := roomFraming{
 		roomName:        rm.Name,
-		objective:       objectiveFrom(history),
+		objective:       objectiveForFraming(rm, history),
 		ownerName:       ownerName,
 		otherAgentNames: agentNames(otherAgents),
 		// ADR-007 batch A: only worth telling the model it's busy and may
@@ -691,14 +691,29 @@ func agentNames(agents []agent.Agent) []string {
 // first message shouldn't balloon every subsequent invocation's framing.
 const framingObjectiveCap = 300
 
-// objectiveFrom mirrors the frontend's own RoomInfoPanel convention
-// exactly (see its own comment): there is no real captured "objective"
-// field on a room, so the oldest message in the currently-loaded history
-// stands in for one. That's the room's true first message only while
-// the room has fewer messages than recencyLimit — past that, this is
-// honestly just "the oldest message still in view," not a guarantee of
-// the room's actual original objective. Good enough for framing context,
-// not offered anywhere as a claim of precision.
+// objectiveForFraming prefers rm's own real, captured objective (set
+// either by a human PATCH or by ObjectiveGenerator — see
+// autoobjective.go) once one exists; only falls back to the oldest-
+// message stand-in (objectiveFrom, below) before that, since a fresh
+// room hasn't crossed objectiveGenerationThreshold yet and a human may
+// not have set one manually either. This is the one place besides
+// RoomInfoPanel that used to read the stand-in unconditionally — kept in
+// sync with it rather than left stale now that a real field exists.
+func objectiveForFraming(rm room.Room, history []Message) string {
+	if rm.Objective != nil && strings.TrimSpace(*rm.Objective) != "" {
+		return *rm.Objective
+	}
+	return objectiveFrom(history)
+}
+
+// objectiveFrom is objectiveForFraming's own fallback for a room that
+// hasn't got a real captured objective yet: the oldest message in the
+// currently-loaded history stands in for one. That's the room's true
+// first message only while the room has fewer messages than
+// recencyLimit — past that, this is honestly just "the oldest message
+// still in view," not a guarantee of the room's actual original
+// objective. Good enough for framing context, not offered anywhere as a
+// claim of precision.
 func objectiveFrom(history []Message) string {
 	if len(history) == 0 {
 		return ""

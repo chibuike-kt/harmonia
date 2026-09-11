@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef, useState } from "react";
 import { AddAgentMenu, type AddedAgent } from "./AddAgentMenu";
 import { CloseIcon } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
@@ -23,6 +24,7 @@ interface RoomInfoPanelProps {
   open: boolean;
   onClose: () => void;
   objective: string | null;
+  onEditObjective: (objective: string) => void;
   agents: RoomAgentSummary[];
   decisions: Decision[];
   roomId: string;
@@ -37,10 +39,13 @@ interface RoomInfoPanelProps {
  * Room info side panel — docs/design/room-mockup.html's info-panel,
  * scoped exactly to what the build brief calls buildable now:
  *
- * - Objective: the room's first message content, not a separately
- *   captured field — there's no real capture mechanism for an actual
- *   objective yet, so this is a stand-in, not a claim that a "real"
- *   objective exists somewhere.
+ * - Objective: a real, separately captured field (rooms.objective) —
+ *   generated asynchronously from the room's early messages once
+ *   there's enough content, same auto-generation/manual-override pattern
+ *   as the room's own name (see internal/message.ObjectiveGenerator).
+ *   Clicking it edits in place, same PATCH-on-commit convention as the
+ *   toggles below; once a human edits it, auto-generation never
+ *   overwrites it again.
  * - Agents: the room's registered agents, reusing the same
  *   GET /v1/rooms/{room_id}/agents data the composer's @-picker uses.
  * - Decisions: manually pinned messages only — no AI-driven extraction,
@@ -50,6 +55,7 @@ export function RoomInfoPanel({
   open,
   onClose,
   objective,
+  onEditObjective,
   agents,
   decisions,
   roomId,
@@ -59,6 +65,19 @@ export function RoomInfoPanel({
   autonomousPickupEnabled,
   onTogglePickup,
 }: RoomInfoPanelProps) {
+  const [editingObjective, setEditingObjective] = useState(false);
+  // Mirrors Sidebar's own rename-input convention: Escape must cancel
+  // without the blur it triggers also committing whatever's currently in
+  // the field.
+  const skipBlurCommitRef = useRef(false);
+
+  const commitObjective = (raw: string) => {
+    setEditingObjective(false);
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === objective) return;
+    onEditObjective(trimmed);
+  };
+
   return (
     <div
       className={
@@ -89,9 +108,40 @@ export function RoomInfoPanel({
               <div className="mb-2 font-[family-name:var(--login-font-mono)] text-[11px] uppercase tracking-wide text-[var(--login-text-muted)]">
                 Objective
               </div>
-              <p className="text-[13.5px] leading-[1.5] text-[var(--login-text)]">
-                {objective || "No messages yet in this room."}
-              </p>
+              {editingObjective ? (
+                <textarea
+                  autoFocus
+                  defaultValue={objective ?? ""}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.currentTarget.blur();
+                    }
+                    if (e.key === "Escape") {
+                      skipBlurCommitRef.current = true;
+                      setEditingObjective(false);
+                    }
+                  }}
+                  onBlur={(e) => {
+                    if (skipBlurCommitRef.current) {
+                      skipBlurCommitRef.current = false;
+                      return;
+                    }
+                    commitObjective(e.currentTarget.value);
+                  }}
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-[var(--login-accent)] bg-transparent p-2 text-[13.5px] leading-[1.5] text-[var(--login-text)] outline-none"
+                />
+              ) : (
+                <p
+                  onClick={() => setEditingObjective(true)}
+                  className="-mx-2 cursor-text rounded-lg px-2 py-1.5 text-[13.5px] leading-[1.5] text-[var(--login-text)] hover:bg-[var(--login-surface-2)]"
+                >
+                  {objective ||
+                    "Not enough conversation yet to summarize an objective — click to write one."}
+                </p>
+              )}
             </div>
 
             <div className="mb-5">

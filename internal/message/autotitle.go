@@ -19,30 +19,33 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/user"
 )
 
-// titleGenerationTimeout bounds one title-generation call. Short — this
-// is one tiny completion, not a full conversational reply — but not so
-// short that a slightly slow provider round trip fails needlessly.
-const titleGenerationTimeout = 30 * time.Second
+// platformGenerationTimeout bounds one platform-level generation call —
+// title (below) or objective (autoobjective.go), both scoped to the
+// room owner rather than any one agent. Short — each is one tiny
+// completion, not a full conversational reply — but not so short that a
+// slightly slow provider round trip fails needlessly.
+const platformGenerationTimeout = 30 * time.Second
 
 // maxGeneratedTitleLen caps a generated title's length as a safety net
 // against a model ignoring the "short" instruction — long enough for a
 // real title, short enough to render cleanly in the sidebar and header.
 const maxGeneratedTitleLen = 80
 
-// titleProviderPreference is the fixed order TitleGenerator tries the
-// room owner's connected BYOK credentials in, when more than one
-// provider is connected. Judgment call, stated plainly since the brief
-// asks for it: Anthropic first, then OpenAI. This is a platform-level
-// utility call with no room-scoped agent to take the preference from
-// (a fresh room may have none registered yet — that's the whole reason
-// this needs its own resolution, not the mentioned agent's own
+// platformProviderPreference is the fixed order a platform-level
+// generation job (TitleGenerator, ObjectiveGenerator) tries the room
+// owner's connected BYOK credentials in, when more than one provider is
+// connected. Judgment call, stated plainly since the brief asks for it:
+// Anthropic first, then OpenAI. Neither job is scoped to a single
+// agent.Provider the way Orchestrator's own resolveClient is (a fresh
+// room may have no agents registered yet — that's the whole reason
+// these need their own resolution, not a mentioned agent's own
 // provider), so some fixed order is unavoidable. Anthropic is this
 // codebase's own first-listed, first-class provider throughout
 // (agent.Provider's own const order, credentials' default client
 // order) — reusing that existing precedent here rather than inventing
 // a new one (e.g. cost-based or most-recently-connected) that this
 // codebase has no infrastructure to actually measure yet.
-var titleProviderPreference = []agent.Provider{agent.ProviderAnthropic, agent.ProviderOpenAI}
+var platformProviderPreference = []agent.Provider{agent.ProviderAnthropic, agent.ProviderOpenAI}
 
 // TitleGenerator generates a room's title from its first message,
 // asynchronously — same shape as Orchestrator (a goroutine with real
@@ -79,7 +82,7 @@ func NewTitleGenerator(rooms *room.Store, creds *credentials.Store, users *user.
 // honest state — not silently broken, just untitled.
 func (t *TitleGenerator) GenerateTitle(roomID uuid.UUID, ownerID *uuid.UUID, firstMessageContent string) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), titleGenerationTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), platformGenerationTimeout)
 		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
@@ -91,13 +94,13 @@ func (t *TitleGenerator) GenerateTitle(roomID uuid.UUID, ownerID *uuid.UUID, fir
 }
 
 func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID *uuid.UUID, firstMessageContent string) {
-	client, err := t.resolveClient(ctx, ownerID)
+	client, err := resolvePlatformProviderClient(ctx, t.credentials, ownerID, t.newProviderClient)
 	if err != nil {
 		log.Printf("ERROR message: resolve provider client for room %s title: %v", roomID, err)
 		return
 	}
 
-	resp, err := client.Generate(ctx, buildTitleRequest(firstMessageContent, t.loadCustomInstructions(ctx, ownerID)))
+	resp, err := client.Generate(ctx, buildTitleRequest(firstMessageContent, loadOwnerCustomInstructions(ctx, t.users, ownerID)))
 	if err != nil {
 		log.Printf("ERROR message: generate title for room %s: %v", roomID, err)
 		return
@@ -124,7 +127,7 @@ func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID
 		return
 	}
 
-	updated, err := t.rooms.Update(ctx, roomID, &title, nil, nil, nil)
+	updated, err := t.rooms.Update(ctx, roomID, &title, nil, nil, nil, nil)
 	if err != nil {
 		log.Printf("ERROR message: apply generated title for room %s: %v", roomID, err)
 		return
@@ -132,15 +135,18 @@ func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID
 	t.hub.Publish(roomID, realtime.NewRoomRenamedMessage(updated.ID, updated.Name))
 }
 
-// resolveClient resolves a provider client from one of ownerID's
-// connected BYOK credentials, trying titleProviderPreference in order,
-// then falling back to the same env vars the Orchestrator's own
-// dev-path fallback uses, in the same preference order. Unlike
-// Orchestrator.resolveClient, there's no single agent.Provider to
-// target — this call isn't scoped to any one agent.
-func (t *TitleGenerator) resolveClient(ctx context.Context, ownerID *uuid.UUID) (provider.Agent, error) {
-	for _, p := range titleProviderPreference {
-		client, err := t.credentials.Resolve(ctx, ownerID, p)
+// resolvePlatformProviderClient resolves a provider client from one of
+// ownerID's connected BYOK credentials, trying platformProviderPreference
+// in order, then falling back to the same env vars the Orchestrator's
+// own dev-path fallback uses, in the same preference order. Shared by
+// every platform-level generation job (TitleGenerator, ObjectiveGenerator
+// in autoobjective.go) — neither is scoped to a single agent.Provider the
+// way Orchestrator's own resolveClient is, so both need this
+// owner-preference-order resolution instead, and it's genuinely the same
+// logic for both, not merely similar.
+func resolvePlatformProviderClient(ctx context.Context, creds *credentials.Store, ownerID *uuid.UUID, newProviderClient newProviderClientFunc) (provider.Agent, error) {
+	for _, p := range platformProviderPreference {
+		client, err := creds.Resolve(ctx, ownerID, p)
 		if err == nil {
 			return client, nil
 		}
@@ -148,16 +154,16 @@ func (t *TitleGenerator) resolveClient(ctx context.Context, ownerID *uuid.UUID) 
 			return nil, err
 		}
 	}
-	for _, p := range titleProviderPreference {
+	for _, p := range platformProviderPreference {
 		envKey := envKeyFor(p)
 		if envKey == "" {
 			continue
 		}
 		if apiKey := os.Getenv(envKey); apiKey != "" {
-			return t.newProviderClient(p, apiKey)
+			return newProviderClient(p, apiKey)
 		}
 	}
-	return nil, fmt.Errorf("message: no provider credential available to generate a room title")
+	return nil, fmt.Errorf("message: no provider credential available for this platform-level generation call")
 }
 
 // buildTitleRequest asks for a short, plain title with no framing
@@ -180,17 +186,20 @@ func buildTitleRequest(firstMessageContent, customInstructions string) provider.
 	}
 }
 
-// loadCustomInstructions mirrors Orchestrator.loadCustomInstructions —
-// same soft-fail posture: a lookup failure logs and falls back to no
-// instructions rather than failing title generation, which has no
-// ADR-004 requirement to surface a visible failure.
-func (t *TitleGenerator) loadCustomInstructions(ctx context.Context, ownerID *uuid.UUID) string {
+// loadOwnerCustomInstructions mirrors Orchestrator.loadOwnerContext's own
+// custom-instructions half — shared by TitleGenerator and
+// ObjectiveGenerator (autoobjective.go), both platform-level utility
+// calls scoped to the room owner rather than any one agent. Same
+// soft-fail posture as Orchestrator's own version: a lookup failure logs
+// and falls back to no instructions rather than failing generation,
+// which has no ADR-004 requirement to surface a visible failure.
+func loadOwnerCustomInstructions(ctx context.Context, users *user.Store, ownerID *uuid.UUID) string {
 	if ownerID == nil {
 		return ""
 	}
-	owner, err := t.users.GetByID(ctx, *ownerID)
+	owner, err := users.GetByID(ctx, *ownerID)
 	if err != nil {
-		log.Printf("ERROR message: load owner %s for title custom instructions: %v", *ownerID, err)
+		log.Printf("ERROR message: load owner %s for generation custom instructions: %v", *ownerID, err)
 		return ""
 	}
 	if owner.CustomInstructions == nil {

@@ -19,9 +19,9 @@ export default function LoginPage() {
   const router = useRouter();
 
   useEffect(() => {
-    // middleware.ts already redirects a request to /login away when a
+    // proxy.ts already redirects a request to /login away when a
     // session cookie is present, before this component ever mounts —
-    // this check is for the case middleware's request-time redirect
+    // this check is for the case proxy's request-time redirect
     // can't cover: a tab that already had /login open, where a session
     // became valid in the meantime (e.g. finishing OAuth in another
     // tab). GET /v1/users/me succeeding means a genuinely valid session,

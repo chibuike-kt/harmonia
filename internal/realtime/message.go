@@ -22,6 +22,7 @@ const (
 	KindMessage     Kind = "message"
 	KindRoom        Kind = "room"
 	KindPickupUsage Kind = "pickup_usage"
+	KindObjective   Kind = "objective"
 )
 
 // Message is what flows through the Hub — a tagged union of the distinct
@@ -34,12 +35,13 @@ const (
 // single tagged type rather than separate ones, so a subscriber has one
 // channel type to read regardless of which kind arrives.
 type Message struct {
-	Kind        Kind               `json:"kind"`
-	Event       *protocol.Envelope `json:"event,omitempty"`
-	Presence    *Presence          `json:"presence,omitempty"`
-	Message     *ChatMessage       `json:"message,omitempty"`
-	Room        *RoomUpdate        `json:"room,omitempty"`
-	PickupUsage *PickupUsage       `json:"pickup_usage,omitempty"`
+	Kind        Kind                 `json:"kind"`
+	Event       *protocol.Envelope   `json:"event,omitempty"`
+	Presence    *Presence            `json:"presence,omitempty"`
+	Message     *ChatMessage         `json:"message,omitempty"`
+	Room        *RoomUpdate          `json:"room,omitempty"`
+	PickupUsage *PickupUsage         `json:"pickup_usage,omitempty"`
+	Objective   *RoomObjectiveUpdate `json:"objective,omitempty"`
 }
 
 // ChatMessage mirrors internal/message.Message's wire shape. Defined
@@ -76,6 +78,23 @@ type ChatMessage struct {
 type RoomUpdate struct {
 	RoomID uuid.UUID `json:"room_id"`
 	Name   string    `json:"name"`
+}
+
+// RoomObjectiveUpdate carries a room's newly generated objective —
+// published only by ObjectiveGenerator (internal/message/autoobjective.go)
+// once it successfully applies one, the same "only the successful async
+// outcome, never a manual edit" reasoning as RoomUpdate's own doc
+// comment: a manual PATCH already returns the new objective synchronously
+// to whoever made it, so only the async job's own eventual completion
+// needs a live push to a room a human might already be sitting in. A
+// separate Kind/type from RoomUpdate rather than reusing it — Name is a
+// plain, always-populated string on that type, and a bare `Message{Kind:
+// KindRoom, Room: &RoomUpdate{RoomID: id}}` (Name left as "") would read
+// on the frontend as "the room was renamed to empty," not "no rename
+// happened, this is an unrelated update."
+type RoomObjectiveUpdate struct {
+	RoomID    uuid.UUID `json:"room_id"`
+	Objective string    `json:"objective"`
 }
 
 // PickupUsage is one phase-1 classification call's real token usage
@@ -128,6 +147,13 @@ func NewChatMessage(msg ChatMessage) Message {
 // same ordering rule as NewEventMessage.
 func NewRoomRenamedMessage(roomID uuid.UUID, name string) Message {
 	return Message{Kind: KindRoom, Room: &RoomUpdate{RoomID: roomID, Name: name}}
+}
+
+// NewRoomObjectiveMessage wraps a room's newly generated objective for
+// publishing. Call this only after the write that applied it has
+// actually committed — same ordering rule as NewEventMessage.
+func NewRoomObjectiveMessage(roomID uuid.UUID, objective string) Message {
+	return Message{Kind: KindObjective, Objective: &RoomObjectiveUpdate{RoomID: roomID, Objective: objective}}
 }
 
 // NewPickupUsageMessage wraps one phase-1 classification call's real

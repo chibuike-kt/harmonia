@@ -211,7 +211,8 @@ func TestIntegration_CreateHandler_HumanOnly(t *testing.T) {
 	tasks := task.NewStore(pool)
 	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
-	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
+	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen, objectiveGen)
 
 	rec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"just a note, no mention"}`)
 	if rec.Code != http.StatusCreated {
@@ -264,7 +265,8 @@ func TestIntegration_CreateHandler_RoomOwnership(t *testing.T) {
 	tasks := task.NewStore(pool)
 	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
-	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
+	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen, objectiveGen)
 
 	if rec := doCreateMessage(h, owner, uuid.New().String(), `{"content":"x"}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("nonexistent room status = %d, want %d, body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
@@ -306,7 +308,8 @@ func TestIntegration_CreateHandler_MentionedAgentNotFound(t *testing.T) {
 	tasks := task.NewStore(pool)
 	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
-	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen)
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
+	h := s.CreateHandler(rooms, agents, beginner, realtime.NewHub(), orch, titleGen, objectiveGen)
 
 	nonexistentID := uuid.New()
 	body := fmt.Sprintf(`{"content":"hi","mentioned_agent_ids":[%q]}`, nonexistentID)
@@ -367,10 +370,11 @@ func TestIntegration_CreateHandler_MentionTriggersReply(t *testing.T) {
 	// sequence assertions below. A fake provider client keeps it from
 	// making a real network call in the background regardless.
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen, objectiveGen)
 
 	body := fmt.Sprintf(`{"content":"@Claude can you help?","mentioned_agent_ids":[%q]}`, a.ID)
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), body)
@@ -459,10 +463,11 @@ func TestIntegration_CreateHandler_SingleAgentImplicitlyAddressed(t *testing.T) 
 		return &fakeProviderAgent{content: "Hi there, no mention needed."}, nil
 	}
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen, objectiveGen)
 
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"hi, can you help?"}`)
 	if httpRec.Code != http.StatusCreated {
@@ -537,10 +542,11 @@ func TestIntegration_CreateHandler_TwoAgentsRequireExplicitMention(t *testing.T)
 		return nil, fmt.Errorf("no agent should be invoked for an unaddressed message in a %s-provider two-agent room", p)
 	}
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen, objectiveGen)
 
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"hi, can you help?"}`)
 	if httpRec.Code != http.StatusCreated {
@@ -610,10 +616,11 @@ func TestIntegration_CreateHandler_PickupDisabledByDefault_DoesNothing(t *testin
 		return nil, fmt.Errorf("no agent should ever be invoked while autonomous pickup is disabled (provider %s)", p)
 	}
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen, objectiveGen)
 
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), `{"content":"does anyone want to help with this important task?"}`)
 	if httpRec.Code != http.StatusCreated {
@@ -666,7 +673,7 @@ func TestIntegration_Orchestrator_PickupEnabled_ExactlyOneClaimsAndRepliesWithCo
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, &enabled); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, &enabled, nil); err != nil {
 		t.Fatalf("enable autonomous pickup: %v", err)
 	}
 
@@ -868,10 +875,11 @@ func TestIntegration_CreateHandler_DuplicateMentionOfSameAgentTriggersOneInvocat
 		return &fakeProviderAgent{content: "one reply, not two"}, nil
 	}
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen, objectiveGen)
 
 	// The same agent ID, twice, in one request — not two different
 	// agents that happen to share a display name.
@@ -978,10 +986,11 @@ func TestIntegration_CreateHandler_MultiMentionTriggersTwoIndependentReplies(t *
 	// publish would otherwise land as an unpredictable extra message in
 	// rec's channel.
 	titleGen := NewTitleGenerator(rooms, creds, users, realtime.NewHub())
+	objectiveGen := NewObjectiveGenerator(rooms, s, creds, users, realtime.NewHub())
 	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
 		return &fakeProviderAgent{content: "Auto Generated Title"}, nil
 	}
-	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen)
+	h := s.CreateHandler(rooms, agents, beginner, rec, orch, titleGen, objectiveGen)
 
 	body := fmt.Sprintf(`{"content":"@Claude @GPT can one of you look at this?","mentioned_agent_ids":[%q,%q]}`, claude.ID, gpt.ID)
 	httpRec := doCreateMessage(h, owner, rm.ID.String(), body)
@@ -1216,7 +1225,7 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil); err != nil {
 		t.Fatalf("enable cascading: %v", err)
 	}
 	ping, err := agents.Register(ctx, rm.ID, "Ping", agent.ProviderAnthropic, nil, "hash-cascade-cap-ping")
@@ -1340,7 +1349,7 @@ func TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent(t *testing.T
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil); err != nil {
 		t.Fatalf("enable cascading: %v", err)
 	}
 	busy, err := agents.Register(ctx, rm.ID, "Busy", agent.ProviderAnthropic, nil, "hash-busy-redirect-busy")

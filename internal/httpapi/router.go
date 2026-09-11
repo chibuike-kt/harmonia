@@ -91,9 +91,10 @@ func NewRouter(st *store.Store) http.Handler {
 	messages := message.NewStore(st.Pool)
 	orchestrator := message.NewOrchestrator(messages, agents, creds, users, rooms, tasks, beginner, hub, st.Redis)
 	titleGen := message.NewTitleGenerator(rooms, creds, users, hub)
+	objectiveGen := message.NewObjectiveGenerator(rooms, messages, creds, users, hub)
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
-		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator, titleGen))
+		pr.Post("/v1/rooms/{room_id}/messages", messages.CreateHandler(rooms, agents, beginner, hub, orchestrator, titleGen, objectiveGen))
 		pr.Get("/v1/rooms/{room_id}/messages", messages.ListByRoomHandler(rooms))
 		pr.Post("/v1/rooms/{room_id}/messages/{message_id}/retry", messages.RetryHandler(rooms, orchestrator))
 	})

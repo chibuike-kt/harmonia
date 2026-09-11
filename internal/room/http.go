@@ -24,6 +24,11 @@ type updateRequest struct {
 	Pinned                  *bool   `json:"pinned"`
 	AgentCascadingEnabled   *bool   `json:"agent_cascading_enabled"`
 	AutonomousPickupEnabled *bool   `json:"autonomous_pickup_enabled"`
+	// Objective, once set — by this PATCH or by the auto-generation job —
+	// permanently stops that job from ever overwriting it again, identical
+	// to how a manual rename already protects Name (see
+	// internal/message.ObjectiveGenerator's own race guard).
+	Objective *string `json:"objective"`
 }
 
 type errorResponse struct {
@@ -131,6 +136,10 @@ func (s *Store) UpdateHandler() http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "name cannot be empty")
 			return
 		}
+		if req.Objective != nil && *req.Objective == "" {
+			writeError(w, http.StatusBadRequest, "objective cannot be empty")
+			return
+		}
 
 		ctx := r.Context()
 		rm, err := s.GetByID(ctx, roomID)
@@ -147,7 +156,7 @@ func (s *Store) UpdateHandler() http.HandlerFunc {
 			return
 		}
 
-		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned, req.AgentCascadingEnabled, req.AutonomousPickupEnabled)
+		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned, req.AgentCascadingEnabled, req.AutonomousPickupEnabled, req.Objective)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update room")
 			return

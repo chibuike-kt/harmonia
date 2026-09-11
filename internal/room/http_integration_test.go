@@ -247,7 +247,7 @@ func TestIntegration_ListHandler_PinnedFirst(t *testing.T) {
 		t.Fatalf("backdate stale room: %v", err)
 	}
 	pinTrue := true
-	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil, nil); err != nil {
+	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil, nil, nil); err != nil {
 		t.Fatalf("pin stale room: %v", err)
 	}
 
@@ -384,6 +384,38 @@ func TestIntegration_UpdateHandler(t *testing.T) {
 	}
 	if got.AgentCascadingEnabled {
 		t.Fatal("expected agent_cascading_enabled to be false after disabling it")
+	}
+
+	if got.Objective != nil {
+		t.Fatal("expected objective to default nil")
+	}
+	if rec := doPatch(owner, rm.ID.String(), `{"objective":""}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty objective status = %d, want %d, body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	rec = doPatch(owner, rm.ID.String(), `{"objective":"ship the Q3 migration"}`)
+	got = Room{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode objective response: %v", err)
+	}
+	if got.Objective == nil || *got.Objective != "ship the Q3 migration" {
+		t.Fatalf("Objective = %v, want %q", got.Objective, "ship the Q3 migration")
+	}
+	if got.Name != "renamed" {
+		t.Fatalf("Name = %q after objective-only update, want unchanged %q", got.Name, "renamed")
+	}
+
+	// A manual objective, once set, permanently protects it from the
+	// auto-generation job (see internal/message.ObjectiveGenerator's own
+	// race-guard test for that proof); this only asserts the PATCH itself
+	// can still change an already-set objective, same as name can always
+	// be renamed again.
+	rec = doPatch(owner, rm.ID.String(), `{"objective":"actually, ship the Q4 migration"}`)
+	got = Room{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode second objective response: %v", err)
+	}
+	if got.Objective == nil || *got.Objective != "actually, ship the Q4 migration" {
+		t.Fatalf("Objective = %v, want the updated value", got.Objective)
 	}
 }
 

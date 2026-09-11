@@ -1,0 +1,14 @@
+-- Real room objective, replacing the frontend's own "oldest message"
+-- stand-in (see internal/message.objectiveFrom and RoomInfoPanel's own
+-- former comment) with an actually captured field — same treatment as
+-- rooms.name's own auto-generation story (see
+-- internal/message/autotitle.go), reused for a second field rather than
+-- inventing a new mechanism.
+--
+-- Nullable, not NOT NULL DEFAULT '' like name's own PlaceholderName
+-- sentinel: a text column has no equivalent literal placeholder that
+-- couldn't also collide with a legitimate human-typed objective, so NULL
+-- is the "not yet set" sentinel instead — the async generation job's own
+-- race guard (internal/message/autoobjective.go) checks for that
+-- directly, the same role PlaceholderName plays for rooms.name.
+ALTER TABLE rooms ADD COLUMN objective text;

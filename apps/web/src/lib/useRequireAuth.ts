@@ -6,7 +6,7 @@ import { apiFetch, ApiError } from "./api";
 
 /**
  * Validates the session for real via GET /v1/users/me and redirects to
- * /login on a 401. middleware.ts's cookie-presence check runs first and
+ * /login on a 401. proxy.ts's cookie-presence check runs first and
  * catches a missing cookie, but it can't tell an expired or revoked
  * session from a valid one — only an actual request to the backend can,
  * which is exactly the gap this closes.
@@ -14,7 +14,7 @@ import { apiFetch, ApiError } from "./api";
  * On a 401 this also calls POST /v1/auth/logout before redirecting —
  * not just router.push("/login") on its own. The cookie is httpOnly, so
  * this page can't clear it with document.cookie; if it's left in place,
- * the very next navigation to /login has middleware see "cookie
+ * the very next navigation to /login has proxy.ts see "cookie
  * present" and bounce straight back to a protected route, which 401s
  * again and pushes back to /login — an infinite redirect loop. Logout
  * unconditionally clears the cookie via a real Set-Cookie response even

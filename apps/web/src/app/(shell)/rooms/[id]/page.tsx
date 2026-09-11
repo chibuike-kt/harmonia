@@ -78,6 +78,11 @@ interface RoomUpdate {
   name: string;
 }
 
+interface RoomObjectiveUpdate {
+  room_id: string;
+  objective: string;
+}
+
 interface PickupUsage {
   room_id: string;
   agent_id: string;
@@ -86,12 +91,13 @@ interface PickupUsage {
 }
 
 interface RealtimeMessage {
-  kind: "event" | "presence" | "message" | "room" | "pickup_usage";
+  kind: "event" | "presence" | "message" | "room" | "pickup_usage" | "objective";
   event?: Envelope;
   presence?: AgentPresence;
   message?: ChatMessage;
   room?: RoomUpdate;
   pickup_usage?: PickupUsage;
+  objective?: RoomObjectiveUpdate;
 }
 
 interface Snapshot {
@@ -114,6 +120,9 @@ interface RoomSummary {
   name: string;
   agent_cascading_enabled: boolean;
   autonomous_pickup_enabled: boolean;
+  // omitempty on the Go side — absent, not null, when the room has no
+  // objective yet.
+  objective?: string;
 }
 
 interface Me {
@@ -457,6 +466,7 @@ export default function RoomViewPage() {
     RoomAgentSummary[]
   >([]);
   const [roomName, setRoomName] = useState<string>("");
+  const [roomObjective, setRoomObjective] = useState<string | null>(null);
   const [agentCascadingEnabled, setAgentCascadingEnabled] = useState(false);
   const [autonomousPickupEnabled, setAutonomousPickupEnabled] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
@@ -516,6 +526,7 @@ export default function RoomViewPage() {
         const match = rooms.find((r) => r.id === roomId);
         if (match) {
           setRoomName(match.name);
+          setRoomObjective(match.objective ?? null);
           setAgentCascadingEnabled(match.agent_cascading_enabled);
           setAutonomousPickupEnabled(match.autonomous_pickup_enabled);
         }
@@ -549,6 +560,23 @@ export default function RoomViewPage() {
       });
     } catch {
       setAutonomousPickupEnabled(!enabled);
+    }
+  };
+
+  // A manual edit here permanently stops the auto-generation job
+  // (internal/message.ObjectiveGenerator) from ever overwriting it again
+  // — same PATCH-and-protect pattern as a manual rename protecting Name.
+  const handleEditObjective = async (objective: string) => {
+    if (!roomId) return;
+    const previous = roomObjective;
+    setRoomObjective(objective);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}`, {
+        method: "PATCH",
+        body: { objective },
+      });
+    } catch {
+      setRoomObjective(previous);
     }
   };
 
@@ -756,6 +784,18 @@ export default function RoomViewPage() {
       );
     });
 
+    // An "objective" event only ever arrives here as
+    // ObjectiveGenerator's own successful outcome — the race guard on
+    // the backend discards and never publishes when a manual edit
+    // already won, so receiving this at all means it's safe to apply.
+    // Unlike the name's own typing-reveal animation, this just appears —
+    // it's read-only prose in a side panel, not the room's own headline.
+    source.addEventListener("objective", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      if (!msg.objective) return;
+      setRoomObjective(msg.objective.objective);
+    });
+
     // ADR-007 batch B: one phase-1 classification call's real token
     // usage, live — priced immediately since this event carries a real
     // agent_id to look up a provider for, unlike the snapshot's own
@@ -920,14 +960,6 @@ export default function RoomViewPage() {
       setResolvingProposalId(null);
     }
   };
-
-  // Objective: the room's first message, per the build brief's explicit
-  // scope call — "no new capture needed," not a real captured field.
-  const firstMessageEntry = entries.find((e) => e.kind === "message");
-  const objective =
-    firstMessageEntry?.kind === "message"
-      ? firstMessageEntry.message.content
-      : null;
 
   const pinnedMessageIds = new Set(decisions.map((d) => d.message_id));
 
@@ -1277,7 +1309,8 @@ export default function RoomViewPage() {
       <RoomInfoPanel
         open={infoOpen}
         onClose={() => setInfoOpen(false)}
-        objective={objective}
+        objective={roomObjective}
+        onEditObjective={(o) => void handleEditObjective(o)}
         agents={roomAgentSummaries}
         decisions={decisions}
         roomId={roomId ?? ""}
