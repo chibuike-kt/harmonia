@@ -66,6 +66,11 @@ type fakeProviderAgent struct {
 	// alongside pickupClassifyAs's tool call — real-looking usage a test
 	// can assert RecordPickupEvaluationUsage actually persisted.
 	pickupUsage [2]int
+	// citations, if set, is returned alongside content on every call —
+	// the ADR-008 batch B equivalent of toolCalls above, letting a test
+	// assert ApplyCitations actually ran against a search-grounded reply
+	// without needing a real search-capable provider.
+	citations []provider.Citation
 }
 
 func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
@@ -92,7 +97,7 @@ func (f *fakeProviderAgent) Generate(_ context.Context, req provider.GenerateReq
 			}
 		}
 	}
-	return provider.GenerateResponse{Content: f.content, ToolCalls: f.toolCalls}, nil
+	return provider.GenerateResponse{Content: f.content, ToolCalls: f.toolCalls, Citations: f.citations}, nil
 }
 
 // connectMessageTestPool connects to real Postgres and Redis, skipping
@@ -673,7 +678,7 @@ func TestIntegration_Orchestrator_PickupEnabled_ExactlyOneClaimsAndRepliesWithCo
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, &enabled, nil); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, &enabled, nil, nil); err != nil {
 		t.Fatalf("enable autonomous pickup: %v", err)
 	}
 
@@ -826,7 +831,7 @@ func TestIntegration_Orchestrator_RoomFramingInSystemPrompt(t *testing.T) {
 		t.Fatalf("seed objective message: %v", err)
 	}
 
-	orch.TriggerReply(claude.ID, rm.OwnerID, objective, 0)
+	orch.TriggerReply(claude.ID, rm.OwnerID, objective, 0, false)
 	waitForReplyMessage(t, ctx, s, rm.ID, objective.ID)
 
 	for _, want := range []string{`"Widget Planning"`, "GPT", "Kingsley", "Let's plan the new widget feature"} {
@@ -1157,7 +1162,7 @@ func TestIntegration_Orchestrator_CascadingDisabledByDefault_MentionInReplyDoesN
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
-	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0, false)
 
 	running := rec.recv(t)
 	if running.Kind != realtime.KindPresence || running.Presence.AgentID != ping.ID || running.Presence.Status != string(agent.StatusRunning) {
@@ -1225,7 +1230,7 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil, nil); err != nil {
 		t.Fatalf("enable cascading: %v", err)
 	}
 	ping, err := agents.Register(ctx, rm.ID, "Ping", agent.ProviderAnthropic, nil, "hash-cascade-cap-ping")
@@ -1265,7 +1270,7 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
-	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0, false)
 
 	// One hop = presence running, the reply, presence available — for
 	// whichever agent is invoked at that hop. hops[i] is the agent
@@ -1349,7 +1354,7 @@ func TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent(t *testing.T
 		t.Fatalf("create room: %v", err)
 	}
 	enabled := true
-	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil); err != nil {
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil, nil); err != nil {
 		t.Fatalf("enable cascading: %v", err)
 	}
 	busy, err := agents.Register(ctx, rm.ID, "Busy", agent.ProviderAnthropic, nil, "hash-busy-redirect-busy")
@@ -1394,7 +1399,7 @@ func TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent(t *testing.T
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
-	orch.TriggerReply(busy.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(busy.ID, rm.OwnerID, triggering, 0, false)
 
 	// Busy's own hop: running, its real (redirecting) reply, available.
 	busyRunning := rec.recv(t)
@@ -1486,7 +1491,7 @@ func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *t
 		t.Fatalf("seed triggering message: %v", err)
 	}
 
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
 	waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
 
 	if !strings.Contains(captured.SystemPrompt, instructions) {
@@ -1533,7 +1538,7 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 		t.Fatalf("seed triggering message: %v", err)
 	}
 
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
 
 	// Poll for the failure message itself, not agent status: 'available'
 	// is also the agent's status before the goroutine ever runs (set at
@@ -1590,7 +1595,7 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 	// If the panic weren't recovered, this test binary itself would
 	// crash here — the test passing at all is part of the proof, not
 	// just the assertions below.
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
 
 	failure := waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
 	if !strings.Contains(failure.Content, "went wrong") {

@@ -136,7 +136,7 @@ func (o *ObjectiveGenerator) generate(ctx context.Context, roomID uuid.UUID, own
 		return
 	}
 
-	updated, err := o.rooms.Update(ctx, roomID, nil, nil, nil, nil, &objective)
+	updated, err := o.rooms.Update(ctx, roomID, nil, nil, nil, nil, nil, &objective)
 	if err != nil {
 		log.Printf("ERROR message: apply generated objective for room %s: %v", roomID, err)
 		return

@@ -19,6 +19,17 @@ const (
 	defaultModel     = "claude-sonnet-5"
 	anthropicVersion = "2023-06-01"
 	defaultMaxTokens = 4096
+	// webSearchToolType is the base, non-dated web search tool version
+	// (ADR-008 batch B) — Anthropic also publishes dated variants
+	// (20260209, 20260318) with newer defaults, but nothing in this
+	// feature's scope needs those, and pinning the base version avoids
+	// silently picking up behavior changes on Anthropic's own schedule.
+	webSearchToolType = "web_search_20250305"
+	// webSearchMaxUses caps searches per turn — a real budget knob, not a
+	// formality: each search is its own $10/1000 line item (see
+	// GenerateResponse's doc comment on the token/dollar-cost gap this
+	// opens), independent of and in addition to token cost.
+	webSearchMaxUses = 5
 )
 
 type Client struct {
@@ -130,10 +141,23 @@ type messagesRequest struct {
 	ToolChoice *toolChoice `json:"tool_choice,omitempty"`
 }
 
+// tool covers both shapes the Messages API's tools array accepts: a
+// custom tool (Name/Description/InputSchema, Type left blank — the API
+// treats an absent type as "custom") and Anthropic's server-side web
+// search tool (Type/Name/MaxUses set, Description/InputSchema blank).
+// Both shapes live in the same array in the same request when a call
+// needs custom tools and search together, so this is one type with
+// unused fields left as their zero value per shape, not two.
 type tool struct {
 	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Type        string         `json:"type,omitempty"`
+	MaxUses     int            `json:"max_uses,omitempty"`
+}
+
+func webSearchTool() tool {
+	return tool{Type: webSearchToolType, Name: "web_search", MaxUses: webSearchMaxUses}
 }
 
 // toolChoice's Type "any" forces some tool call; the zero value (an
@@ -144,16 +168,32 @@ type toolChoice struct {
 	Type string `json:"type"`
 }
 
-// contentBlock covers both shapes the Messages API returns in one
-// response's content array: a text block (Type "text", Text set) and a
-// tool_use block (Type "tool_use", Name/Input set) — the same array can
-// hold either or both, so this isn't two separate response shapes to
-// switch on, just one block type left blank where it doesn't apply.
+// contentBlock covers every shape the Messages API returns in one
+// response's content array: a text block (Type "text", Text and,
+// when web search grounded it, Citations set), a tool_use block (Type
+// "tool_use", Name/Input set), and — only when WebSearchEnabled — the
+// server-side search's own server_tool_use/web_search_tool_result
+// blocks, which this client deliberately ignores (see Generate's parse
+// loop): their content is Anthropic's own search bookkeeping, already
+// surfaced to us pre-digested as each text block's Citations.
 type contentBlock struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text"`
-	Name  string         `json:"name"`
-	Input map[string]any `json:"input"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	Name      string          `json:"name"`
+	Input     map[string]any  `json:"input"`
+	Citations []citationBlock `json:"citations"`
+}
+
+// citationBlock is one web_search_result_location entry on a text
+// block's citations array. CitedText is the exact substring of that
+// same block's Text the citation covers — handed to us directly, no
+// offset math needed (contrast OpenAI's Responses-API annotations,
+// which give rune offsets instead and require the client to derive this
+// same substring itself).
+type citationBlock struct {
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+	CitedText string `json:"cited_text"`
 }
 
 type usage struct {
@@ -184,6 +224,13 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 	var tools []tool
 	for _, t := range req.Tools {
 		tools = append(tools, tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+	}
+	// Same endpoint, same request shape as every other call — declaring
+	// search is just one more entry in the same tools array custom
+	// tools already use (see tool's own doc comment). Nothing else about
+	// this request changes for a search-enabled call.
+	if req.WebSearchEnabled {
+		tools = append(tools, webSearchTool())
 	}
 
 	var choice *toolChoice
@@ -242,18 +289,29 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 
 	var content strings.Builder
 	var toolCalls []provider.ToolCall
+	var citations []provider.Citation
 	for _, block := range parsed.Content {
 		switch block.Type {
 		case "text":
 			content.WriteString(block.Text)
+			for _, c := range block.Citations {
+				citations = append(citations, provider.Citation{Title: c.Title, URL: c.URL, AfterText: c.CitedText})
+			}
 		case "tool_use":
 			toolCalls = append(toolCalls, provider.ToolCall{Name: block.Name, Input: block.Input})
+		// server_tool_use / web_search_tool_result blocks (only present
+		// when WebSearchEnabled) fall through with no case and are
+		// silently skipped — that's Anthropic's own search bookkeeping,
+		// already surfaced to us pre-digested as each text block's own
+		// Citations above.
+		default:
 		}
 	}
 
 	return provider.GenerateResponse{
 		Content:      content.String(),
 		ToolCalls:    toolCalls,
+		Citations:    citations,
 		InputTokens:  parsed.Usage.InputTokens,
 		OutputTokens: parsed.Usage.OutputTokens,
 	}, nil

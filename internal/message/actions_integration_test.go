@@ -61,7 +61,7 @@ func TestIntegration_Orchestrator_CreateTaskExecutesImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
 
 	// running -> reply -> available, same sequence every single-agent
 	// invocation already produces, before create_task's own effects.
@@ -162,7 +162,7 @@ func TestIntegration_Orchestrator_RequestHandoffCreatesPendingProposalOnly(t *te
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
-	orch.TriggerReply(from.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(from.ID, rm.OwnerID, triggering, 0, false)
 
 	if msg := rec.recv(t); msg.Kind != realtime.KindPresence || msg.Presence.Status != string(agent.StatusRunning) {
 		t.Fatalf("first published message = %+v, want presence running", msg)
@@ -266,7 +266,7 @@ func TestIntegration_Orchestrator_RequestHandoffToolNotOfferedWithoutOpenTask(t 
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
-	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0)
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
 	waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
 
 	for _, tool := range captured.Tools {

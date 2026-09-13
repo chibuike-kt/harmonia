@@ -246,3 +246,102 @@ func TestIntegration_Generate_RequestHandoffToolCallParsing(t *testing.T) {
 	t.Logf("real tool call parsed: %s(task_id=%q, to_agent_name=%q, summary=%q, completed=%v, remaining=%v)",
 		call.Name, taskID, toAgentName, summary, call.Input["completed"], call.Input["remaining"])
 }
+
+// TestIntegration_Generate_WebSearch_Advisory is ADR-008 batch B's live
+// proof of the room-toggle path: WebSearchEnabled set, no RequireToolCall
+// — the model decides for itself whether a genuinely current-events
+// question warrants a real search, the same way the room toggle behaves
+// in production. Asks something no January-2026-trained model could
+// possibly know without searching (today's date, which changes every
+// real run), so a real, grounded, cited answer is the only way this
+// passes — a hallucinated one would either be wrong or carry no
+// citations at all.
+//
+// Skips without OPENAI_API_KEY; incurs a small real cost, including the
+// Responses API's own per-search fee, when it runs.
+func TestIntegration_Generate_WebSearch_Advisory(t *testing.T) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set; skipping integration test")
+	}
+
+	c := New(apiKey)
+
+	resp, err := c.Generate(context.Background(), provider.GenerateRequest{
+		SystemPrompt: "Answer using real-time web search. Be brief.",
+		Messages: []provider.Message{
+			{Role: "user", Content: "What is today's date, and what is one real current news headline from today? Search the web for this."},
+		},
+		WebSearchEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Content == "" {
+		t.Fatal("expected a non-empty response")
+	}
+	if len(resp.Citations) == 0 {
+		t.Fatalf("expected at least one real citation from a search-grounded reply, got none (content=%q)", resp.Content)
+	}
+	for i, cit := range resp.Citations {
+		if cit.URL == "" {
+			t.Fatalf("Citations[%d].URL is empty — a real citation must carry a real source URL", i)
+		}
+		if cit.AfterText == "" {
+			t.Fatalf("Citations[%d].AfterText is empty — a real citation must carry the exact cited substring", i)
+		}
+	}
+	if resp.InputTokens == 0 || resp.OutputTokens == 0 {
+		t.Fatalf("expected real non-zero token usage, got input=%d output=%d", resp.InputTokens, resp.OutputTokens)
+	}
+	rendered := provider.ApplyCitations(resp.Content, resp.Citations)
+	t.Logf("search-grounded reply: %q", resp.Content)
+	t.Logf("citations: %+v", resp.Citations)
+	t.Logf("rendered with markers: %q", rendered)
+}
+
+// TestIntegration_Generate_WebSearch_Forced is the second half of
+// ADR-008 batch B's live proof: WebSearchEnabled AND RequireToolCall
+// together, with no other Tools declared — the per-message forced-
+// search shape orchestrate.go actually sends. Proves this combination
+// works against the real Responses API (tool_choice "required" against
+// a tools array holding only web_search) and still returns real
+// citations, independent of the advisory case above.
+//
+// Skips without OPENAI_API_KEY; incurs a small real cost when it runs.
+func TestIntegration_Generate_WebSearch_Forced(t *testing.T) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set; skipping integration test")
+	}
+
+	c := New(apiKey)
+
+	// Deliberately a news-headline question, not a price/quote lookup —
+	// a live probe found OpenAI answers some factual queries (e.g.
+	// crypto/stock prices) via a built-in synthesized data widget that
+	// runs a real search (billed, visible in the raw response's
+	// tool_usage.web_search.num_requests) but returns annotations: []
+	// with no citations at all, a genuine provider behavior distinct
+	// from ordinary cited prose. A headline question reliably produces
+	// citation-bearing text, matching the Advisory test above.
+	resp, err := c.Generate(context.Background(), provider.GenerateRequest{
+		SystemPrompt: "Search the web to answer.",
+		Messages: []provider.Message{
+			{Role: "user", Content: "Search the web for one real current technology news headline from today and summarize it in one sentence."},
+		},
+		WebSearchEnabled: true,
+		RequireToolCall:  true,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Content == "" {
+		t.Fatal("expected a non-empty response")
+	}
+	if len(resp.Citations) == 0 {
+		t.Fatalf("expected at least one real citation from a forced search reply, got none (content=%q)", resp.Content)
+	}
+	t.Logf("forced-search reply: %q", resp.Content)
+	t.Logf("citations: %+v", resp.Citations)
+}

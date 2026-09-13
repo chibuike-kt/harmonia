@@ -24,6 +24,7 @@ type updateRequest struct {
 	Pinned                  *bool   `json:"pinned"`
 	AgentCascadingEnabled   *bool   `json:"agent_cascading_enabled"`
 	AutonomousPickupEnabled *bool   `json:"autonomous_pickup_enabled"`
+	WebSearchEnabled        *bool   `json:"web_search_enabled"`
 	// Objective, once set — by this PATCH or by the auto-generation job —
 	// permanently stops that job from ever overwriting it again, identical
 	// to how a manual rename already protects Name (see
@@ -156,7 +157,7 @@ func (s *Store) UpdateHandler() http.HandlerFunc {
 			return
 		}
 
-		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned, req.AgentCascadingEnabled, req.AutonomousPickupEnabled, req.Objective)
+		updated, err := s.Update(ctx, roomID, req.Name, req.Pinned, req.AgentCascadingEnabled, req.AutonomousPickupEnabled, req.WebSearchEnabled, req.Objective)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update room")
 			return

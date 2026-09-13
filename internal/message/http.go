@@ -21,6 +21,15 @@ type createRequest struct {
 	Content           string             `json:"content"`
 	MentionedAgentIDs []uuid.UUID        `json:"mentioned_agent_ids,omitempty"`
 	Attachment        *attachmentRequest `json:"attachment,omitempty"`
+	// ForceSearch is the composer's per-message "Search the web" attach
+	// (ADR-008 batch B) — a human's explicit, deliberate intent, honored
+	// independently of the room's own web_search_enabled toggle: it works
+	// whether that toggle is on or off. Ephemeral, not persisted on the
+	// message row — nothing downstream of this request needs to know
+	// after the fact that this particular turn forced search, only that
+	// it happened, which the resulting reply's real content and
+	// citations already show.
+	ForceSearch bool `json:"force_search,omitempty"`
 }
 
 // attachmentRequest is the wire shape for ADR-008 batch A's per-message
@@ -202,7 +211,7 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		// own and produces its own reply, all pointing reply_to_message_id
 		// back at this one human message.
 		for _, a := range mentioned {
-			orch.TriggerReply(a.ID, rm.OwnerID, m, 0)
+			orch.TriggerReply(a.ID, rm.OwnerID, m, 0, req.ForceSearch)
 		}
 
 		// Implicit single-agent addressing (ADR-004's 2026-09-07
@@ -230,7 +239,7 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 			if err != nil {
 				log.Printf("ERROR message: load room %s agents for implicit addressing: %v", roomID, err)
 			} else if len(roomAgents) == 1 {
-				orch.TriggerReply(roomAgents[0].ID, rm.OwnerID, m, 0)
+				orch.TriggerReply(roomAgents[0].ID, rm.OwnerID, m, 0, req.ForceSearch)
 			} else if len(roomAgents) > 1 && rm.AutonomousPickupEnabled {
 				// ADR-007 batch B: real ambiguity (2+ agents, still
 				// unaddressed) is exactly the case implicit single-agent
@@ -392,7 +401,11 @@ func (s *Store) RetryHandler(rooms *room.Store, orch *Orchestrator) http.Handler
 			return
 		}
 
-		orch.TriggerReply(*m.AgentID, rm.OwnerID, triggering, 0)
+		// A retry re-runs the original turn as it was; forced search is a
+		// one-shot per-message intent on the original request, not something
+		// a retry re-derives or re-applies (ADR-008 batch B scopes forced
+		// search to CreateHandler's own two call sites only).
+		orch.TriggerReply(*m.AgentID, rm.OwnerID, triggering, 0, false)
 
 		w.WriteHeader(http.StatusNoContent)
 	}

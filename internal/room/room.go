@@ -56,6 +56,14 @@ type Room struct {
 	// act; pickup spends evaluating every message whether or not anyone
 	// responds), so they're separate deliberate opt-ins, never coupled.
 	AutonomousPickupEnabled bool `json:"autonomous_pickup_enabled"`
+	// WebSearchEnabled opts this room into offering the provider's native
+	// web search tool on every generation call in it (ADR-008 batch B) —
+	// off by default, advisory even when on: the model itself still
+	// decides whether a given question actually warrants a search,
+	// same as every other declared-but-optional tool. Independent of the
+	// per-message forced-search override (internal/message.TriggerReply),
+	// which works whether or not this is set.
+	WebSearchEnabled bool `json:"web_search_enabled"`
 }
 
 type Store struct {
@@ -74,8 +82,8 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO rooms (name, status, owner_id) VALUES ($1, 'active', $2)
-		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, objective
-	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.Objective)
+		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, web_search_enabled, objective
+	`, name, ownerID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.WebSearchEnabled, &r.Objective)
 	return r, err
 }
 
@@ -83,8 +91,8 @@ func (s *Store) Create(ctx context.Context, ownerID *uuid.UUID, name string) (Ro
 func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, objective FROM rooms WHERE id = $1
-	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.Objective)
+		SELECT id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, web_search_enabled, objective FROM rooms WHERE id = $1
+	`, roomID).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.WebSearchEnabled, &r.Objective)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -103,7 +111,7 @@ func (s *Store) GetByID(ctx context.Context, roomID uuid.UUID) (Room, error) {
 // ever needs to do. Returns ErrNotFound if no room matches roomID —
 // ownership is the caller's job, same as every other room-scoped handler
 // (see realtime.StreamHandler).
-func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool, agentCascadingEnabled *bool, autonomousPickupEnabled *bool, objective *string) (Room, error) {
+func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinned *bool, agentCascadingEnabled *bool, autonomousPickupEnabled *bool, webSearchEnabled *bool, objective *string) (Room, error) {
 	var r Room
 	err := s.pool.QueryRow(ctx, `
 		UPDATE rooms
@@ -115,10 +123,11 @@ func (s *Store) Update(ctx context.Context, roomID uuid.UUID, name *string, pinn
 		    END,
 		    agent_cascading_enabled = COALESCE($4, agent_cascading_enabled),
 		    autonomous_pickup_enabled = COALESCE($5, autonomous_pickup_enabled),
-		    objective = COALESCE($6, objective)
+		    web_search_enabled = COALESCE($6, web_search_enabled),
+		    objective = COALESCE($7, objective)
 		WHERE id = $1
-		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, objective
-	`, roomID, name, pinned, agentCascadingEnabled, autonomousPickupEnabled, objective).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.Objective)
+		RETURNING id, name, status, owner_id, created_at, pinned_at, agent_cascading_enabled, autonomous_pickup_enabled, web_search_enabled, objective
+	`, roomID, name, pinned, agentCascadingEnabled, autonomousPickupEnabled, webSearchEnabled, objective).Scan(&r.ID, &r.Name, &r.Status, &r.OwnerID, &r.CreatedAt, &r.PinnedAt, &r.AgentCascadingEnabled, &r.AutonomousPickupEnabled, &r.WebSearchEnabled, &r.Objective)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Room{}, ErrNotFound
 	}
@@ -137,6 +146,7 @@ type Summary struct {
 	PinnedAt                *time.Time `json:"pinned_at,omitempty"`
 	AgentCascadingEnabled   bool       `json:"agent_cascading_enabled"`
 	AutonomousPickupEnabled bool       `json:"autonomous_pickup_enabled"`
+	WebSearchEnabled        bool       `json:"web_search_enabled"`
 	Objective               *string    `json:"objective,omitempty"`
 }
 
@@ -147,7 +157,7 @@ type Summary struct {
 // has, not N+1.
 func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT r.id, r.name, r.last_activity_at, r.pinned_at, r.agent_cascading_enabled, r.autonomous_pickup_enabled, r.objective,
+		SELECT r.id, r.name, r.last_activity_at, r.pinned_at, r.agent_cascading_enabled, r.autonomous_pickup_enabled, r.web_search_enabled, r.objective,
 		       EXISTS (
 		           SELECT 1 FROM agents a WHERE a.room_id = r.id AND a.status = 'running'
 		       ) AS has_running_agent
@@ -166,7 +176,7 @@ func (s *Store) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Summary, 
 	summaries := make([]Summary, 0)
 	for rows.Next() {
 		var sm Summary
-		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.AgentCascadingEnabled, &sm.AutonomousPickupEnabled, &sm.Objective, &sm.HasRunningAgent); err != nil {
+		if err := rows.Scan(&sm.ID, &sm.Name, &sm.LastActivityAt, &sm.PinnedAt, &sm.AgentCascadingEnabled, &sm.AutonomousPickupEnabled, &sm.WebSearchEnabled, &sm.Objective, &sm.HasRunningAgent); err != nil {
 			return nil, err
 		}
 		summaries = append(summaries, sm)

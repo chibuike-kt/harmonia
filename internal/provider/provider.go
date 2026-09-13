@@ -14,6 +14,7 @@ package provider
 
 import (
 	"context"
+	"strconv"
 	"strings"
 )
 
@@ -59,7 +60,40 @@ type GenerateRequest struct {
 	// real reply's own content; it doesn't apply here, since phase 1 has
 	// no reply content to protect — only a decision the calling code
 	// needs to be able to act on every time.
+	//
+	// ADR-008 batch B adds a second legitimate production use: a human's
+	// explicit per-message "search the web" attach. That's the same
+	// missing-signal problem phase-1 pickup solves for, just from a
+	// different direction — there a model's own free-text narration
+	// can't be trusted to substitute for a real tool call; here a human
+	// has given explicit, deliberate intent that a specific tool run
+	// (not a reply, not the model's own judgment about whether search is
+	// warranted) is what this turn is for, and prompt-following alone
+	// can't guarantee the model honors that over its own instinct to
+	// just answer from what it already knows. Unlike phase-1 pickup,
+	// this call's output *is* a real reply the human is waiting on — but
+	// the human's explicit request, not the model's judgment, is what's
+	// being forced here, and that request is specifically "use this
+	// tool," so forcing it doesn't distort the answer, it's what the
+	// human asked for. Callers using this for forced search restrict
+	// Tools to just the search tool for that call — RequireToolCall only
+	// says "call something in Tools," and mixing in create_task/
+	// mention_agent/request_handoff would let the model dodge into one
+	// of those instead and defeat the whole point.
 	RequireToolCall bool
+	// WebSearchEnabled offers the provider's native web search tool this
+	// turn (ADR-008 batch B) — Anthropic's server-side web_search tool,
+	// OpenAI's Responses-API web_search tool. Distinct from Tools: this
+	// isn't a caller-defined ToolDef the model calls back through
+	// ToolCalls, it's a provider-native capability each client declares
+	// and resolves entirely server-side, surfacing only through Content
+	// (the model's own grounded prose) and Citations. True for either of
+	// two independent triggers — a room's own search toggle (advisory:
+	// the model decides whether a given question actually warrants a
+	// search) or a human's explicit per-message forced attach (paired
+	// with RequireToolCall so the model can't skip it) — orchestrate.go
+	// is what tells the two apart; this field alone doesn't.
+	WebSearchEnabled bool
 }
 
 type Message struct {
@@ -152,13 +186,114 @@ type GenerateResponse struct {
 	// order the provider returned them — empty when no Tools were
 	// offered, or the model chose not to call any.
 	ToolCalls []ToolCall
+	// Citations backs any web-search grounding the model actually used
+	// this turn (ADR-008 batch B) — empty whenever WebSearchEnabled was
+	// false, or true but the model didn't judge the question worth a
+	// search. Each provider client is responsible for populating this
+	// from that provider's own real citation metadata only; never
+	// fabricated or inferred client-side. See ApplyCitations.
+	Citations []Citation
 	// InputTokens/OutputTokens are the real usage counts each provider's
 	// own response already includes — captured here so a caller can
 	// meter a generation without a second API call. Zero for a provider
 	// client that doesn't populate them (there currently isn't one, but
 	// nothing here requires every implementation to report usage).
+	//
+	// Token-based cost tracking built on these two fields alone is
+	// accurate for both providers' own tool-use overhead (search-related
+	// prompt/completion tokens flow through the ordinary token counts on
+	// both sides — nothing special to do there) but incomplete for
+	// Anthropic specifically once WebSearchEnabled is in play: Anthropic
+	// bills each individual search itself as a separate flat line item
+	// ($10 per 1,000 searches, reported as usage.server_tool_use.
+	// web_search_requests in the raw response) that this client doesn't
+	// currently surface anywhere — not in these fields, not elsewhere on
+	// GenerateResponse. A room with search on will cost real money this
+	// package's own cost tracking won't show. OpenAI's Responses API has
+	// no equivalent separate line item as of this writing — its search
+	// cost is folded into ordinary token usage — so this gap is
+	// Anthropic-specific, not a symmetry gap between the two providers'
+	// InputTokens/OutputTokens themselves (those line up fine; only the
+	// wire field names differ — see openai.responsesUsage's own comment).
 	InputTokens  int
 	OutputTokens int
+}
+
+// Citation is one provider-neutral web-search source, translated from
+// that provider's own citation shape by its client. AfterText is the
+// exact substring of Content (verbatim, safe for strings.Index) the
+// citation marker belongs after — Anthropic hands this back directly as
+// cited_text; OpenAI's client derives it by slicing Content on the
+// annotation's rune offsets. Carrying a substring instead of a numeric
+// offset is deliberate: ApplyCitations inserts markers by search, never
+// by splicing raw indices into stored message content, so it can't
+// corrupt Content even if a provider's offsets were ever off by one or
+// measured in a different unit than Go's runes.
+type Citation struct {
+	Title     string
+	URL       string
+	AfterText string
+}
+
+// ApplyCitations renders numbered inline markers plus a trailing
+// "Sources" list from a provider's raw Citations, and is the only place
+// that does — callers never hand-roll citation markup. Citations sharing
+// a URL are deduped to one source entry but keep separate inline
+// markers at each of their AfterText occurrences, matching how a paper
+// reuses one footnote number for repeat references to the same source.
+// A citation whose AfterText doesn't appear verbatim in content (should
+// not happen given each client sources it from that same response's own
+// Content, but a provider response is still untrusted input) is
+// silently skipped rather than corrupting the text or panicking.
+func ApplyCitations(content string, citations []Citation) string {
+	if len(citations) == 0 {
+		return content
+	}
+
+	order := make([]string, 0, len(citations))
+	sources := make(map[string]Citation, len(citations))
+	numbers := make(map[string]int, len(citations))
+
+	result := content
+	for _, c := range citations {
+		if c.AfterText == "" {
+			continue
+		}
+		idx := strings.Index(result, c.AfterText)
+		if idx < 0 {
+			continue
+		}
+		if _, seen := numbers[c.URL]; !seen {
+			order = append(order, c.URL)
+			sources[c.URL] = c
+			numbers[c.URL] = len(order)
+		}
+		marker := "[" + strconv.Itoa(numbers[c.URL]) + "]"
+		insertAt := idx + len(c.AfterText)
+		result = result[:insertAt] + marker + result[insertAt:]
+	}
+
+	if len(order) == 0 {
+		return result
+	}
+
+	var b strings.Builder
+	b.WriteString(result)
+	b.WriteString("\n\n**Sources**\n")
+	for _, url := range order {
+		c := sources[url]
+		title := c.Title
+		if title == "" {
+			title = url
+		}
+		b.WriteString(strconv.Itoa(numbers[url]))
+		b.WriteString(". [")
+		b.WriteString(title)
+		b.WriteString("](")
+		b.WriteString(url)
+		b.WriteString(")\n")
+	}
+	return b.String()
 }
 
 type Agent interface {

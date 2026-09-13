@@ -206,6 +206,65 @@ func TestIntegration_ListHandler(t *testing.T) {
 	}
 }
 
+// TestIntegration_ListHandler_TogglesReflectRealState is a direct
+// regression test for a real bug caught in live browser testing
+// (ADR-008 batch B): ListByOwner's own SELECT/Scan initially wasn't
+// updated when WebSearchEnabled was added to Summary, so the dashboard
+// and room-info-panel-on-load path (GET /v1/rooms — see the room page's
+// own comment on why it reads this list rather than a per-room GET)
+// silently always reported web_search_enabled: false, even though
+// Update had genuinely persisted true to the row. Exercises all three
+// boolean toggles together so a similar omission for any of them would
+// fail this test the same way.
+func TestIntegration_ListHandler_TogglesReflectRealState(t *testing.T) {
+	dbURL := os.Getenv("HARMONIA_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HARMONIA_DATABASE_URL not set; skipping integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+
+	owner := seedRoomTestUser(t, ctx, pool, "room-list-toggles-")
+	s := NewStore(pool)
+	h := s.ListHandler()
+
+	rm, err := s.Create(ctx, &owner.ID, "toggles room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	cascading, pickup, webSearch := true, true, true
+	if _, err := s.Update(ctx, rm.ID, nil, nil, &cascading, &pickup, &webSearch, nil); err != nil {
+		t.Fatalf("enable toggles: %v", err)
+	}
+
+	rec := doListRequest(h, owner)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var got []Summary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 room, got %d: %+v", len(got), got)
+	}
+	sm := got[0]
+	if !sm.AgentCascadingEnabled {
+		t.Error("AgentCascadingEnabled = false, want true — Update persisted it but ListByOwner didn't reflect it")
+	}
+	if !sm.AutonomousPickupEnabled {
+		t.Error("AutonomousPickupEnabled = false, want true — Update persisted it but ListByOwner didn't reflect it")
+	}
+	if !sm.WebSearchEnabled {
+		t.Error("WebSearchEnabled = false, want true — Update persisted it but ListByOwner didn't reflect it")
+	}
+}
+
 // TestIntegration_ListHandler_PinnedFirst exercises the sort order
 // itself against real Postgres: a pinned room comes first regardless of
 // how stale its last_activity_at is, and unpinned rooms still sort by
@@ -247,7 +306,7 @@ func TestIntegration_ListHandler_PinnedFirst(t *testing.T) {
 		t.Fatalf("backdate stale room: %v", err)
 	}
 	pinTrue := true
-	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil, nil, nil); err != nil {
+	if _, err := s.Update(ctx, stalePinned.ID, nil, &pinTrue, nil, nil, nil, nil); err != nil {
 		t.Fatalf("pin stale room: %v", err)
 	}
 

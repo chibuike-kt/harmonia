@@ -33,6 +33,8 @@ interface RoomInfoPanelProps {
   onToggleCascading: (enabled: boolean) => void;
   autonomousPickupEnabled: boolean;
   onTogglePickup: (enabled: boolean) => void;
+  webSearchEnabled: boolean;
+  onToggleWebSearch: (enabled: boolean) => void;
 }
 
 /**
@@ -64,6 +66,8 @@ export function RoomInfoPanel({
   onToggleCascading,
   autonomousPickupEnabled,
   onTogglePickup,
+  webSearchEnabled,
+  onToggleWebSearch,
 }: RoomInfoPanelProps) {
   const [editingObjective, setEditingObjective] = useState(false);
   // Mirrors Sidebar's own rename-input convention: Escape must cancel
@@ -275,6 +279,37 @@ export function RoomInfoPanel({
                       autonomousPickupEnabled
                         ? "translate-x-[18px]"
                         : "translate-x-0.5"
+                    }`}
+                  />
+                </span>
+              </button>
+            </div>
+
+            <div className="mb-5">
+              <div className="mb-2 font-[family-name:var(--login-font-mono)] text-[11px] uppercase tracking-wide text-[var(--login-text-muted)]">
+                Web search
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={webSearchEnabled}
+                onClick={() => onToggleWebSearch(!webSearchEnabled)}
+                className="flex w-full items-center justify-between gap-3 rounded-lg border border-[var(--login-border-strong)] px-3 py-2 text-left hover:border-[var(--login-accent)]"
+              >
+                <span className="text-[13px] leading-[1.4] text-[var(--login-text)]">
+                  Let agents search the web when a question calls for it. Real
+                  per-search cost on top of tokens. Off by default.
+                </span>
+                <span
+                  className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                    webSearchEnabled
+                      ? "bg-[var(--login-accent)]"
+                      : "bg-[var(--login-border-strong)]"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-[var(--login-bg)] transition-transform ${
+                      webSearchEnabled ? "translate-x-[18px]" : "translate-x-0.5"
                     }`}
                   />
                 </span>

@@ -42,6 +42,7 @@ interface ComposerProps {
     content: string,
     mentionedAgentIds: string[],
     attachment?: PendingFileAttachment,
+    forceSearch?: boolean,
   ) => void;
 }
 
@@ -76,9 +77,10 @@ function formatFileSize(bytes: number): string {
  * agents that allows selecting more than one (sends the structured
  * mentioned_agent_ids array the backend expects, never text-parsed —
  * ADR-006 batch A), and a "+" menu offering a real file attachment
- * (ADR-008 batch A) alongside web search, still honestly labeled "soon"
- * — search is batch B's own, separate piece of this same ADR, not yet
- * built.
+ * (ADR-008 batch A) alongside a real per-message "Search the web" force
+ * attach (ADR-008 batch B) — forces this one message's reply through a
+ * real web search via RequireToolCall, independent of whatever the
+ * room's own web_search toggle is set to (see RoomInfoPanel).
  */
 export function Composer({ agents, disabled, onSend }: ComposerProps) {
   const [value, setValue] = useState("");
@@ -90,6 +92,7 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
   const [fileAttachment, setFileAttachment] =
     useState<PendingFileAttachment | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [forceSearch, setForceSearch] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -163,12 +166,14 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
       parts.join("\n\n"),
       mentionedAgents.map((a) => a.id),
       fileAttachment ?? undefined,
+      forceSearch || undefined,
     );
     setValue("");
     setMentionedAgents([]);
     setPastedAttachments([]);
     setFileAttachment(null);
     setAttachmentError(null);
+    setForceSearch(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -220,13 +225,22 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
 
         {plusOpen && (
           <div className="absolute bottom-[calc(100%+8px)] left-2.5 flex min-w-[200px] flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
-            <div className="flex cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] opacity-55">
+            <button
+              type="button"
+              onClick={() => {
+                setPlusOpen(false);
+                setForceSearch((v) => !v);
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
               <SearchIcon />
               Search the web
-              <span className="ml-auto font-[family-name:var(--login-font-mono)] text-[10.5px] text-[var(--login-text-muted)]">
-                soon
-              </span>
-            </div>
+              {forceSearch && (
+                <span className="ml-auto font-[family-name:var(--login-font-mono)] text-[10.5px] text-[var(--login-accent)]">
+                  on
+                </span>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -330,6 +344,22 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
               kind="file"
               onRemove={() => setFileAttachment(null)}
             />
+          </div>
+        )}
+        {forceSearch && (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+            <span className="flex items-center gap-1.5 rounded-full border border-[var(--login-accent)] bg-[var(--login-accent)]/10 py-1 pl-2 pr-2.5 text-[12px] text-[var(--login-accent)]">
+              <SearchIcon />
+              Search the web
+              <button
+                type="button"
+                aria-label="Cancel search the web"
+                onClick={() => setForceSearch(false)}
+                className="ml-0.5 text-[var(--login-accent)] hover:opacity-70"
+              >
+                ×
+              </button>
+            </span>
           </div>
         )}
         {attachmentError && (

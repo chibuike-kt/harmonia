@@ -126,7 +126,7 @@ func TestIntegration_ObjectiveGenerator_RaceGuardSkipsManualEdit(t *testing.T) {
 				// this slow provider call is still in flight — exactly
 				// the race the guard is meant to handle.
 				manual := manualObjective
-				if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, nil, &manual); err != nil {
+				if _, err := rooms.Update(ctx, rm.ID, nil, nil, nil, nil, nil, &manual); err != nil {
 					t.Errorf("simulate concurrent manual edit: %v", err)
 				}
 			},

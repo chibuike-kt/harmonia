@@ -126,6 +126,7 @@ interface RoomSummary {
   name: string;
   agent_cascading_enabled: boolean;
   autonomous_pickup_enabled: boolean;
+  web_search_enabled: boolean;
   // omitempty on the Go side — absent, not null, when the room has no
   // objective yet.
   objective?: string;
@@ -250,7 +251,6 @@ function fromHistorical(e: HistoricalEvent): TimelineEntry {
 // resolved-state badge once it isn't, not a plain historical label —
 // so it becomes its own "approval" timeline entry instead.
 // ACTION_RESOLVED/ACTION.RESOLVE never produce their own entry at all:
-// both the snapshot handler and the live "event" listener update the
 // matching "approval" entry (by proposal_id) in place instead — the
 // same card throughout its life, never replaced or removed.
 function fromProposedEvent(
@@ -475,6 +475,7 @@ export default function RoomViewPage() {
   const [roomObjective, setRoomObjective] = useState<string | null>(null);
   const [agentCascadingEnabled, setAgentCascadingEnabled] = useState(false);
   const [autonomousPickupEnabled, setAutonomousPickupEnabled] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
   const [connection, setConnection] = useState<
     "connecting" | "open" | "reconnecting"
@@ -546,6 +547,7 @@ export default function RoomViewPage() {
           setRoomObjective(match.objective ?? null);
           setAgentCascadingEnabled(match.agent_cascading_enabled);
           setAutonomousPickupEnabled(match.autonomous_pickup_enabled);
+          setWebSearchEnabled(match.web_search_enabled);
         }
       })
       .catch(() => {});
@@ -577,6 +579,19 @@ export default function RoomViewPage() {
       });
     } catch {
       setAutonomousPickupEnabled(!enabled);
+    }
+  };
+
+  const handleToggleWebSearch = async (enabled: boolean) => {
+    if (!roomId) return;
+    setWebSearchEnabled(enabled);
+    try {
+      await apiFetch(`/v1/rooms/${roomId}`, {
+        method: "PATCH",
+        body: { web_search_enabled: enabled },
+      });
+    } catch {
+      setWebSearchEnabled(!enabled);
     }
   };
 
@@ -886,6 +901,7 @@ export default function RoomViewPage() {
     content: string,
     mentionedAgentIds: string[],
     attachment?: PendingFileAttachment,
+    forceSearch?: boolean,
   ) => {
     if (!roomId) return;
     setSendError(null);
@@ -906,6 +922,7 @@ export default function RoomViewPage() {
                 },
               }
             : {}),
+          ...(forceSearch ? { force_search: true } : {}),
         },
       });
       // No optimistic local insert: the POST's own publish arrives back
@@ -1362,7 +1379,9 @@ export default function RoomViewPage() {
 
         <Composer
           agents={roomAgents}
-          onSend={(c, a, attachment) => void handleSend(c, a, attachment)}
+          onSend={(c, a, attachment, forceSearch) =>
+            void handleSend(c, a, attachment, forceSearch)
+          }
         />
       </main>
 
@@ -1379,6 +1398,8 @@ export default function RoomViewPage() {
         onToggleCascading={handleToggleCascading}
         autonomousPickupEnabled={autonomousPickupEnabled}
         onTogglePickup={handleTogglePickup}
+        webSearchEnabled={webSearchEnabled}
+        onToggleWebSearch={handleToggleWebSearch}
       />
       <ArtifactPanel artifact={artifact} onClose={() => setArtifact(null)} />
     </div>

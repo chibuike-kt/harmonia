@@ -171,7 +171,17 @@ func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.St
 // The context is deliberately independent of the request's (which is
 // canceled the moment the response is written), bounded by its own
 // generationTimeout instead.
-func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int) {
+//
+// forceSearch is the per-message forced-search override (ADR-008 batch
+// B) — true only when a human explicitly attached "search the web" to
+// triggering itself, independent of the room's own web_search_enabled
+// toggle (checked separately, inside invoke). Only CreateHandler's own
+// two call sites (explicit @mention, implicit single-agent addressing)
+// ever pass true; RetryHandler and every cascade/pickup-originated call
+// always pass false — forced search is a one-shot intent on the human's
+// own original message, not something a retry or an agent-to-agent hop
+// re-derives.
+func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int, forceSearch bool) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), generationTimeout)
 		defer cancel()
@@ -182,11 +192,11 @@ func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uui
 					"something went wrong generating this reply and it couldn't complete.")
 			}
 		}()
-		o.invoke(ctx, mentionedAgentID, roomOwnerID, triggering, depth)
+		o.invoke(ctx, mentionedAgentID, roomOwnerID, triggering, depth, forceSearch)
 	}()
 }
 
-func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int) {
+func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int, forceSearch bool) {
 	a, err := o.agents.GetByID(ctx, agentID)
 	if err != nil {
 		log.Printf("ERROR message: load agent %s to generate reply: %v", agentID, err)
@@ -270,12 +280,29 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		busy: wasBusy && cascadingEnabled,
 	}
 	req := buildGenerateRequest(a, history, customInstructions, framing)
-	req.Tools = append(req.Tools, createTaskTool())
-	if cascadingEnabled {
-		req.Tools = append(req.Tools, mentionAgentTool())
-	}
-	if len(activeTasks) > 0 && len(otherAgents) > 0 {
-		req.Tools = append(req.Tools, requestHandoffTool(activeTasks, otherAgents))
+	if forceSearch {
+		// Per-message forced search (ADR-008 batch B): Tools is
+		// deliberately left as just this — no create_task/mention_agent/
+		// request_handoff mixed in. RequireToolCall only guarantees "the
+		// model calls something in Tools"; offering those alongside search
+		// would let the model dodge into one of them and defeat the whole
+		// point of a human's explicit "search the web" intent.
+		req.WebSearchEnabled = true
+		req.RequireToolCall = true
+	} else {
+		req.Tools = append(req.Tools, createTaskTool())
+		if cascadingEnabled {
+			req.Tools = append(req.Tools, mentionAgentTool())
+		}
+		if len(activeTasks) > 0 && len(otherAgents) > 0 {
+			req.Tools = append(req.Tools, requestHandoffTool(activeTasks, otherAgents))
+		}
+		// Room-level toggle (ADR-008 batch B) — advisory, independent of
+		// forceSearch: the model itself still decides whether a given
+		// question actually warrants a search.
+		if rm.WebSearchEnabled {
+			req.WebSearchEnabled = true
+		}
 	}
 
 	resp, err := client.Generate(ctx, req)
@@ -299,7 +326,18 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		}
 	}
 
-	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, resp.Content, triggering.ID, &resp.InputTokens, &resp.OutputTokens, cascadeTargets)
+	// Citations are rendered into the stored content itself (ADR-008
+	// batch B) — numbered inline markers plus a trailing Sources list —
+	// rather than kept as a side channel: the composer/message row has
+	// no separate citations field, and encoding them into content at
+	// generation time means every existing rendering path (markdown,
+	// the recency-window history a later turn sees) already handles them
+	// with no changes. A no-op (returns content unchanged) whenever
+	// Citations is empty, which is the overwhelming majority of replies
+	// even in a search-enabled room.
+	content := provider.ApplyCitations(resp.Content, resp.Citations)
+
+	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, content, triggering.ID, &resp.InputTokens, &resp.OutputTokens, cascadeTargets)
 	if err != nil {
 		log.Printf("ERROR message: store generated reply for agent %s: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "the reply was generated but couldn't be saved.")
@@ -339,7 +377,11 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 			o.cascadeCapped(ctx, triggering.RoomID, targetID, reply.ID, cascadeDepthCap)
 			continue
 		}
-		o.TriggerReply(targetID, roomOwnerID, reply, depth+1)
+		// A cascade hop is agent-to-agent, not a human's own message —
+		// forced search is scoped to a human's own explicit per-message
+		// intent only (see TriggerReply's doc comment), so it never
+		// propagates across a cascade.
+		o.TriggerReply(targetID, roomOwnerID, reply, depth+1, false)
 	}
 }
 
@@ -555,7 +597,10 @@ func (o *Orchestrator) evaluateOnePickup(a agent.Agent, roomOwnerID *uuid.UUID, 
 	// reusing this function's own ctx here would hand phase 2 whatever
 	// time phase 1's own call happened to leave on its already-ticking
 	// timeout instead.
-	o.TriggerReply(a.ID, roomOwnerID, triggering, 0)
+	// Autonomous pickup is the agent's own decision to respond, not a
+	// human's explicit per-message intent — forced search never applies
+	// here (see TriggerReply's doc comment).
+	o.TriggerReply(a.ID, roomOwnerID, triggering, 0, false)
 }
 
 // fail inserts and publishes a visible failure message — ADR-004: a
