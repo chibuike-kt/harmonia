@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
 import { createRoom } from "@/lib/createRoom";
+import { useIsMobile } from "@/lib/useIsMobile";
 import { useIsTruncated } from "@/lib/useIsTruncated";
 import { SettingsModal, type SettingsCategory } from "./SettingsModal";
 import { Tooltip } from "./Tooltip";
@@ -16,9 +17,11 @@ import {
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CloseIcon,
   GridIcon,
   HelpIcon,
   LogoutIcon,
+  MenuIcon,
   MoreIcon,
   PinIcon,
   PlusIcon,
@@ -30,6 +33,32 @@ import {
   TeamIcon,
   TrashIcon,
 } from "./icons";
+
+// Cross-component trigger for the mobile drawer — same "plain DOM
+// CustomEvent, no prop drilling" convention Sidebar already uses for
+// "harmonia:open-settings" and "harmonia:room-updated". Needed here
+// specifically because the trigger (a hamburger icon) lives in each
+// page's own header (dashboard, room view), not inside Sidebar itself.
+export const OPEN_SIDEBAR_EVENT = "harmonia:open-sidebar";
+
+/**
+ * Hamburger button that opens the mobile drawer — render this in a
+ * page's own header (see the room view and dashboard headers). Hidden at
+ * `md` and up, where the sidebar is the persistent column and there's
+ * nothing for this to trigger.
+ */
+export function MobileMenuButton({ className }: { className?: string }) {
+  return (
+    <button
+      type="button"
+      aria-label="Open menu"
+      onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SIDEBAR_EVENT))}
+      className={`flex shrink-0 rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] md:hidden ${className ?? ""}`}
+    >
+      <MenuIcon />
+    </button>
+  );
+}
 
 interface RoomSummary {
   id: string;
@@ -309,12 +338,16 @@ function RoomRow({
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const isMobile = useIsMobile();
 
   const [collapsed, setCollapsed] = useState(false);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [resizing, setResizing] = useState(false);
   const [roomsCollapsed, setRoomsCollapsed] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  // Mobile's only state (see the build brief's own decision #1): no
+  // collapsed/peek/width here at all, just open or closed.
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null);
   const [me, setMe] = useState<Me | null>(null);
@@ -442,6 +475,34 @@ export function Sidebar() {
     return () =>
       window.removeEventListener("harmonia:room-updated", onRoomUpdated);
   }, [loadRooms]);
+
+  useEffect(() => {
+    function onOpenSidebar() {
+      setMobileOpen(true);
+    }
+    window.addEventListener(OPEN_SIDEBAR_EVENT, onOpenSidebar);
+    return () => window.removeEventListener(OPEN_SIDEBAR_EVENT, onOpenSidebar);
+  }, []);
+
+  useEffect(() => {
+    // Closes the drawer on navigation — tapping a room/Dashboard/Artifacts
+    // link is the ordinary way a drawer dismisses on mobile, same
+    // expectation as any off-canvas nav. Already false on first mount, so
+    // this fires harmlessly then, not just after a real navigation. Same
+    // "responding to a changing value, not derivable at render time"
+    // justification as this file's other set-state-in-effect exceptions.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMobileOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMobileOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen]);
 
   useEffect(() => {
     // Same "ref must cover the trigger too, not just the panel" fix the
@@ -593,332 +654,381 @@ export function Sidebar() {
 
   const displayName = me?.display_name || me?.username || "";
 
-  return (
-    <div
-      className="group/shell relative h-screen shrink-0"
-      style={{
-        width: collapsed ? 0 : width,
-        transition: resizing ? "none" : "width 0.18s ease",
-        ["--peek-width" as string]: `${width}px`,
-      }}
-    >
-      {/* Positioning lives on this outer div, not passed into Tooltip's
-          own className: Tooltip's wrapper hardcodes position:relative
-          (it's the anchor for the floating label), and concatenating an
-          "absolute" utility into that same class list is a real
-          position-property conflict — whichever wins depends on
-          Tailwind's generated stylesheet order, not JSX order, and here
-          it silently broke the whole sidebar's layout (relative won,
-          the h-full resize handle occupied real flow space instead of
-          being taken out of it, pushing everything below it down by a
-          full viewport height). Keeping Tooltip itself simple and doing
-          absolute positioning one level up avoids the conflict entirely. */}
-      {!collapsed && (
-        <div className="absolute -right-[3px] top-0 z-30 h-full">
-          <Tooltip label="Resize sidebar" className="h-full">
-            <div
-              onMouseDown={handleResizeStart}
-              className="h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
-            />
-          </Tooltip>
-        </div>
-      )}
-
-      {collapsed && (
-        <div className="absolute left-2.5 top-[18px] z-40">
-          <Tooltip label="Show sidebar">
-            <button
-              type="button"
-              aria-label="Show sidebar"
-              onClick={() => setCollapsed(false)}
-              className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[var(--login-text-secondary)] hover:bg-[#1C222B] hover:text-[var(--login-text)]"
-            >
-              <ChevronRightIcon />
-            </button>
-          </Tooltip>
-        </div>
-      )}
-
-      {/* Collapsed: zero width, clipped, and absolutely positioned so it
-          overlays main on hover instead of pushing it — main never
-          reflows during a peek, only a click makes it permanent. */}
-      <div
-        className={
-          collapsed
-            ? "group/sidebar absolute left-0 top-0 z-[35] flex h-full w-0 flex-col overflow-hidden transition-[width,box-shadow] duration-150 ease-out group-hover/shell:w-[var(--peek-width)] group-hover/shell:border-r group-hover/shell:border-[var(--login-border)] group-hover/shell:shadow-[6px_0_32px_rgba(0,0,0,0.55)]"
-            : "group/sidebar flex h-full w-full flex-col overflow-hidden border-r border-[var(--login-border)]"
-        }
-        style={{ background: "var(--login-sidebar-bg)" }}
-      >
-        <div className="flex items-center justify-between px-3.5 py-4 pb-3">
-          <span className="whitespace-nowrap text-[17px] font-semibold tracking-[-0.01em] text-[var(--login-text)]">
-            Harmonia
-          </span>
-          <Tooltip label="Collapse sidebar">
-            <button
-              type="button"
-              aria-label="Collapse sidebar"
-              onClick={() => setCollapsed(true)}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
-            >
-              <ChevronLeftIcon />
-            </button>
-          </Tooltip>
-        </div>
-
-        <nav className="flex flex-col gap-0.5 px-2.5">
-          <Link
-            href="/dashboard"
-            className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
-              pathname === "/dashboard"
-                ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-                : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            }`}
-          >
-            <GridIcon />
-            Dashboard
-          </Link>
+  // Shared by both shells below (desktop's collapse/peek wrapper and
+  // mobile's drawer) — nav, rooms list, and profile menu are identical
+  // content either way, only the outer chrome and the header's own
+  // collapse/close button differ. A closure, not a separate component:
+  // it closes over every handler/state already in scope here, so this
+  // avoids prop-drilling the same dozen callbacks through a second
+  // component just to render the same JSX in two different wrappers.
+  const sidebarBody = (
+    <>
+      <div className="flex items-center justify-between px-3.5 py-4 pb-3">
+        <span className="whitespace-nowrap text-[17px] font-semibold tracking-[-0.01em] text-[var(--login-text)]">
+          Harmonia
+        </span>
+        <Tooltip label={isMobile ? "Close menu" : "Collapse sidebar"}>
           <button
             type="button"
-            onClick={() => void handleCreateRoom()}
-            disabled={creatingRoom}
-            className="flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-sm text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] disabled:opacity-60"
+            aria-label={isMobile ? "Close menu" : "Collapse sidebar"}
+            onClick={() =>
+              isMobile ? setMobileOpen(false) : setCollapsed(true)
+            }
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
           >
-            <PlusIcon />
-            {creatingRoom ? "Creating…" : "New room"}
+            {isMobile ? <CloseIcon /> : <ChevronLeftIcon />}
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setSettingsCategory("agents");
-              setSettingsOpen(true);
-            }}
-            className="flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-sm text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-          >
-            <AgentsIcon />
-            Agents
-          </button>
-          <Link
-            href="/artifacts"
-            className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
-              pathname === "/artifacts"
-                ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-                : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            }`}
-          >
-            <ArtifactsIcon />
-            Artifacts
-          </Link>
-          {QUICK_NAV.filter(({ href }) => href !== "/dashboard").map(
-            ({ label, href, Icon }) => {
-              const active = pathname === href;
-              return (
-                <Link
-                  key={label}
-                  href={href}
-                  className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
-                    active
-                      ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
-                      : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-                  }`}
-                >
-                  <Icon />
-                  {label}
-                </Link>
-              );
-            },
-          )}
-        </nav>
-        {createRoomError && (
-          <p className="px-3.5 pb-1 text-[12px] text-red-400">
-            {createRoomError}
-          </p>
+        </Tooltip>
+      </div>
+
+      <nav className="flex flex-col gap-0.5 px-2.5">
+        <Link
+          href="/dashboard"
+          className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
+            pathname === "/dashboard"
+              ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+              : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+          }`}
+        >
+          <GridIcon />
+          Dashboard
+        </Link>
+        <button
+          type="button"
+          onClick={() => void handleCreateRoom()}
+          disabled={creatingRoom}
+          className="flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-sm text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)] disabled:opacity-60"
+        >
+          <PlusIcon />
+          {creatingRoom ? "Creating…" : "New room"}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSettingsCategory("agents");
+            setSettingsOpen(true);
+          }}
+          className="flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-sm text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+        >
+          <AgentsIcon />
+          Agents
+        </button>
+        <Link
+          href="/artifacts"
+          className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
+            pathname === "/artifacts"
+              ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+              : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+          }`}
+        >
+          <ArtifactsIcon />
+          Artifacts
+        </Link>
+        {QUICK_NAV.filter(({ href }) => href !== "/dashboard").map(
+          ({ label, href, Icon }) => {
+            const active = pathname === href;
+            return (
+              <Link
+                key={label}
+                href={href}
+                className={`flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-sm ${
+                  active
+                    ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                    : "text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+                }`}
+              >
+                <Icon />
+                {label}
+              </Link>
+            );
+          },
         )}
+      </nav>
+      {createRoomError && (
+        <p className="px-3.5 pb-1 text-[12px] text-red-400">
+          {createRoomError}
+        </p>
+      )}
 
-        <div className="mx-3.5 my-3.5 h-px bg-[var(--login-border)]" />
+      <div className="mx-3.5 my-3.5 h-px bg-[var(--login-border)]" />
 
-        <div className="flex items-center justify-between py-2 pl-[18px] pr-3.5">
-          <span className="font-[family-name:var(--login-font-mono)] text-xs text-[var(--login-text-muted)]">
-            Rooms
-          </span>
-          <div className="flex items-center gap-0.5">
-            <Tooltip label={roomsCollapsed ? "Expand rooms" : "Collapse rooms"}>
-              <button
-                type="button"
-                aria-label="Collapse room history"
-                onClick={() => setRoomsCollapsed((c) => !c)}
-                className="flex rounded p-[3px] text-[var(--login-text-muted)] opacity-0 transition-opacity hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] group-hover/sidebar:opacity-100"
-              >
-                <ChevronDownIcon
-                  className={roomsCollapsed ? "-rotate-90" : undefined}
-                />
-              </button>
-            </Tooltip>
-            <Tooltip label="Sort rooms">
-              <button
-                type="button"
-                aria-label="Sort rooms"
-                className="flex rounded p-[3px] text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
-              >
-                <SortIcon />
-              </button>
-            </Tooltip>
-          </div>
+      <div className="flex items-center justify-between py-2 pl-[18px] pr-3.5">
+        <span className="font-[family-name:var(--login-font-mono)] text-xs text-[var(--login-text-muted)]">
+          Rooms
+        </span>
+        <div className="flex items-center gap-0.5">
+          <Tooltip label={roomsCollapsed ? "Expand rooms" : "Collapse rooms"}>
+            <button
+              type="button"
+              aria-label="Collapse room history"
+              onClick={() => setRoomsCollapsed((c) => !c)}
+              className="flex rounded p-[3px] text-[var(--login-text-muted)] opacity-100 transition-opacity hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)] md:opacity-0 md:group-hover/sidebar:opacity-100"
+            >
+              <ChevronDownIcon
+                className={roomsCollapsed ? "-rotate-90" : undefined}
+              />
+            </button>
+          </Tooltip>
+          <Tooltip label="Sort rooms">
+            <button
+              type="button"
+              aria-label="Sort rooms"
+              className="flex rounded p-[3px] text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+            >
+              <SortIcon />
+            </button>
+          </Tooltip>
         </div>
+      </div>
 
-        {!roomsCollapsed && (
-          // overflow-x-hidden is load-bearing, not decorative: a room
-          // name's Tooltip renders its floating label at full,
-          // untruncated width even while invisible (opacity-0, not
-          // hovered), positioned via absolute + centered transform on a
-          // ~180px anchor. With only overflow-y-auto set, the CSS
-          // interop rule that promotes a lone axis's overflow to "auto"
-          // makes this container the nearest scroll boundary, and that
-          // always-present hidden label's width becomes real horizontal
-          // scroll content — the sidebar scrolls sideways for a long
-          // name even though the name span itself truncates correctly.
-          <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2.5">
-            {rooms === null &&
-              Array.from({ length: 3 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="mx-0.5 my-[3px] h-[34px] animate-pulse rounded-lg bg-[var(--login-surface-2)]/50"
-                />
-              ))}
-            {rooms !== null && rooms.length === 0 && (
-              <div className="flex flex-col items-start gap-2 px-2.5 py-3 text-sm text-[var(--login-text-muted)]">
-                <p>No rooms yet.</p>
-                <button
-                  type="button"
-                  onClick={() => void handleCreateRoom()}
-                  disabled={creatingRoom}
-                  className="text-[var(--login-text-secondary)] underline hover:text-[var(--login-text)] disabled:opacity-60"
-                >
-                  Create your first room
-                </button>
-              </div>
-            )}
-            {rooms?.map((room) => (
-              <RoomRow
-                key={room.id}
-                room={room}
-                active={pathname === `/rooms/${room.id}`}
-                isRenaming={renamingRoomId === room.id}
-                menuOpen={openMenuFor === room.id}
-                confirmingDelete={confirmDeleteFor === room.id}
-                actionPending={actionPending}
-                actionError={openMenuFor === room.id ? actionError : null}
-                onOpenMenu={() => handleOpenMenu(room.id)}
-                onCloseMenu={handleCloseMenu}
-                onTogglePin={() => void handleTogglePin(room)}
-                onStartRename={() => handleStartRename(room.id)}
-                onCommitRename={(name) => void handleCommitRename(room, name)}
-                onCancelRename={() => setRenamingRoomId(null)}
-                onRequestDelete={() => setConfirmDeleteFor(room.id)}
-                onCancelDelete={() => setConfirmDeleteFor(null)}
-                onConfirmDelete={() => void handleConfirmDelete(room.id)}
+      {!roomsCollapsed && (
+        // overflow-x-hidden is load-bearing, not decorative: a room
+        // name's Tooltip renders its floating label at full,
+        // untruncated width even while invisible (opacity-0, not
+        // hovered), positioned via absolute + centered transform on a
+        // ~180px anchor. With only overflow-y-auto set, the CSS
+        // interop rule that promotes a lone axis's overflow to "auto"
+        // makes this container the nearest scroll boundary, and that
+        // always-present hidden label's width becomes real horizontal
+        // scroll content — the sidebar scrolls sideways for a long
+        // name even though the name span itself truncates correctly.
+        <div className="no-scrollbar flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto px-2.5">
+          {rooms === null &&
+            Array.from({ length: 3 }).map((_, i) => (
+              <div
+                key={i}
+                className="mx-0.5 my-[3px] h-[34px] animate-pulse rounded-lg bg-[var(--login-surface-2)]/50"
               />
             ))}
-          </div>
-        )}
-        {roomsCollapsed && <div className="flex-1" />}
-
-        <div
-          ref={profileRef}
-          className="relative mt-auto shrink-0 border-t border-[var(--login-border)] p-2.5"
-        >
-          {profileOpen && (
-            <div className="absolute bottom-[calc(100%+6px)] left-2.5 right-2.5 flex flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
-              {me?.email && (
-                <div className="truncate border-b border-[var(--login-border)] px-2.5 pb-2 pt-1 text-[12px] text-[var(--login-text-muted)]">
-                  {me.email}
-                </div>
-              )}
-              {PROFILE_PLACEHOLDER_ITEMS.map(({ label, Icon }) => (
-                <a
-                  key={label}
-                  href="#"
-                  className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-                >
-                  <Icon />
-                  {label}
-                </a>
-              ))}
+          {rooms !== null && rooms.length === 0 && (
+            <div className="flex flex-col items-start gap-2 px-2.5 py-3 text-sm text-[var(--login-text-muted)]">
+              <p>No rooms yet.</p>
               <button
                 type="button"
-                onClick={() => {
-                  setSettingsCategory("team");
-                  setSettingsOpen(true);
-                  setProfileOpen(false);
-                }}
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+                onClick={() => void handleCreateRoom()}
+                disabled={creatingRoom}
+                className="text-[var(--login-text-secondary)] underline hover:text-[var(--login-text)] disabled:opacity-60"
               >
-                <TeamIcon />
-                Team &amp; roles
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSettingsCategory("security");
-                  setSettingsOpen(true);
-                  setProfileOpen(false);
-                }}
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-              >
-                <SecurityIcon />
-                Security
-              </button>
-              <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
-              <button
-                type="button"
-                onClick={() => {
-                  setSettingsCategory("general");
-                  setSettingsOpen(true);
-                  setProfileOpen(false);
-                }}
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-              >
-                <SettingsIcon />
-                Settings
-              </button>
-              <a
-                href="#"
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-              >
-                <HelpIcon />
-                Get help
-              </a>
-              <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-              >
-                <LogoutIcon />
-                Log out
+                Create your first room
               </button>
             </div>
           )}
-          <button
-            type="button"
-            onClick={() => setProfileOpen((open) => !open)}
-            className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left hover:bg-[var(--login-surface-2)]"
-          >
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-xs font-semibold text-[var(--login-accent)]">
-              {displayName ? initials(displayName) : ""}
-            </span>
-            <span className="min-w-0 flex-1 overflow-hidden">
-              <span className="block truncate text-[13.5px] font-medium text-[var(--login-text)]">
-                {displayName || "…"}
-              </span>
-              <span className="block truncate text-[11.5px] text-[var(--login-text-muted)]">
-                {me?.email ?? ""}
-              </span>
-            </span>
-            <ChevronDownIcon className="rotate-180" />
-          </button>
+          {rooms?.map((room) => (
+            <RoomRow
+              key={room.id}
+              room={room}
+              active={pathname === `/rooms/${room.id}`}
+              isRenaming={renamingRoomId === room.id}
+              menuOpen={openMenuFor === room.id}
+              confirmingDelete={confirmDeleteFor === room.id}
+              actionPending={actionPending}
+              actionError={openMenuFor === room.id ? actionError : null}
+              onOpenMenu={() => handleOpenMenu(room.id)}
+              onCloseMenu={handleCloseMenu}
+              onTogglePin={() => void handleTogglePin(room)}
+              onStartRename={() => handleStartRename(room.id)}
+              onCommitRename={(name) => void handleCommitRename(room, name)}
+              onCancelRename={() => setRenamingRoomId(null)}
+              onRequestDelete={() => setConfirmDeleteFor(room.id)}
+              onCancelDelete={() => setConfirmDeleteFor(null)}
+              onConfirmDelete={() => void handleConfirmDelete(room.id)}
+            />
+          ))}
         </div>
+      )}
+      {roomsCollapsed && <div className="flex-1" />}
+
+      <div
+        ref={profileRef}
+        className="relative mt-auto shrink-0 border-t border-[var(--login-border)] p-2.5"
+      >
+        {profileOpen && (
+          <div className="absolute bottom-[calc(100%+6px)] left-2.5 right-2.5 flex flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+            {me?.email && (
+              <div className="truncate border-b border-[var(--login-border)] px-2.5 pb-2 pt-1 text-[12px] text-[var(--login-text-muted)]">
+                {me.email}
+              </div>
+            )}
+            {PROFILE_PLACEHOLDER_ITEMS.map(({ label, Icon }) => (
+              <a
+                key={label}
+                href="#"
+                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <Icon />
+                {label}
+              </a>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsCategory("team");
+                setSettingsOpen(true);
+                setProfileOpen(false);
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <TeamIcon />
+              Team &amp; roles
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsCategory("security");
+                setSettingsOpen(true);
+                setProfileOpen(false);
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <SecurityIcon />
+              Security
+            </button>
+            <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsCategory("general");
+                setSettingsOpen(true);
+                setProfileOpen(false);
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <SettingsIcon />
+              Settings
+            </button>
+            <a
+              href="#"
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <HelpIcon />
+              Get help
+            </a>
+            <div className="mx-1 my-1 h-px bg-[var(--login-border)]" />
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
+              <LogoutIcon />
+              Log out
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => setProfileOpen((open) => !open)}
+          className="flex w-full items-center gap-2.5 rounded-lg p-2 text-left hover:bg-[var(--login-surface-2)]"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-xs font-semibold text-[var(--login-accent)]">
+            {displayName ? initials(displayName) : ""}
+          </span>
+          <span className="min-w-0 flex-1 overflow-hidden">
+            <span className="block truncate text-[13.5px] font-medium text-[var(--login-text)]">
+              {displayName || "…"}
+            </span>
+            <span className="block truncate text-[11.5px] text-[var(--login-text-muted)]">
+              {me?.email ?? ""}
+            </span>
+          </span>
+          <ChevronDownIcon className="rotate-180" />
+        </button>
       </div>
+    </>
+  );
+
+  return (
+    <>
+      {!isMobile && (
+        <div
+          className="group/shell relative h-screen shrink-0"
+          style={{
+            width: collapsed ? 0 : width,
+            transition: resizing ? "none" : "width 0.18s ease",
+            ["--peek-width" as string]: `${width}px`,
+          }}
+        >
+          {/* Positioning lives on this outer div, not passed into
+              Tooltip's own className: Tooltip's wrapper hardcodes
+              position:relative (it's the anchor for the floating label),
+              and concatenating an "absolute" utility into that same
+              class list is a real position-property conflict —
+              whichever wins depends on Tailwind's generated stylesheet
+              order, not JSX order, and here it silently broke the whole
+              sidebar's layout (relative won, the h-full resize handle
+              occupied real flow space instead of being taken out of it,
+              pushing everything below it down by a full viewport
+              height). Keeping Tooltip itself simple and doing absolute
+              positioning one level up avoids the conflict entirely. */}
+          {!collapsed && (
+            <div className="absolute -right-[3px] top-0 z-30 h-full">
+              <Tooltip label="Resize sidebar" className="h-full">
+                <div
+                  onMouseDown={handleResizeStart}
+                  className="h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
+                />
+              </Tooltip>
+            </div>
+          )}
+
+          {collapsed && (
+            <div className="absolute left-2.5 top-[18px] z-40">
+              <Tooltip label="Show sidebar">
+                <button
+                  type="button"
+                  aria-label="Show sidebar"
+                  onClick={() => setCollapsed(false)}
+                  className="flex h-[30px] w-[30px] items-center justify-center rounded-md border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] text-[var(--login-text-secondary)] hover:bg-[#1C222B] hover:text-[var(--login-text)]"
+                >
+                  <ChevronRightIcon />
+                </button>
+              </Tooltip>
+            </div>
+          )}
+
+          {/* Collapsed: zero width, clipped, and absolutely positioned
+              so it overlays main on hover instead of pushing it — main
+              never reflows during a peek, only a click makes it
+              permanent. */}
+          <div
+            className={
+              collapsed
+                ? "group/sidebar absolute left-0 top-0 z-[35] flex h-full w-0 flex-col overflow-hidden transition-[width,box-shadow] duration-150 ease-out group-hover/shell:w-[var(--peek-width)] group-hover/shell:border-r group-hover/shell:border-[var(--login-border)] group-hover/shell:shadow-[6px_0_32px_rgba(0,0,0,0.55)]"
+                : "group/sidebar flex h-full w-full flex-col overflow-hidden border-r border-[var(--login-border)]"
+            }
+            style={{ background: "var(--login-sidebar-bg)" }}
+          >
+            {sidebarBody}
+          </div>
+        </div>
+      )}
+
+      {isMobile && (
+        <>
+          {/* Backdrop: kept mounted (not conditionally rendered) so the
+              opacity transition actually plays on close, not just on
+              open — an unmounted-on-close element has no "before" frame
+              to transition from. pointer-events-none while hidden so it
+              doesn't eat taps meant for the page underneath. */}
+          <div
+            onClick={() => setMobileOpen(false)}
+            aria-hidden="true"
+            className={`fixed inset-0 z-40 bg-black/60 transition-opacity duration-200 ${
+              mobileOpen ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Menu"
+            className={`fixed inset-y-0 left-0 z-50 flex h-screen w-[82vw] max-w-[320px] flex-col overflow-hidden border-r border-[var(--login-border)] transition-transform duration-200 ease-out ${
+              mobileOpen ? "translate-x-0" : "-translate-x-full"
+            }`}
+            style={{ background: "var(--login-sidebar-bg)" }}
+          >
+            {sidebarBody}
+          </div>
+        </>
+      )}
 
       <SettingsModal
         open={settingsOpen}
@@ -926,6 +1036,6 @@ export function Sidebar() {
         initialCategory={settingsCategory}
         onProfileSaved={() => void loadMe()}
       />
-    </div>
+    </>
   );
 }

@@ -124,3 +124,27 @@ body {
 .hljs-name {
   color: var(--login-text);
 }
+
+/*
+ * Entrance for a newly-appended timeline message
+ * (app/(shell)/rooms/[id]/page.tsx) — a plain CSS animation, not a JS
+ * mount-transition: it plays exactly once, automatically, the moment the
+ * element is first inserted into the DOM, and never replays on a later
+ * re-render of that same (stable-keyed) element, e.g. a status update.
+ * That's what makes new messages fade/slide in without the timeline's
+ * own auto-follow scroll (a separate, already-smooth behavior) feeling
+ * like content is being yanked into place.
+ */
+@keyframes timeline-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.timeline-enter {
+  animation: timeline-enter 0.22s ease-out;
+}

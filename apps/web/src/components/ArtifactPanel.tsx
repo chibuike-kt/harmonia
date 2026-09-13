@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import css from "highlight.js/lib/languages/css";
@@ -14,6 +14,7 @@ import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import { CloseIcon, CopyIcon, DownloadIcon, EnlargeIcon } from "./icons";
+import { useIsMobile } from "@/lib/useIsMobile";
 import { Tooltip } from "./Tooltip";
 
 // A fixed, common subset registered up front rather than highlight.js's
@@ -102,10 +103,27 @@ function ArtifactPanelContent({
   const [copied, setCopied] = useState(false);
   const [width, setWidth] = useState(DEFAULT_WIDTH);
   const [resizing, setResizing] = useState(false);
+  const isMobile = useIsMobile();
+  // Mobile is always effectively "enlarged" — full screen, replacing the
+  // timeline rather than sharing width with it — so every place enlarged
+  // alone used to gate resize/width behavior below also checks this.
+  const fullScreen = enlarged || isMobile;
+
+  // Drives the fade/slide-in below. A fresh ArtifactPanelContent instance
+  // mounts every time a genuinely different artifact opens (see
+  // ArtifactPanel's own key, further down) — the plain empty-deps effect
+  // this is correct here, unlike a persistently-mounted panel that only
+  // toggles an internal open flag (see RoomInfoPanel, which needs the
+  // extra open-driven reset this doesn't).
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   const handleResizeStart = (event: React.MouseEvent) => {
     event.preventDefault();
-    if (enlarged) return;
+    if (fullScreen) return;
     setResizing(true);
     const onMove = (moveEvent: MouseEvent) => {
       // The panel is anchored to the right edge of the screen, so its
@@ -162,17 +180,26 @@ function ArtifactPanelContent({
   return (
     <div
       className={
-        enlarged
-          ? "fixed inset-0 z-[60] flex h-screen w-screen flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)]"
-          : "relative flex h-screen shrink-0 flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)]"
+        fullScreen
+          ? "fixed inset-0 z-[60] h-screen w-screen"
+          : // Detached, floating card — a gap on every side (m-3), rather
+            // than a flush divider panel sharing the timeline's own
+            // edges. This outer layer only handles position/margin/the
+            // resize handle; rounding and clipping live one level in
+            // (below) so the handle, anchored just outside that layer's
+            // own left edge, isn't clipped by its own overflow-hidden.
+            // h-[calc(100%-1.5rem)] is h-full minus m-3's 0.75rem
+            // top/bottom margins — h-screen plus a vertical margin would
+            // overflow past 100vh.
+            "relative m-3 h-[calc(100%-1.5rem)] shrink-0"
       }
       style={
-        enlarged
+        fullScreen
           ? undefined
           : { width, transition: resizing ? "none" : "width 0.18s ease" }
       }
     >
-      {!enlarged && (
+      {!fullScreen && (
         <div className="absolute -left-[3px] top-0 z-10 h-full">
           <Tooltip label="Resize" className="h-full">
             <div
@@ -182,52 +209,76 @@ function ArtifactPanelContent({
           </Tooltip>
         </div>
       )}
-      <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-3.5 py-3">
-        <span className="truncate font-[family-name:var(--login-font-mono)] text-[13px] text-[var(--login-text-secondary)]">
-          {artifact.label}
-        </span>
-        <div className="flex items-center gap-0.5">
-          <Tooltip label={copied ? "Copied!" : "Copy"}>
-            <button
-              type="button"
-              onClick={() => void handleCopy()}
-              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            >
-              <CopyIcon />
-            </button>
-          </Tooltip>
-          <Tooltip label="Download">
-            <button
-              type="button"
-              onClick={handleDownload}
-              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            >
-              <DownloadIcon />
-            </button>
-          </Tooltip>
-          <Tooltip label={enlarged ? "Shrink" : "Enlarge"}>
-            <button
-              type="button"
-              onClick={() => setEnlarged((v) => !v)}
-              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            >
-              <EnlargeIcon />
-            </button>
-          </Tooltip>
-          <Tooltip label="Close">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            >
-              <CloseIcon />
-            </button>
-          </Tooltip>
+      <div
+        className={
+          // Fades in either way; slides up from the bottom full screen
+          // (the natural direction for a sheet replacing the whole
+          // view), in from the right as a side panel (the direction
+          // it's anchored to) — both settle to their resting position
+          // via the same transition/duration, just a different axis.
+          (fullScreen
+            ? "flex h-full w-full flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)] "
+            : "flex h-full flex-col overflow-hidden rounded-2xl border border-[var(--login-border)] bg-[var(--login-surface)] shadow-[0_12px_40px_rgba(0,0,0,0.45)] ") +
+          "transition-[opacity,transform] duration-200 ease-out " +
+          (entered
+            ? "translate-x-0 translate-y-0 opacity-100"
+            : fullScreen
+              ? "translate-y-3 opacity-0"
+              : "translate-x-3 opacity-0")
+        }
+      >
+        <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-3.5 py-3">
+          <span className="truncate font-[family-name:var(--login-font-mono)] text-[13px] text-[var(--login-text-secondary)]">
+            {artifact.label}
+          </span>
+          <div className="flex items-center gap-0.5">
+            <Tooltip label={copied ? "Copied!" : "Copy"}>
+              <button
+                type="button"
+                onClick={() => void handleCopy()}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <CopyIcon />
+              </button>
+            </Tooltip>
+            <Tooltip label="Download">
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <DownloadIcon />
+              </button>
+            </Tooltip>
+            {/* Meaningless on mobile — the panel is always full screen
+              there regardless of `enlarged`, so toggling it would be a
+              button with no visible effect. */}
+            {!isMobile && (
+              <Tooltip label={enlarged ? "Shrink" : "Enlarge"}>
+                <button
+                  type="button"
+                  onClick={() => setEnlarged((v) => !v)}
+                  className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+                >
+                  <EnlargeIcon />
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label="Close">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <CloseIcon />
+              </button>
+            </Tooltip>
+          </div>
         </div>
+        <pre className="hljs no-scrollbar m-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words p-4 font-[family-name:var(--login-font-mono)] text-[12.5px] leading-[1.6]">
+          <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+        </pre>
       </div>
-      <pre className="hljs no-scrollbar m-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words p-4 font-[family-name:var(--login-font-mono)] text-[12.5px] leading-[1.6]">
-        <code dangerouslySetInnerHTML={{ __html: highlighted }} />
-      </pre>
     </div>
   );
 }

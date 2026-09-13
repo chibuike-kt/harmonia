@@ -28,6 +28,7 @@ import {
   type Decision,
   type RoomAgentSummary,
 } from "@/components/RoomInfoPanel";
+import { MobileMenuButton } from "@/components/Sidebar";
 import { ChevronDownIcon, CoinIcon, InfoIcon } from "@/components/icons";
 import { collectRoomArtifacts } from "@/lib/messageContent";
 import { AgentAvatarGlyph } from "@/components/providerLogos";
@@ -91,7 +92,8 @@ interface PickupUsage {
 }
 
 interface RealtimeMessage {
-  kind: "event" | "presence" | "message" | "room" | "pickup_usage" | "objective";
+  kind:
+    "event" | "presence" | "message" | "room" | "pickup_usage" | "objective";
   event?: Envelope;
   presence?: AgentPresence;
   message?: ChatMessage;
@@ -474,6 +476,17 @@ export default function RoomViewPage() {
     "connecting" | "open" | "reconnecting"
   >("connecting");
   const [artifact, setArtifact] = useState<ArtifactContent | null>(null);
+  // Only one of the artifact panel and room info panel is ever open at
+  // once, on every width — opening one always closes the other. Both
+  // panels float as detached, rounded cards over the timeline now (see
+  // each component's own responsive classes), and on mobile each becomes
+  // a full-screen overlay; either way, two of them open together is
+  // never the intended state, so this is enforced at the one place both
+  // get opened rather than only below the mobile breakpoint.
+  const handleOpenArtifact = (a: ArtifactContent) => {
+    setArtifact(a);
+    setInfoOpen(false);
+  };
   const [sendError, setSendError] = useState<string | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -838,7 +851,7 @@ export default function RoomViewPage() {
     // covers that case instead: it's already showing since atBottomRef
     // is false, and clicking it does the (smooth) catch-up scroll.
     if (atBottomRef.current) {
-      el.scrollTo({ top: el.scrollHeight });
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }
   }, [entries]);
 
@@ -1057,31 +1070,33 @@ export default function RoomViewPage() {
           ? agentNames[entry.handoff.toAgentId] || "another agent"
           : "another agent";
         rendered.push(
-          <HandoffCard
-            key={entry.id}
-            status="REQUESTED"
-            fromName={fromName}
-            toName={toName}
-            title={entry.handoff.summary || entry.label}
-            meta={
-              entry.handoff.risks?.[0]
-                ? `Risk noted: ${entry.handoff.risks[0]}`
-                : undefined
-            }
-          />,
+          <div key={entry.id} className="timeline-enter">
+            <HandoffCard
+              status="REQUESTED"
+              fromName={fromName}
+              toName={toName}
+              title={entry.handoff.summary || entry.label}
+              meta={
+                entry.handoff.risks?.[0]
+                  ? `Risk noted: ${entry.handoff.risks[0]}`
+                  : undefined
+              }
+            />
+          </div>,
         );
         return;
       }
       rendered.push(
-        <div
-          key={entry.id}
-          className={`ml-[42px] rounded-[10px] border p-3.5 text-sm ${CATEGORY_STYLES[entry.category]}`}
-        >
-          <div className="font-medium text-[var(--login-text)]">
-            {entry.label}
-          </div>
-          <div className="text-xs text-[var(--login-text-muted)]">
-            {new Date(entry.timestamp).toLocaleTimeString()}
+        <div key={entry.id} className="timeline-enter">
+          <div
+            className={`ml-[42px] rounded-[10px] border p-3.5 text-sm ${CATEGORY_STYLES[entry.category]}`}
+          >
+            <div className="font-medium text-[var(--login-text)]">
+              {entry.label}
+            </div>
+            <div className="text-xs text-[var(--login-text-muted)]">
+              {new Date(entry.timestamp).toLocaleTimeString()}
+            </div>
           </div>
         </div>,
       );
@@ -1093,16 +1108,17 @@ export default function RoomViewPage() {
         ? agentNames[entry.ownerAgentId]
         : undefined;
       rendered.push(
-        <TaskCard
-          key={entry.id}
-          status={entry.status}
-          title={entry.objective}
-          meta={
-            ownerName
-              ? `${ownerName} · ${entry.status === "COMPLETED" ? "completed" : "claimed"}`
-              : undefined
-          }
-        />,
+        <div key={entry.id} className="timeline-enter">
+          <TaskCard
+            status={entry.status}
+            title={entry.objective}
+            meta={
+              ownerName
+                ? `${ownerName} · ${entry.status === "COMPLETED" ? "completed" : "claimed"}`
+                : undefined
+            }
+          />
+        </div>,
       );
       return;
     }
@@ -1119,19 +1135,20 @@ export default function RoomViewPage() {
       const objective = (entry.payload.objective as string) || "a task";
       const summary = (entry.payload.summary as string) || "";
       rendered.push(
-        <ApprovalCard
-          key={entry.id}
-          title={`Hand off "${objective}" to ${toName}`}
-          meta={`${fromName}${summary ? `: ${summary}` : ""}`}
-          pending={resolvingProposalId === entry.proposalId}
-          resolution={entry.status === "pending" ? undefined : entry.status}
-          onApprove={() =>
-            void handleResolveProposal(entry.proposalId, "approve")
-          }
-          onReject={() =>
-            void handleResolveProposal(entry.proposalId, "reject")
-          }
-        />,
+        <div key={entry.id} className="timeline-enter">
+          <ApprovalCard
+            title={`Hand off "${objective}" to ${toName}`}
+            meta={`${fromName}${summary ? `: ${summary}` : ""}`}
+            pending={resolvingProposalId === entry.proposalId}
+            resolution={entry.status === "pending" ? undefined : entry.status}
+            onApprove={() =>
+              void handleResolveProposal(entry.proposalId, "approve")
+            }
+            onReject={() =>
+              void handleResolveProposal(entry.proposalId, "reject")
+            }
+          />
+        </div>,
       );
       return;
     }
@@ -1158,35 +1175,56 @@ export default function RoomViewPage() {
         : undefined;
 
     rendered.push(
-      <MessageRow
-        key={entry.id}
-        message={{ ...m, failed: isFailureMessage(m.content) }}
-        senderName={senderName}
-        senderProvider={m.agent_id ? agentProviders[m.agent_id] : undefined}
-        mentionedAgentNames={m.mentioned_agent_ids?.map(
-          (id) => agentNames[id] || "Agent",
-        )}
-        replyPreview={replyPreview}
-        onOpenArtifact={setArtifact}
-        pinned={pinnedMessageIds.has(m.id)}
-        onPinDecision={() => void handlePinDecision(m.id)}
-        onRetry={
-          m.sender_kind === "agent"
-            ? () => void handleRetryMessage(m.id)
-            : undefined
-        }
-      />,
+      <div key={entry.id} className="timeline-enter">
+        <MessageRow
+          message={{ ...m, failed: isFailureMessage(m.content) }}
+          senderName={senderName}
+          senderProvider={m.agent_id ? agentProviders[m.agent_id] : undefined}
+          mentionedAgentNames={m.mentioned_agent_ids?.map(
+            (id) => agentNames[id] || "Agent",
+          )}
+          replyPreview={replyPreview}
+          onOpenArtifact={handleOpenArtifact}
+          pinned={pinnedMessageIds.has(m.id)}
+          onPinDecision={() => void handlePinDecision(m.id)}
+          onRetry={
+            m.sender_kind === "agent"
+              ? () => void handleRetryMessage(m.id)
+              : undefined
+          }
+        />
+      </div>,
     );
   });
 
   return (
     <div className="flex h-full min-w-0 flex-1">
       <main className="relative flex min-w-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-6 py-3.5">
-          <h1 className="truncate text-[16px] font-semibold text-[var(--login-text)]">
-            {roomName || "…"}
-          </h1>
-          <div className="flex shrink-0 items-center gap-3.5">
+        {/* Row wraps below md rather than hiding anything behind an
+            overflow menu: the name gets a full-width line of its own
+            (basis-full) forcing the icon cluster onto a second line,
+            which already has the whole width to breathe in — every
+            control here (live cost, artifacts, room info, connection
+            status) is either at-a-glance-useful or a direct one-tap
+            action, none of it secondary enough to bury an extra tap
+            away just to save a line that wrapping already recovers. */}
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-y-2 border-b border-[var(--login-border)] px-4 py-3 md:px-6 md:py-3.5">
+          <div className="flex min-w-0 basis-full items-center gap-1 md:basis-auto md:flex-1">
+            <MobileMenuButton />
+            <h1 className="min-w-0 truncate text-[16px] font-semibold text-[var(--login-text)]">
+              {roomName || "…"}
+            </h1>
+          </div>
+          {/* ml-auto: when this wraps onto its own line below md, a
+              flex-wrap line with only one item left-aligns by default
+              (nothing to distribute justify-between across on that
+              line) — without this, the cluster sits flush left instead
+              of flush right, and ArtifactsMenu's own right-0-anchored
+              dropdown (correctly positioned for sitting at the far
+              right of a wide desktop header) runs off the left edge of
+              the screen. Redundant with the parent's justify-between at
+              md and up, not conflicting with it. */}
+          <div className="ml-auto flex shrink-0 items-center gap-3.5">
             {hasUsageData && (
               <Tooltip
                 label="Estimated cost — not authoritative, see this room's actual token usage on your provider's own dashboard for a real figure"
@@ -1203,12 +1241,18 @@ export default function RoomViewPage() {
             <ArtifactsMenu
               artifacts={artifactListItems}
               mayBeIncomplete={artifactsMayBeIncomplete}
-              onOpenArtifact={setArtifact}
+              onOpenArtifact={handleOpenArtifact}
             />
             <Tooltip label={infoOpen ? "Hide room info" : "Room info"}>
               <button
                 type="button"
-                onClick={() => setInfoOpen((o) => !o)}
+                onClick={() =>
+                  setInfoOpen((o) => {
+                    const next = !o;
+                    if (next) setArtifact(null);
+                    return next;
+                  })
+                }
                 className={`flex rounded-md p-1.5 ${
                   infoOpen
                     ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
@@ -1275,10 +1319,9 @@ export default function RoomViewPage() {
             {rendered}
 
             {typingAgentIds.map((agentId) => (
-              <TypingIndicator
-                key={agentId}
-                agentName={agentNames[agentId] || "Agent"}
-              />
+              <div key={agentId} className="timeline-enter">
+                <TypingIndicator agentName={agentNames[agentId] || "Agent"} />
+              </div>
             ))}
           </div>
         </div>

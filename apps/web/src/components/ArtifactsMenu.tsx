@@ -92,7 +92,19 @@ export function ArtifactsMenu({
       </Tooltip>
 
       {open && (
-        <div className="absolute right-0 top-full z-10 mt-1.5 w-[300px] rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
+        // right-0 anchors this to the trigger's own edge, which only
+        // stays inside the viewport on desktop because the trigger sits
+        // at the far right of a wide, single-row header. Below md the
+        // header wraps (see the room page's own header comment) and this
+        // icon shares a line with several others, so it's rarely that
+        // close to the screen edge — anchoring the same way there ran
+        // the menu off the left side of the viewport. Below md this
+        // switches to fixed positioning anchored to the viewport itself
+        // (inset-x-3, not button-relative) so it can never overflow
+        // regardless of exactly where the trigger sits. top-[92px] is a
+        // real coupling to the mobile room header's own two-row height —
+        // if that header's padding/row count changes, this needs a look.
+        <div className="fixed inset-x-3 top-[92px] z-10 rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] shadow-[0_8px_24px_rgba(0,0,0,0.4)] md:absolute md:inset-x-auto md:top-full md:right-0 md:mt-1.5 md:w-[300px]">
           <div className="border-b border-[var(--login-border)] px-3 py-2.5 text-[12.5px] font-medium text-[var(--login-text)]">
             Artifacts in this room
           </div>

@@ -12,6 +12,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import {
   AgentsIcon,
   BillingIcon,
+  ChevronLeftIcon,
   CloseIcon,
   NotificationsIcon,
   SearchIcon,
@@ -186,12 +187,24 @@ export function SettingsModal({
     initialCategory ?? "general",
   );
   const [search, setSearch] = useState("");
+  // Mobile-only drill-down: true shows the category list screen, false
+  // shows the selected category's content. Starts on content (false) —
+  // same "jump straight to what was requested" behavior as desktop's own
+  // category pane, e.g. opening via the sidebar's "Agents" shortcut lands
+  // directly on Connected agents, not on an intermediate list. Back
+  // reveals the list to switch categories; irrelevant at md and up, where
+  // both panes are always visible side by side.
+  const [mobileShowList, setMobileShowList] = useState(false);
 
   useEffect(() => {
-    // Resets to the requested (or default) category each time the modal
-    // opens, so reopening it later doesn't leave it wherever it was left.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (open) setCategory(initialCategory ?? "general");
+    // Resets to the requested (or default) category (and back to the
+    // content screen on mobile) each time the modal opens, so reopening
+    // it later doesn't leave it wherever it was left.
+    if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCategory(initialCategory ?? "general");
+      setMobileShowList(false);
+    }
   }, [open, initialCategory]);
 
   useEffect(() => {
@@ -203,6 +216,22 @@ export function SettingsModal({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
 
+  // Drives the fade/scale-in below. This component stays mounted the
+  // whole time (the parent always renders <SettingsModal>, just toggling
+  // `open`), so a plain on-mount effect would only ever fire once — not
+  // every time the modal actually opens. Same reset-on-close,
+  // flip-true-next-frame-on-open pattern as RoomInfoPanel's own entrance.
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setEntered(false);
+      return;
+    }
+    const id = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(id);
+  }, [open]);
+
   if (!open) return null;
 
   const query = search.trim().toLowerCase();
@@ -211,56 +240,108 @@ export function SettingsModal({
   const visiblePlaceholders = PLACEHOLDER_CATEGORIES.filter(matches);
   const activeDef = ALL_CATEGORIES.find((c) => c.key === category);
 
+  // Shared by the desktop two-column layout and mobile's own list
+  // screen — same category buttons and search box either way, only the
+  // surrounding chrome differs. onClick also leaves the mobile list
+  // screen for the content screen; a no-op extra render at md and up,
+  // where mobileShowList is never read.
+  const categoryList = (
+    <>
+      <div className="mb-3.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-2.5 py-2 text-[var(--login-text-muted)]">
+        <SearchIcon />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search settings"
+          className="w-full bg-transparent text-[13.5px] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
+        />
+      </div>
+
+      {visibleReal.map((c) => (
+        <CategoryButton
+          key={c.key}
+          def={c}
+          active={category === c.key}
+          onClick={() => {
+            setCategory(c.key);
+            setMobileShowList(false);
+          }}
+        />
+      ))}
+
+      {visibleReal.length > 0 && visiblePlaceholders.length > 0 && (
+        <div className="mx-1.5 my-2.5 h-px bg-[var(--login-border)]" />
+      )}
+
+      {visiblePlaceholders.map((c) => (
+        <CategoryButton
+          key={c.key}
+          def={c}
+          active={category === c.key}
+          onClick={() => {
+            setCategory(c.key);
+            setMobileShowList(false);
+          }}
+        />
+      ))}
+
+      {visibleReal.length === 0 && visiblePlaceholders.length === 0 && (
+        <p className="px-2.5 py-2 text-[12.5px] text-[var(--login-text-muted)]">
+          No settings match &quot;{search}&quot;.
+        </p>
+      )}
+    </>
+  );
+
+  // Shared by desktop's content pane and mobile's content screen.
+  const categoryContent = (
+    <>
+      {category === "general" && <GeneralPanel onSaved={onProfileSaved} />}
+      {category === "agents" && <ConnectedAgentsPanel />}
+      {category === "sessions" && <SessionsPanel />}
+      {category === "security" && (
+        <PlaceholderPanel
+          title="Security settings aren't built yet"
+          body="Sessions above cover device access for now."
+        />
+      )}
+      {category === "team" && (
+        <PlaceholderPanel
+          title="Team & roles aren't built yet"
+          body="Harmonia is single-user for now — multi-person workspaces are a real, planned phase."
+        />
+      )}
+      {category === "billing" && (
+        <PlaceholderPanel
+          title="Nothing to bill yet"
+          body="You bring your own provider keys — Harmonia itself has no usage-based charges."
+        />
+      )}
+      {category === "notifications" && (
+        <PlaceholderPanel
+          title="Notifications aren't built yet"
+          body="Live updates currently only happen while a room is open."
+        />
+      )}
+    </>
+  );
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/60 transition-opacity duration-200 ease-out ${entered ? "opacity-100" : "opacity-0"}`}
       onClick={onClose}
     >
+      {/* Desktop: fixed-size two-column dialog, unchanged from before
+          apart from the fade/scale-in (entered). */}
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
-        className="flex h-[620px] max-h-[88vh] w-[900px] max-w-[92vw] overflow-hidden rounded-[14px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
+        className={`hidden h-[620px] max-h-[88vh] w-[900px] max-w-[92vw] overflow-hidden rounded-[14px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] shadow-[0_24px_64px_rgba(0,0,0,0.5)] transition-[opacity,transform] duration-200 ease-out md:flex ${entered ? "scale-100 opacity-100" : "scale-[0.97] opacity-0"}`}
       >
         <div className="flex w-[220px] shrink-0 flex-col overflow-y-auto border-r border-[var(--login-border)] bg-[var(--login-sidebar-bg)] p-3">
-          <div className="mb-3.5 flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-2.5 py-2 text-[var(--login-text-muted)]">
-            <SearchIcon />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search settings"
-              className="w-full bg-transparent text-[13.5px] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
-            />
-          </div>
-
-          {visibleReal.map((c) => (
-            <CategoryButton
-              key={c.key}
-              def={c}
-              active={category === c.key}
-              onClick={() => setCategory(c.key)}
-            />
-          ))}
-
-          {visibleReal.length > 0 && visiblePlaceholders.length > 0 && (
-            <div className="mx-1.5 my-2.5 h-px bg-[var(--login-border)]" />
-          )}
-
-          {visiblePlaceholders.map((c) => (
-            <CategoryButton
-              key={c.key}
-              def={c}
-              active={category === c.key}
-              onClick={() => setCategory(c.key)}
-            />
-          ))}
-
-          {visibleReal.length === 0 && visiblePlaceholders.length === 0 && (
-            <p className="px-2.5 py-2 text-[12.5px] text-[var(--login-text-muted)]">
-              No settings match &quot;{search}&quot;.
-            </p>
-          )}
+          {categoryList}
         </div>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -279,35 +360,74 @@ export function SettingsModal({
           </div>
 
           <div className="no-scrollbar flex-1 overflow-y-auto p-6">
-            {category === "general" && (
-              <GeneralPanel onSaved={onProfileSaved} />
-            )}
-            {category === "agents" && <ConnectedAgentsPanel />}
-            {category === "sessions" && <SessionsPanel />}
-            {category === "security" && (
-              <PlaceholderPanel
-                title="Security settings aren't built yet"
-                body="Sessions above cover device access for now."
-              />
-            )}
-            {category === "team" && (
-              <PlaceholderPanel
-                title="Team & roles aren't built yet"
-                body="Harmonia is single-user for now — multi-person workspaces are a real, planned phase."
-              />
-            )}
-            {category === "billing" && (
-              <PlaceholderPanel
-                title="Nothing to bill yet"
-                body="You bring your own provider keys — Harmonia itself has no usage-based charges."
-              />
-            )}
-            {category === "notifications" && (
-              <PlaceholderPanel
-                title="Notifications aren't built yet"
-                body="Live updates currently only happen while a room is open."
-              />
-            )}
+            {categoryContent}
+          </div>
+        </div>
+      </div>
+
+      {/* Mobile: full-screen two-screen drill-down — category list, tap
+          one, slide to that category's content with a back control. Both
+          screens live side by side in a 200%-wide track that translates
+          by half its own width, rather than either screen mounting or
+          unmounting — that's what makes the transition an actual slide
+          instead of a cut. */}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
+        onClick={(e) => e.stopPropagation()}
+        className={`flex h-full w-full flex-col overflow-hidden bg-[var(--login-surface)] transition-[opacity,transform] duration-200 ease-out md:hidden ${entered ? "translate-y-0 opacity-100" : "translate-y-3 opacity-0"}`}
+      >
+        <div
+          className="flex h-full w-[200%] transition-transform duration-200 ease-out"
+          style={{
+            transform: mobileShowList ? "translateX(0%)" : "translateX(-50%)",
+          }}
+        >
+          <div className="flex h-full w-1/2 shrink-0 flex-col overflow-hidden">
+            <div className="flex shrink-0 items-center justify-between border-b border-[var(--login-border)] px-4 py-3.5">
+              <h2 className="text-[15px] font-semibold text-[var(--login-text)]">
+                Settings
+              </h2>
+              <button
+                type="button"
+                aria-label="Close settings"
+                onClick={onClose}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <div className="no-scrollbar flex-1 overflow-y-auto p-3">
+              {categoryList}
+            </div>
+          </div>
+
+          <div className="flex h-full w-1/2 shrink-0 flex-col overflow-hidden">
+            <div className="flex shrink-0 items-center gap-1 border-b border-[var(--login-border)] px-2 py-3">
+              <button
+                type="button"
+                aria-label="Back to settings list"
+                onClick={() => setMobileShowList(true)}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <ChevronLeftIcon />
+              </button>
+              <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[var(--login-text)]">
+                {activeDef?.label ?? ""}
+              </h2>
+              <button
+                type="button"
+                aria-label="Close settings"
+                onClick={onClose}
+                className="flex rounded-md p-1.5 text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <div className="no-scrollbar flex-1 overflow-y-auto p-4">
+              {categoryContent}
+            </div>
           </div>
         </div>
       </div>

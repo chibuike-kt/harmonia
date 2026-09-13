@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AddAgentMenu, type AddedAgent } from "./AddAgentMenu";
 import { CloseIcon } from "./icons";
 import { AgentAvatarGlyph } from "./providerLogos";
@@ -71,6 +71,24 @@ export function RoomInfoPanel({
   // the field.
   const skipBlurCommitRef = useRef(false);
 
+  // Drives the mobile-only fade/slide-in below — this panel is always
+  // mounted (open/closed is just a class swap, not a mount/unmount), so
+  // a plain on-mount effect would only ever fire once, not every time
+  // `open` flips true. Resetting to false on close and flipping to true
+  // on the next animation frame after opening is what gives the browser
+  // an actual "before" frame to transition from, rather than the panel
+  // just appearing already fully faded in.
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setEntered(false);
+      return;
+    }
+    const id = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(id);
+  }, [open]);
+
   const commitObjective = (raw: string) => {
     setEditingObjective(false);
     const trimmed = raw.trim();
@@ -82,7 +100,21 @@ export function RoomInfoPanel({
     <div
       className={
         open
-          ? "flex h-screen w-[320px] shrink-0 flex-col border-l border-[var(--login-border)] bg-[var(--login-surface)] transition-[width] duration-150"
+          ? // Full-screen overlay below md — replacing the timeline, not
+            // sharing width with it, same reasoning ArtifactPanel's own
+            // mobile treatment documents. md and up reverts to a
+            // detached, floating card (m-3 gap on every side, its own
+            // rounded corners/shadow) rather than a flush divider panel
+            // sharing the timeline's own edges — same treatment as
+            // ArtifactPanel's own desktop state. h-[calc(100%-1.5rem)]
+            // is h-full minus m-3's 0.75rem top/bottom margins. The
+            // opacity/translate pair (neutralized at md and up, where
+            // the width transition already does the work) is what
+            // fades/slides the mobile overlay in instead of it just
+            // snapping into place.
+            `fixed inset-0 z-[60] flex h-screen w-screen flex-col bg-[var(--login-surface)] transition-[opacity,transform] duration-200 ease-out md:relative md:inset-auto md:z-auto md:m-3 md:h-[calc(100%-1.5rem)] md:w-[320px] md:shrink-0 md:translate-y-0 md:overflow-hidden md:rounded-2xl md:border md:border-[var(--login-border)] md:opacity-100 md:shadow-[0_12px_40px_rgba(0,0,0,0.45)] md:transition-[width] md:duration-150 ${
+              entered ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
+            }`
           : "h-screen w-0 shrink-0 overflow-hidden transition-[width] duration-150"
       }
     >

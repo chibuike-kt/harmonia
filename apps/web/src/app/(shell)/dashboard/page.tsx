@@ -10,6 +10,7 @@ import {
   TeamIcon,
   WatchIcon,
 } from "@/components/icons";
+import { MobileMenuButton } from "@/components/Sidebar";
 import { apiFetch, ApiError } from "@/lib/api";
 import { createRoom } from "@/lib/createRoom";
 
@@ -104,63 +105,74 @@ export default function DashboardPage() {
   }, [meLoaded, me]);
 
   return (
-    <main className="flex h-full flex-col items-center justify-center p-10">
-      <div className="max-w-[520px] text-center">
-        <div className="mb-7 flex items-center justify-center gap-3.5">
-          <ThinkingOrb
-            state="working"
-            size={64}
-            theme="dark"
-            style={{ width: 45, height: 45 }}
-          />
-
-          <h1 className="whitespace-nowrap text-[30px] font-medium tracking-[-0.01em] text-[var(--login-text)]">
-            {heading ?? " "}
-          </h1>
-        </div>
-
-        <div className="flex items-center justify-center gap-3">
-          <button
-            type="button"
-            onClick={() => void handleCreateRoom()}
-            disabled={creatingRoom}
-            className="flex h-[48px] items-center gap-2 rounded-full bg-[var(--login-accent)] px-6 text-[15.5px] font-medium text-[var(--login-bg)] hover:bg-[#63e0d1] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <PlusIcon size={16} strokeWidth={1.8} />
-            {creatingRoom ? "Creating…" : "Create a new room"}
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              window.dispatchEvent(
-                new CustomEvent("harmonia:open-settings", {
-                  detail: { category: "agents" },
-                }),
-              )
-            }
-            className="flex h-[48px] items-center gap-2 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-6 text-[15.5px] font-medium text-[var(--login-text)] hover:border-[#3A4453] hover:bg-[#1C222B]"
-          >
-            <AgentsIcon size={17} />
-            Connect an agent
-          </button>
-        </div>
-        {createRoomError && (
-          <p className="mt-3 text-[13px] text-red-400">{createRoomError}</p>
-        )}
-
-        <div className="mt-8 flex flex-col gap-0.5 text-left">
-          {SUGGESTIONS.map(({ Icon, label }) => (
-            <a
-              key={label}
-              href="#"
-              className="flex items-center gap-2.5 rounded-lg px-3 py-3 text-[14.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
-            >
-              <Icon />
-              {label}
-            </a>
-          ))}
-        </div>
+    <div className="flex h-full flex-col">
+      {/* Dashboard has no header at all on desktop — the persistent
+          sidebar is the only navigation this page needs. Below md, the
+          sidebar becomes an off-canvas drawer, so this bar's sole job is
+          giving mobile a way to open it; it renders nothing else and
+          takes no space at md and up. */}
+      <div className="flex shrink-0 items-center border-b border-[var(--login-border)] px-4 py-3 md:hidden">
+        <MobileMenuButton />
       </div>
-    </main>
+
+      <main className="flex flex-1 flex-col items-center justify-center p-6 sm:p-10">
+        <div className="max-w-[520px] text-center">
+          <div className="mb-7 flex items-center justify-center gap-3.5">
+            <ThinkingOrb
+              state="working"
+              size={64}
+              theme="dark"
+              style={{ width: 45, height: 45 }}
+            />
+
+            <h1 className="text-[22px] font-medium tracking-[-0.01em] text-[var(--login-text)] sm:whitespace-nowrap sm:text-[30px]">
+              {heading ?? " "}
+            </h1>
+          </div>
+
+          <div className="flex flex-col items-stretch justify-center gap-2.5 sm:flex-row sm:items-center sm:gap-3">
+            <button
+              type="button"
+              onClick={() => void handleCreateRoom()}
+              disabled={creatingRoom}
+              className="flex h-[48px] items-center justify-center gap-2 rounded-full bg-[var(--login-accent)] px-6 text-[15.5px] font-medium text-[var(--login-bg)] hover:bg-[#63e0d1] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <PlusIcon size={16} strokeWidth={1.8} />
+              {creatingRoom ? "Creating…" : "Create a new room"}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("harmonia:open-settings", {
+                    detail: { category: "agents" },
+                  }),
+                )
+              }
+              className="flex h-[48px] items-center justify-center gap-2 rounded-full border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-6 text-[15.5px] font-medium text-[var(--login-text)] hover:border-[#3A4453] hover:bg-[#1C222B]"
+            >
+              <AgentsIcon size={17} />
+              Connect an agent
+            </button>
+          </div>
+          {createRoomError && (
+            <p className="mt-3 text-[13px] text-red-400">{createRoomError}</p>
+          )}
+
+          <div className="mt-8 flex flex-col gap-0.5 text-left">
+            {SUGGESTIONS.map(({ Icon, label }) => (
+              <a
+                key={label}
+                href="#"
+                className="flex items-center gap-2.5 rounded-lg px-3 py-3 text-[14.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+              >
+                <Icon />
+                {label}
+              </a>
+            ))}
+          </div>
+        </div>
+      </main>
+    </div>
   );
 }
