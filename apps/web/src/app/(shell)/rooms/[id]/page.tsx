@@ -16,7 +16,11 @@ import { AddAgentMenu } from "@/components/AddAgentMenu";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { HandoffCard } from "@/components/HandoffCard";
 import { TaskCard } from "@/components/TaskCard";
-import { Composer, type RoomAgent } from "@/components/Composer";
+import {
+  Composer,
+  type PendingFileAttachment,
+  type RoomAgent,
+} from "@/components/Composer";
 import {
   MessageRow,
   displaySenderName,
@@ -878,7 +882,11 @@ export default function RoomViewPage() {
     .filter(([, status]) => status === "running")
     .map(([agentId]) => agentId);
 
-  const handleSend = async (content: string, mentionedAgentIds: string[]) => {
+  const handleSend = async (
+    content: string,
+    mentionedAgentIds: string[],
+    attachment?: PendingFileAttachment,
+  ) => {
     if (!roomId) return;
     setSendError(null);
     try {
@@ -888,6 +896,15 @@ export default function RoomViewPage() {
           content,
           ...(mentionedAgentIds.length > 0
             ? { mentioned_agent_ids: mentionedAgentIds }
+            : {}),
+          ...(attachment
+            ? {
+                attachment: {
+                  content: attachment.contentBase64,
+                  filename: attachment.filename,
+                  mime_type: attachment.mimeType,
+                },
+              }
             : {}),
         },
       });
@@ -1345,7 +1362,7 @@ export default function RoomViewPage() {
 
         <Composer
           agents={roomAgents}
-          onSend={(c, a) => void handleSend(c, a)}
+          onSend={(c, a, attachment) => void handleSend(c, a, attachment)}
         />
       </main>
 

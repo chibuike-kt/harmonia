@@ -65,6 +65,15 @@ type ChatMessage struct {
 	// accumulate a running total without a separate fetch per message.
 	InputTokens  *int `json:"input_tokens,omitempty"`
 	OutputTokens *int `json:"output_tokens,omitempty"`
+	// AttachmentFilename/AttachmentMimeType mirror internal/message.
+	// Message's own fields of the same name — deliberately not the raw
+	// attachment content (ADR-008 batch A): this is what lets the
+	// frontend render a chip for an attached file without every fetch of
+	// a room's history (this snapshot included) pulling potentially-
+	// megabyte attachment bytes for messages nobody's asked to see
+	// again. See message.Message.AttachmentContent's own doc comment.
+	AttachmentFilename *string `json:"attachment_filename,omitempty"`
+	AttachmentMimeType *string `json:"attachment_mime_type,omitempty"`
 }
 
 // RoomUpdate carries a room's new name — currently only ever published

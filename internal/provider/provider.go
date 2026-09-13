@@ -12,7 +12,10 @@
 // none of this milestone's tools need the model to see one.
 package provider
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 type GenerateRequest struct {
 	SystemPrompt string
@@ -62,6 +65,64 @@ type GenerateRequest struct {
 type Message struct {
 	Role    string // "user" | "assistant"
 	Content string
+	// Attachment is the file a human attached to this message, if any
+	// (ADR-008 batch A) — nil for the overwhelming majority of messages.
+	// Only ever set on a "user" turn: a human is the only sender that can
+	// attach a file today, and threading it through the ordinary recency-
+	// window history (internal/message.buildGenerateRequest) rather than
+	// a side channel is what lets a later turn still reference an
+	// earlier attachment, the same way any other real multi-turn
+	// conversation with these APIs already works — every attachment ever
+	// sent in the conversation stays in context on each subsequent call,
+	// not just the turn it arrived on.
+	Attachment *Attachment
+}
+
+// Attachment is a small file attached directly to one message — a
+// snippet or a screenshot, per ADR-008's own scope, not a general
+// object-storage system. Content is the raw decoded bytes; each
+// provider client is responsible for translating this into that
+// provider's own real inline content-block shape (see Kind below for
+// the one piece of that decision that isn't provider-specific).
+type Attachment struct {
+	Content  []byte
+	Filename string
+	MimeType string
+}
+
+// AttachmentKind is the shape decision every provider client needs to
+// make when translating an Attachment into its own wire format — real
+// image content block, a real PDF document block, or (the common case
+// for "a snippet") plain inline text. Classifying this is identical
+// logic regardless of provider (a MIME-type check), so it lives here
+// once rather than duplicated in each client; only the resulting JSON
+// shape for each kind is genuinely provider-specific.
+type AttachmentKind int
+
+const (
+	AttachmentText AttachmentKind = iota
+	AttachmentImage
+	AttachmentPDF
+)
+
+// Kind classifies a by MIME type alone, not content-sniffing — ADR-008
+// scopes this feature to "a snippet, a screenshot," and those are
+// exactly what MIME type already tells you honestly. Anything that
+// isn't image/* or application/pdf is treated as text: its bytes are
+// included verbatim as a text content block, which degrades gracefully
+// (not a crash) even for the genuinely-binary edge case this feature
+// doesn't target — encoding/json's own UTF-8 handling substitutes the
+// replacement character for invalid byte sequences rather than failing
+// the request.
+func (a Attachment) Kind() AttachmentKind {
+	switch {
+	case strings.HasPrefix(a.MimeType, "image/"):
+		return AttachmentImage
+	case a.MimeType == "application/pdf":
+		return AttachmentPDF
+	default:
+		return AttachmentText
+	}
 }
 
 // ToolDef describes one tool the model may call, translated verbatim

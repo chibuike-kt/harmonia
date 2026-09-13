@@ -8,6 +8,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,20 +38,97 @@ func New(apiKey string) *Client {
 	}
 }
 
+// message is response-only: Chat Completions' own message shape, always
+// a plain string Content (the API never sends content blocks back,
+// text is text). Kept separate from requestMessage below rather than
+// widening this one to `any` — that would mean every response-parsing
+// read of .Content had to reckon with a shape check to get a string
+// back out, for a case (attachments) that only ever exists on the
+// outbound side.
 type message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 	// ToolCalls is only ever populated on a response message — never set
-	// when this struct is used to build an outbound request message, so
-	// omitempty keeps it out of the request body entirely.
+	// when a message is used to build an outbound request, so omitempty
+	// keeps it out of the request body entirely.
 	ToolCalls []toolCall `json:"tool_calls,omitempty"`
 }
 
+// requestMessage is request-only. Content is `any`, not `string`: Chat
+// Completions accepts either a plain string or an array of content
+// parts, and an attachment (ADR-008 batch A) needs the array shape — a
+// real image_url/file part alongside the message's own text. buildContent
+// below is the only place that decides which shape a given message
+// actually needs.
+type requestMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+// contentPart is one part in a Chat Completions content array — covers
+// both shapes this client ever sends: a plain text part, and an
+// attachment part (image_url or file, chosen by attachmentPart below).
+type contentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *imageURLPart `json:"image_url,omitempty"`
+	File     *filePart     `json:"file,omitempty"`
+}
+
+type imageURLPart struct {
+	URL string `json:"url"`
+}
+
+type filePart struct {
+	Filename string `json:"filename"`
+	FileData string `json:"file_data"`
+}
+
+// buildContent decides requestMessage.Content's actual shape: a plain
+// string when there's no attachment (every message before this feature,
+// and the overwhelming majority after it), or a content-part array when
+// there is one. Returning the bare string rather than a one-element
+// array in the common case keeps every existing call's request body
+// byte-for-byte identical to before this feature existed.
+func buildContent(text string, attachment *provider.Attachment) any {
+	if attachment == nil {
+		return text
+	}
+	var parts []contentPart
+	if text != "" {
+		parts = append(parts, contentPart{Type: "text", Text: text})
+	}
+	parts = append(parts, attachmentPart(*attachment))
+	return parts
+}
+
+// attachmentPart translates one provider.Attachment into its real Chat
+// Completions content part. image_url (a data: URI) and file (also a
+// data: URI, via file_data) are Chat Completions' own documented
+// shapes for an image and a real PDF respectively; there's no
+// dedicated block type for arbitrary plain text the way Anthropic's
+// Messages API has a document(text) block — Chat Completions' own real
+// capability boundary, not a gap in this translation, so the common "a
+// snippet" case is genuinely just inlined as a text part instead. See
+// provider.Attachment.Kind's own doc comment for why this classifies by
+// MIME type alone.
+func attachmentPart(a provider.Attachment) contentPart {
+	dataURI := "data:" + a.MimeType + ";base64," + base64.StdEncoding.EncodeToString(a.Content)
+	switch a.Kind() {
+	case provider.AttachmentImage:
+		return contentPart{Type: "image_url", ImageURL: &imageURLPart{URL: dataURI}}
+	case provider.AttachmentPDF:
+		return contentPart{Type: "file", File: &filePart{Filename: a.Filename, FileData: dataURI}}
+	default:
+		return contentPart{Type: "text", Text: fmt.Sprintf("Attached file %q:\n%s", a.Filename, string(a.Content))}
+	}
+}
+
 type chatCompletionsRequest struct {
-	Model      string    `json:"model"`
-	Messages   []message `json:"messages"`
-	Tools      []toolDef `json:"tools,omitempty"`
-	ToolChoice string    `json:"tool_choice,omitempty"`
+	Model      string           `json:"model"`
+	Messages   []requestMessage `json:"messages"`
+	Tools      []toolDef        `json:"tools,omitempty"`
+	ToolChoice string           `json:"tool_choice,omitempty"`
 }
 
 type toolDef struct {
@@ -102,12 +180,12 @@ type errorEnvelope struct {
 // tool use only (see package provider's own doc comment) — no retries
 // beyond what net/http gives for free.
 func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
-	messages := make([]message, 0, len(req.Messages)+1)
+	messages := make([]requestMessage, 0, len(req.Messages)+1)
 	if req.SystemPrompt != "" {
-		messages = append(messages, message{Role: "system", Content: req.SystemPrompt})
+		messages = append(messages, requestMessage{Role: "system", Content: req.SystemPrompt})
 	}
 	for _, m := range req.Messages {
-		messages = append(messages, message{Role: m.Role, Content: m.Content})
+		messages = append(messages, requestMessage{Role: m.Role, Content: buildContent(m.Content, m.Attachment)})
 	}
 
 	var tools []toolDef

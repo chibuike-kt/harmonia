@@ -40,7 +40,7 @@ func TestIntegration_ObjectiveGenerator_HappyPath(t *testing.T) {
 	// A real early exchange, not just the oldest message — this is
 	// exactly the gap the real field closes versus the frontend's old
 	// "oldest message" stand-in.
-	humanMsg, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "can someone help me debug why webhook retries keep failing intermittently?", nil)
+	humanMsg, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "can someone help me debug why webhook retries keep failing intermittently?", nil, nil)
 	if err != nil {
 		t.Fatalf("seed human message: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestIntegration_ObjectiveGenerator_RaceGuardSkipsManualEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create room: %v", err)
 	}
-	if _, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "what's our plan for the Q3 migration?", nil); err != nil {
+	if _, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "what's our plan for the Q3 migration?", nil, nil); err != nil {
 		t.Fatalf("seed human message: %v", err)
 	}
 

@@ -705,7 +705,7 @@ func TestIntegration_Orchestrator_PickupEnabled_ExactlyOneClaimsAndRepliesWithCo
 		}
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "does anyone want to help review this?", nil)
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "does anyone want to help review this?", nil, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -821,7 +821,7 @@ func TestIntegration_Orchestrator_RoomFramingInSystemPrompt(t *testing.T) {
 		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
 	}
 
-	objective, err := s.CreateHuman(ctx, rm.ID, owner.ID, "Let's plan the new widget feature", []uuid.UUID{claude.ID})
+	objective, err := s.CreateHuman(ctx, rm.ID, owner.ID, "Let's plan the new widget feature", []uuid.UUID{claude.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed objective message: %v", err)
 	}
@@ -1153,7 +1153,7 @@ func TestIntegration_Orchestrator_CascadingDisabledByDefault_MentionInReplyDoesN
 		}
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1261,7 +1261,7 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 		}
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1390,7 +1390,7 @@ func TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent(t *testing.T
 		}
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Busy can you look at this?", []uuid.UUID{busy.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Busy can you look at this?", []uuid.UUID{busy.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1481,7 +1481,7 @@ func TestIntegration_Orchestrator_CustomInstructionsPrependedToSystemPrompt(t *t
 		return &fakeProviderAgent{content: "reply", capturedRequest: &captured}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1528,7 +1528,7 @@ func TestIntegration_Orchestrator_ProviderErrorProducesVisibleFailureMessage(t *
 		return &fakeProviderAgent{err: errors.New("simulated provider error: rate limited")}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Flaky are you there?", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Flaky are you there?", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1582,7 +1582,7 @@ func TestIntegration_Orchestrator_PanicIsRecovered(t *testing.T) {
 		return &fakeProviderAgent{shouldPanic: true}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Unstable go", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Unstable go", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1619,7 +1619,7 @@ func TestIntegration_StreamHandler_SnapshotIncludesMessages(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	seeded, err := s.CreateHuman(ctx, rm.ID, owner.ID, "history should show up in the snapshot", nil)
+	seeded, err := s.CreateHuman(ctx, rm.ID, owner.ID, "history should show up in the snapshot", nil, nil)
 	if err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
@@ -1733,7 +1733,7 @@ func TestIntegration_RetryHandler_TriggersFreshReply(t *testing.T) {
 	}
 	h := s.RetryHandler(rooms, orch)
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude can you help?", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude can you help?", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1802,7 +1802,7 @@ func TestIntegration_RetryHandler_RejectsNonAgentMessage(t *testing.T) {
 	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	h := s.RetryHandler(rooms, orch)
 
-	human, err := s.CreateHuman(ctx, rm.ID, owner.ID, "just a note", nil)
+	human, err := s.CreateHuman(ctx, rm.ID, owner.ID, "just a note", nil, nil)
 	if err != nil {
 		t.Fatalf("seed human message: %v", err)
 	}
@@ -1841,7 +1841,7 @@ func TestIntegration_RetryHandler_RoomOwnership(t *testing.T) {
 	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, realtime.NewHub(), rdb)
 	h := s.RetryHandler(rooms, orch)
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude go", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude go", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -1877,7 +1877,7 @@ func TestIntegration_ListByRoomHandler_ReturnsStoredMessages(t *testing.T) {
 	}
 
 	s := NewStore(pool)
-	seeded, err := s.CreateHuman(ctx, rm.ID, owner.ID, "a message with a snippet", nil)
+	seeded, err := s.CreateHuman(ctx, rm.ID, owner.ID, "a message with a snippet", nil, nil)
 	if err != nil {
 		t.Fatalf("seed message: %v", err)
 	}

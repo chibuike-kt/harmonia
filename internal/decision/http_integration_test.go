@@ -70,11 +70,11 @@ func TestIntegration_PinHandler(t *testing.T) {
 		t.Fatalf("create other room: %v", err)
 	}
 
-	msg, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "we should ship the fix behind a flag", nil)
+	msg, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "we should ship the fix behind a flag", nil, nil)
 	if err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
-	elsewhereMsg, err := messages.CreateHuman(ctx, otherRoom.ID, owner.ID, "unrelated message", nil)
+	elsewhereMsg, err := messages.CreateHuman(ctx, otherRoom.ID, owner.ID, "unrelated message", nil, nil)
 	if err != nil {
 		t.Fatalf("seed message in other room: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestIntegration_ListByRoomHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create room: %v", err)
 	}
-	msg, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "let's ship it Friday", nil)
+	msg, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "let's ship it Friday", nil, nil)
 	if err != nil {
 		t.Fatalf("seed message: %v", err)
 	}

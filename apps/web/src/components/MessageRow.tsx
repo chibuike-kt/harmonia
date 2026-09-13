@@ -119,6 +119,14 @@ export interface ChatMessage {
   created_at: string;
   input_tokens?: number;
   output_tokens?: number;
+  // attachment_filename/attachment_mime_type only — never the raw
+  // content over this wire shape (ADR-008 batch A). See
+  // internal/message.Message.AttachmentContent's own doc comment for
+  // why: this is what lets a chip render for an attached file without
+  // every room-history fetch pulling potentially-megabyte bytes for
+  // messages nobody's asked to see again.
+  attachment_filename?: string;
+  attachment_mime_type?: string;
   /** Client-side only, never from the wire — see room page's own comment. */
   failed?: boolean;
 }
@@ -266,6 +274,26 @@ function renderContent(
   });
 }
 
+// The attached file itself (ADR-008 batch A) — separate from
+// renderContent above, since an attachment is never part of
+// message.content the way a fenced code block or pasted-text block is;
+// it's its own pair of fields. Static, no onClick: this wire shape never
+// carries the raw content back (see ChatMessage's own comment), so
+// there's nothing here to open a viewer onto — just confirmation of what
+// was attached.
+function renderAttachment(message: ChatMessage) {
+  if (!message.attachment_filename) return null;
+  return (
+    <div className="mt-1.5">
+      <FileCard
+        name={message.attachment_filename}
+        subtitle={message.attachment_mime_type ?? "file"}
+        kind="file"
+      />
+    </div>
+  );
+}
+
 /**
  * One row of the room timeline's chat grammar — a Slack-style row for an
  * agent (avatar + name + timestamp, left-aligned, no bubble) or a
@@ -301,6 +329,7 @@ export function MessageRow({
           )}
           <div className="rounded-[14px_14px_3px_14px] border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3.5 py-2.5 text-[16px] leading-[1.6] text-[var(--login-text)]">
             {renderContent(message.content, onOpenArtifact)}
+            {renderAttachment(message)}
           </div>
           <div className="mt-1 flex items-center justify-end gap-2">
             <span className="font-[family-name:var(--login-font-mono)] text-[11.5px] text-[var(--login-text-muted)]">

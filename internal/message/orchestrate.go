@@ -118,14 +118,14 @@ type newProviderClientFunc func(providerName agent.Provider, apiKey string) (pro
 // already uses — not a job queue, since this codebase doesn't have one
 // yet and this doesn't need one (see the build brief).
 type Orchestrator struct {
-	messages          *Store
-	agents            *agent.Store
-	credentials       *credentials.Store
-	users             *user.Store
-	rooms             *room.Store
-	tasks             *task.Store
-	hub               realtime.Publisher
-	rdb               *redis.Client
+	messages    *Store
+	agents      *agent.Store
+	credentials *credentials.Store
+	users       *user.Store
+	rooms       *room.Store
+	tasks       *task.Store
+	hub         realtime.Publisher
+	rdb         *redis.Client
 	// beginner starts the transactions create_task/request_handoff need
 	// (ADR-006 batch C) — everything before batch C only ever needed
 	// plain reads/writes through the Stores above, no transaction of its
@@ -850,23 +850,51 @@ func buildGenerateRequest(a agent.Agent, history []Message, customInstructions s
 		if m.SenderKind == SenderAgent && m.AgentID != nil && *m.AgentID == a.ID {
 			role = "assistant"
 		}
-		msgs = append(msgs, provider.Message{Role: role, Content: m.Content})
+		// A human message's own attached file (ADR-008 batch A) rides
+		// along in this exact same recency-window loop, not a second
+		// context path — every message in the window still gets exactly
+		// one provider.Message, an attachment just fills in one more of
+		// its fields. AttachmentContent is nil for the overwhelming
+		// majority of messages, so this is a no-op for them.
+		var attachment *provider.Attachment
+		if m.AttachmentContent != nil {
+			attachment = &provider.Attachment{
+				Content:  m.AttachmentContent,
+				Filename: derefOrEmpty(m.AttachmentFilename),
+				MimeType: derefOrEmpty(m.AttachmentMimeType),
+			}
+		}
+		msgs = append(msgs, provider.Message{Role: role, Content: m.Content, Attachment: attachment})
 	}
 	return provider.GenerateRequest{SystemPrompt: systemPrompt, Messages: msgs}
 }
 
+// derefOrEmpty reads a possibly-nil string pointer — AttachmentFilename/
+// AttachmentMimeType are only ever nil together with AttachmentContent
+// (see MessageAttachment and CreateHuman, the one place all three are
+// set together), but this avoids a crash if that invariant were ever
+// violated rather than assuming it silently.
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func toChatMessage(m Message) realtime.ChatMessage {
 	return realtime.ChatMessage{
-		ID:                m.ID,
-		RoomID:            m.RoomID,
-		SenderKind:        string(m.SenderKind),
-		UserID:            m.UserID,
-		AgentID:           m.AgentID,
-		MentionedAgentIDs: m.MentionedAgentIDs,
-		ReplyToMessageID:  m.ReplyToMessageID,
-		Content:           m.Content,
-		CreatedAt:         m.CreatedAt,
-		InputTokens:       m.InputTokens,
-		OutputTokens:      m.OutputTokens,
+		ID:                 m.ID,
+		RoomID:             m.RoomID,
+		SenderKind:         string(m.SenderKind),
+		UserID:             m.UserID,
+		AgentID:            m.AgentID,
+		MentionedAgentIDs:  m.MentionedAgentIDs,
+		ReplyToMessageID:   m.ReplyToMessageID,
+		Content:            m.Content,
+		CreatedAt:          m.CreatedAt,
+		InputTokens:        m.InputTokens,
+		OutputTokens:       m.OutputTokens,
+		AttachmentFilename: m.AttachmentFilename,
+		AttachmentMimeType: m.AttachmentMimeType,
 	}
 }

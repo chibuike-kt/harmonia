@@ -18,9 +18,30 @@ import (
 )
 
 type createRequest struct {
-	Content           string      `json:"content"`
-	MentionedAgentIDs []uuid.UUID `json:"mentioned_agent_ids,omitempty"`
+	Content           string             `json:"content"`
+	MentionedAgentIDs []uuid.UUID        `json:"mentioned_agent_ids,omitempty"`
+	Attachment        *attachmentRequest `json:"attachment,omitempty"`
 }
+
+// attachmentRequest is the wire shape for ADR-008 batch A's per-message
+// file attachment. Content decodes as base64 automatically —
+// encoding/json's own standard handling for a []byte field — matching
+// the composer's own FileReader.readAsDataURL-derived base64 payload
+// (Composer.tsx), so nothing here needs a manual decode step.
+type attachmentRequest struct {
+	Content  []byte `json:"content"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+}
+
+// maxAttachmentBytes mirrors migrations/0014_search_and_files.up.sql's
+// own messages_attachment_size_check exactly (1048576 bytes) — the
+// application-layer half of that defense-in-depth pair (ADR-008), same
+// reasoning as every other DB-level guardrail in this project. Checked
+// before ever attempting the insert, so an oversized attachment fails
+// with a clear 400 here rather than a raw constraint-violation error
+// surfacing from the database.
+const maxAttachmentBytes = 1 << 20
 
 type errorResponse struct {
 	Error string `json:"error"`
@@ -76,9 +97,30 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if strings.TrimSpace(req.Content) == "" {
+		// Content alone can be empty once there's an attachment — a real
+		// chat product lets "here's a file" go out with no caption text,
+		// same as the pasted-text-only send this already allowed before
+		// attachments existed (see Composer.tsx's own handleSend).
+		if strings.TrimSpace(req.Content) == "" && req.Attachment == nil {
 			writeError(w, http.StatusBadRequest, "content is required")
 			return
+		}
+
+		var attachment *MessageAttachment
+		if req.Attachment != nil {
+			if len(req.Attachment.Content) == 0 || req.Attachment.Filename == "" || req.Attachment.MimeType == "" {
+				writeError(w, http.StatusBadRequest, "attachment requires content, filename, and mime_type")
+				return
+			}
+			if len(req.Attachment.Content) > maxAttachmentBytes {
+				writeError(w, http.StatusBadRequest, "attachment exceeds the 1 MB size limit")
+				return
+			}
+			attachment = &MessageAttachment{
+				Content:  req.Attachment.Content,
+				Filename: req.Attachment.Filename,
+				MimeType: req.Attachment.MimeType,
+			}
 		}
 
 		ctx := r.Context()
@@ -143,7 +185,7 @@ func (s *Store) CreateHandler(rooms *room.Store, agents *agent.Store, pool store
 		defer rollback()
 
 		txMessages := NewStore(tx)
-		m, err := txMessages.CreateHuman(ctx, roomID, u.ID, req.Content, mentionedIDs)
+		m, err := txMessages.CreateHuman(ctx, roomID, u.ID, req.Content, mentionedIDs, attachment)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create message")
 			return

@@ -57,7 +57,7 @@ func TestIntegration_Orchestrator_CreateTaskExecutesImmediately(t *testing.T) {
 		}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude please track this", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude please track this", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestIntegration_Orchestrator_RequestHandoffCreatesPendingProposalOnly(t *te
 		}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude how's it going", []uuid.UUID{from.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude how's it going", []uuid.UUID{from.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestIntegration_Orchestrator_RequestHandoffToolNotOfferedWithoutOpenTask(t 
 		return &fakeProviderAgent{content: "ok", capturedRequest: &captured}, nil
 	}
 
-	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID})
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID}, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}

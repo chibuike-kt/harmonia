@@ -55,6 +55,32 @@ type Message struct {
 	// message, which has no generation behind it to meter.
 	InputTokens  *int `json:"input_tokens,omitempty"`
 	OutputTokens *int `json:"output_tokens,omitempty"`
+	// AttachmentContent is the file's raw bytes, if a human attached one
+	// to this message (ADR-008 batch A) — json:"-" deliberately: this is
+	// read by context assembly to actually pass the file to Generate
+	// (see orchestrate.go's buildGenerateRequest), never serialized over
+	// the wire. A room's history can carry several attachments, and every
+	// consumer of the JSON shape (the REST message list, the SSE
+	// snapshot) only ever needs to render a chip — AttachmentFilename/
+	// AttachmentMimeType below, mirrored on realtime.ChatMessage, cover
+	// that without pulling potentially-megabyte attachment bytes into
+	// every fetch of a room's history that never asks to see them again.
+	AttachmentContent  []byte  `json:"-"`
+	AttachmentFilename *string `json:"attachment_filename,omitempty"`
+	AttachmentMimeType *string `json:"attachment_mime_type,omitempty"`
+}
+
+// MessageAttachment is the small file (a snippet, a screenshot) a human
+// can attach directly to one message — see ADR-008 batch A. Stored
+// inline on the message row (migrations/0014_search_and_files.up.sql),
+// not real object storage: files this feature targets are expected to
+// be small, and standing up the fuller object-storage system the
+// original product doc described stays correctly deferred (the ADR's
+// own "Revisit When").
+type MessageAttachment struct {
+	Content  []byte
+	Filename string
+	MimeType string
 }
 
 type Store struct {
@@ -68,7 +94,7 @@ func NewStore(pool store.Querier) *Store {
 	return &Store{pool: pool}
 }
 
-const messageColumns = `id, room_id, sender_kind, user_id, agent_id, reply_to_message_id, content, created_at, input_tokens, output_tokens`
+const messageColumns = `id, room_id, sender_kind, user_id, agent_id, reply_to_message_id, content, created_at, input_tokens, output_tokens, attachment_content, attachment_filename, attachment_mime_type`
 
 func scanMessage(row interface {
 	Scan(dest ...any) error
@@ -78,6 +104,7 @@ func scanMessage(row interface {
 		&m.ID, &m.RoomID, &m.SenderKind, &m.UserID, &m.AgentID,
 		&m.ReplyToMessageID, &m.Content, &m.CreatedAt,
 		&m.InputTokens, &m.OutputTokens,
+		&m.AttachmentContent, &m.AttachmentFilename, &m.AttachmentMimeType,
 	)
 	return m, err
 }
@@ -113,13 +140,24 @@ func (s *Store) loadMentions(ctx context.Context, messageIDs []uuid.UUID) (map[u
 // loop keys off of, never text parsing (see ADR-004). One row lands in
 // message_mentions per mentioned agent (ADR-006 batch A: one message,
 // many agents); unnest of an empty/nil slice inserts nothing, so an
-// unmentioned message needs no special-casing here.
-func (s *Store) CreateHuman(ctx context.Context, roomID, userID uuid.UUID, content string, mentionedAgentIDs []uuid.UUID) (Message, error) {
+// unmentioned message needs no special-casing here. attachment is nil
+// for the overwhelming majority of messages (ADR-008 batch A: per-
+// message only, no standing "always attach" concept) — all three
+// attachment_* columns are nullable together, so passing nil straight
+// through needs no special-casing either.
+func (s *Store) CreateHuman(ctx context.Context, roomID, userID uuid.UUID, content string, mentionedAgentIDs []uuid.UUID, attachment *MessageAttachment) (Message, error) {
+	var attachmentContent []byte
+	var attachmentFilename, attachmentMimeType *string
+	if attachment != nil {
+		attachmentContent = attachment.Content
+		attachmentFilename = &attachment.Filename
+		attachmentMimeType = &attachment.MimeType
+	}
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO messages (room_id, sender_kind, user_id, content)
-		VALUES ($1, 'human', $2, $3)
+		INSERT INTO messages (room_id, sender_kind, user_id, content, attachment_content, attachment_filename, attachment_mime_type)
+		VALUES ($1, 'human', $2, $3, $4, $5, $6)
 		RETURNING `+messageColumns,
-		roomID, userID, content,
+		roomID, userID, content, attachmentContent, attachmentFilename, attachmentMimeType,
 	)
 	m, err := scanMessage(row)
 	if err != nil {

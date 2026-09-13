@@ -12,6 +12,23 @@ interface PastedAttachment {
   lines: number;
 }
 
+// A real attached file (ADR-008 batch A) — capped at 1 MB client-side
+// too, mirroring internal/message/http.go's own maxAttachmentBytes
+// exactly: failing fast here is a better experience than waiting on a
+// round trip just to get the same 400 back, but the backend's own check
+// is the real guard, not this one (a client can always be bypassed).
+export interface PendingFileAttachment {
+  filename: string;
+  mimeType: string;
+  /** Base64, no `data:...;base64,` prefix — exactly what
+   *  internal/message.attachmentRequest.Content expects; encoding/json
+   *  decodes a []byte field from base64 automatically. */
+  contentBase64: string;
+  sizeBytes: number;
+}
+
+const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+
 export interface RoomAgent {
   id: string;
   name: string;
@@ -21,21 +38,47 @@ export interface RoomAgent {
 interface ComposerProps {
   agents: RoomAgent[];
   disabled?: boolean;
-  onSend: (content: string, mentionedAgentIds: string[]) => void;
+  onSend: (
+    content: string,
+    mentionedAgentIds: string[],
+    attachment?: PendingFileAttachment,
+  ) => void;
 }
 
 const MAX_HEIGHT = 160;
+
+// FileReader.readAsDataURL gives "data:<mime>;base64,<data>" — this is
+// the browser's own optimized base64 encoder, deliberately not a manual
+// byte-to-base64 loop: spreading a large Uint8Array into btoa/
+// String.fromCharCode can throw "Maximum call stack size exceeded" well
+// under this composer's own 1 MB cap on some engines, a real footgun
+// for exactly the file sizes this feature targets.
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
 
 /**
  * Message composer — text input, send, an @-picker for the room's own
  * agents that allows selecting more than one (sends the structured
  * mentioned_agent_ids array the backend expects, never text-parsed —
- * ADR-006 batch A), and a "+" menu with two honestly-labeled,
- * currently-inert items. See ADR-004's addendum: web search and file
- * attachment are real, near-term follow-up work once this phase ships,
- * not a permanent dead end — labeled "soon," not left mysteriously
- * empty or given vague "coming soon" copy that hides what's actually
- * planned.
+ * ADR-006 batch A), and a "+" menu offering a real file attachment
+ * (ADR-008 batch A) alongside web search, still honestly labeled "soon"
+ * — search is batch B's own, separate piece of this same ADR, not yet
+ * built.
  */
 export function Composer({ agents, disabled, onSend }: ComposerProps) {
   const [value, setValue] = useState("");
@@ -44,8 +87,12 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
   const [pastedAttachments, setPastedAttachments] = useState<
     PastedAttachment[]
   >([]);
+  const [fileAttachment, setFileAttachment] =
+    useState<PendingFileAttachment | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -67,10 +114,34 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
     return () => document.removeEventListener("click", onDocumentClick);
   }, []);
 
+  const handleFileSelected = async (file: File) => {
+    setAttachmentError(null);
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setAttachmentError(
+        `${file.name} is too large — attachments are capped at 1 MB.`,
+      );
+      return;
+    }
+    try {
+      const contentBase64 = await readFileAsBase64(file);
+      setFileAttachment({
+        filename: file.name,
+        // A dragged/selected file with no recognized type (file.type ===
+        // "") isn't rare — apply a generic fallback rather than sending
+        // an empty mime_type the backend would reject as a missing field.
+        mimeType: file.type || "application/octet-stream",
+        contentBase64,
+        sizeBytes: file.size,
+      });
+    } catch {
+      setAttachmentError(`Couldn't read ${file.name}.`);
+    }
+  };
+
   const handleSend = () => {
     const trimmed = value.trim();
     if (disabled) return;
-    if (!trimmed && pastedAttachments.length === 0) return;
+    if (!trimmed && pastedAttachments.length === 0 && !fileAttachment) return;
     // No schema change: the full pasted text still goes out as part of
     // the message's ordinary content field. Each pasted block is wrapped
     // in a ```pasted-text fence — the same fence syntax a real code
@@ -91,10 +162,13 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
     onSend(
       parts.join("\n\n"),
       mentionedAgents.map((a) => a.id),
+      fileAttachment ?? undefined,
     );
     setValue("");
     setMentionedAgents([]);
     setPastedAttachments([]);
+    setFileAttachment(null);
+    setAttachmentError(null);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -120,8 +194,30 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
     <div className="flex justify-center px-6 pb-5 pt-3.5">
       <div
         ref={containerRef}
+        onDragOver={(e) => {
+          // Only text/file drags need preventDefault to become droppable
+          // here — this doesn't affect ordinary text selection/drag
+          // inside the textarea itself.
+          if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (e.dataTransfer.files.length === 0) return;
+          e.preventDefault();
+          void handleFileSelected(e.dataTransfer.files[0]);
+        }}
         className="relative w-full max-w-[720px] rounded-[14px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-2.5 pl-3.5"
       >
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = ""; // lets picking the same file twice re-fire onChange
+            if (file) void handleFileSelected(file);
+          }}
+        />
+
         {plusOpen && (
           <div className="absolute bottom-[calc(100%+8px)] left-2.5 flex min-w-[200px] flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">
             <div className="flex cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] opacity-55">
@@ -131,13 +227,17 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
                 soon
               </span>
             </div>
-            <div className="flex cursor-not-allowed items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] text-[var(--login-text-secondary)] opacity-55">
+            <button
+              type="button"
+              onClick={() => {
+                setPlusOpen(false);
+                fileInputRef.current?.click();
+              }}
+              className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-[var(--login-text-secondary)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
+            >
               <FileIcon />
               Add a file
-              <span className="ml-auto font-[family-name:var(--login-font-mono)] text-[10.5px] text-[var(--login-text-muted)]">
-                soon
-              </span>
-            </div>
+            </button>
           </div>
         )}
 
@@ -222,6 +322,22 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
           </div>
         )}
 
+        {fileAttachment && (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+            <FileCard
+              name={fileAttachment.filename}
+              subtitle={`${fileAttachment.mimeType} · ${formatFileSize(fileAttachment.sizeBytes)}`}
+              kind="file"
+              onRemove={() => setFileAttachment(null)}
+            />
+          </div>
+        )}
+        {attachmentError && (
+          <p className="mb-1.5 px-1 text-[12px] text-[var(--room-warn)]">
+            {attachmentError}
+          </p>
+        )}
+
         <div className="flex items-end gap-2.5">
           <button
             type="button"
@@ -246,7 +362,9 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
             aria-label="Send message"
             disabled={
               disabled ||
-              (value.trim() === "" && pastedAttachments.length === 0)
+              (value.trim() === "" &&
+                pastedAttachments.length === 0 &&
+                !fileAttachment)
             }
             onClick={handleSend}
             className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg bg-[var(--login-accent)] text-[var(--login-bg)] hover:bg-[#63e0d1] disabled:cursor-not-allowed disabled:opacity-40"

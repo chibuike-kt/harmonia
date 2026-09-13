@@ -52,7 +52,7 @@ func TestIntegration_OnlyOneMessagePickupClaimSucceeds(t *testing.T) {
 		t.Fatalf("create room: %v", err)
 	}
 
-	triggering, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "does anyone want to help with this?", nil)
+	triggering, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "does anyone want to help with this?", nil, nil)
 	if err != nil {
 		t.Fatalf("seed triggering message: %v", err)
 	}

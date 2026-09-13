@@ -8,7 +8,11 @@ export interface FileCardProps {
   name: string;
   /** "go · 71 lines" / "Pasted text · 30 lines". */
   subtitle: string;
-  kind: "code" | "text";
+  /** "file" is a real attached file (ADR-008 batch A) — distinct from
+   *  "text" (specifically the pasted-text-as-file convention), even
+   *  though both currently render the same generic icon; conflating the
+   *  two would mislabel what kind of card this actually is. */
+  kind: "code" | "text" | "file";
   /** Set to make the whole card an "open" affordance — the inline chip
    *  and the room's artifacts menu both open a viewer this way. */
   onClick?: () => void;
