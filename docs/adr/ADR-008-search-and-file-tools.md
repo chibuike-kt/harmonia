@@ -62,10 +62,34 @@ reply renders numbered inline markers with a compact source list at the
 end, built from each provider's own citation metadata — not a new
 invention, just rendering what the API already returns.
 
-**Cost stays fully transparent.** Both search paths and any file-related
-tokens flow through the existing token/cost-tracking mechanism — same
-cost pill, same principle that's driven every prior cost-adjacent
-decision in this build.
+**Cost stays fully transparent for tokens, with one known, accepted gap.**
+Both search paths and any file-related tokens flow through the existing
+token/cost-tracking mechanism — same cost pill, same principle that's
+driven every prior cost-adjacent decision in this build. That covers
+tool-use overhead on both providers and the Responses API's differently-
+named-but-equivalent usage fields (see `provider.GenerateResponse`'s own
+doc comment). It does **not** cover Anthropic's separate flat per-search
+fee ($10 per 1,000 searches, reported as
+`usage.server_tool_use.web_search_requests` — a real count, not folded
+into token usage at all). OpenAI has no equivalent line item — its
+search cost is already inside ordinary token usage — so this gap is
+Anthropic-specific, not a symmetry problem between the two providers.
+
+**Decision: document the gap, don't estimate it yet.** The existing cost
+pill (`apps/web/src/lib/tokenPricing.ts`) already carries a hardcoded,
+explicitly "NOT AUTHORITATIVE" per-model price table in the same spirit
+a rough search-fee estimate would need — that precedent alone would make
+adding one a small change. It isn't one in practice: nothing in this
+codebase currently captures a per-message search count at all, so a
+real estimate needs a new `GenerateResponse` field, live-verified
+parsing of Anthropic's `web_search_requests` count (not possible to
+verify in this build's own environment, which has no live
+`ANTHROPIC_API_KEY`), a new persisted column on the message row (a real
+migration), and threading it onto the wire and into the pill — a small
+vertical slice through four layers, not a table edit, for a provider
+this build can't currently test live. Revisit this once Anthropic has a
+live key available to verify the parsing against, or if a real user
+reports the pill under-representing search-heavy room spend.
 
 ## Revisit When
 

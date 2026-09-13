@@ -69,6 +69,43 @@ web-search work.
   built with no wiring behind it — it finally has something genuine to
   approve.
 
+## Known limitation: advisory tool_choice is not reliable
+
+Every tool this ADR and its descendants declare (`mention_agent`,
+`create_task`, `request_handoff`, and ADR-008 batch B's `web_search`)
+goes through the same mechanism decision C establishes: the model
+decides whether to call one, `tool_choice` left at each provider's
+default "auto" rather than forced. That's the right default for any
+call whose output is itself the real, visible product of the turn (see
+`provider.GenerateRequest.RequireToolCall`'s own doc comment) — but it
+means the model's tool selection under "auto" is genuinely unreliable
+whenever more than one plausible tool is on offer at once, confirmed
+twice independently, not a one-off:
+
+- **ADR-007 batch A's busy-redirect.** Free-text framing asking a model
+  to narrate a redirect *and* separately call `mention_agent` to make it
+  real isn't reliably honored — the model can narrate a hand-off in text
+  without ever calling the tool.
+- **ADR-008 batch B's room-level search toggle.** With both `create_task`
+  and the advisory `web_search` tool declared on the same call, gpt-4o-mini
+  repeatedly (reproduced multiple times, not a single flake) called
+  `create_task` instead of searching and answering directly, for a plain
+  conversational question that had nothing task-shaped about it.
+
+This is accepted, not something either batch needs to fix — forcing the
+call (`RequireToolCall`) is the correct fix precisely when a caller
+needs a specific tool to fire deterministically (phase-1 pickup
+classification, forced per-message search), and is the wrong fix
+whenever the tool call is optional by design and the model's own
+judgment about whether to use it is the point. The takeaway is narrower
+and worth being findable on its own: don't assume "auto" tool_choice
+reliably picks the *right* tool among several plausible ones just
+because it reliably picks *a* tool when one is clearly called for. A
+future batch that leans on advisory multi-tool selection for something
+higher-stakes than these should expect the same variance and design
+around it (fewer competing tools per call, a forced/dedicated call, or
+tolerance for the model choosing wrong) rather than assuming it away.
+
 ## Revisit When
 
 Agents proposing actions beyond these two (the tool-execution phase
