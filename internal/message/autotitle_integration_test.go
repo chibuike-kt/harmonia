@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,49 @@ func TestIntegration_TitleGenerator_HappyPath(t *testing.T) {
 	}
 	if final.Name != "Debugging the Webhook Retry Logic" {
 		t.Fatalf("final room Name = %q, want the generated title actually persisted", final.Name)
+	}
+}
+
+// TestIntegration_TitleGenerator_NeverSeesCustomInstructions is P2 item
+// 13's real proof: the dogfooding pass found a distinctive marker phrase
+// from a user's own standing custom_instructions ending up verbatim
+// inside an auto-generated room title, because buildTitleRequest used to
+// prepend it into this call's system prompt the same way a real reply
+// does. This asserts on the actual request sent to the provider, not
+// just the title that comes back — a fake that echoed the system prompt
+// into its own content would make a content-only assertion pass even
+// with the leak still present.
+func TestIntegration_TitleGenerator_NeverSeesCustomInstructions(t *testing.T) {
+	pool, _ := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "title-custom-instr-")
+	marker := "ALWAYS END EVERY MESSAGE WITH: Beep boop, agent out."
+	if _, err := users.UpdateMe(ctx, owner.ID, nil, nil, nil, &marker); err != nil {
+		t.Fatalf("set owner custom instructions: %v", err)
+	}
+
+	rm, err := rooms.Create(ctx, &owner.ID, room.PlaceholderName)
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	rec := newRecordingHub(rm.ID)
+	titleGen := NewTitleGenerator(rooms, creds, users, rec)
+	var captured provider.GenerateRequest
+	titleGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "A Real Title", capturedRequest: &captured}, nil
+	}
+
+	titleGen.generate(ctx, rm.ID, rm.OwnerID, "let's debug the webhook retries")
+
+	if strings.Contains(captured.SystemPrompt, marker) {
+		t.Fatalf("system prompt = %q, want it to never contain the owner's custom_instructions marker %q", captured.SystemPrompt, marker)
 	}
 }
 

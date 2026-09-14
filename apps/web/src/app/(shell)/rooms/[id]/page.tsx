@@ -553,6 +553,32 @@ export default function RoomViewPage() {
       .catch(() => {});
   }, [roomId]);
 
+  useEffect(() => {
+    // A manual rename from the sidebar (Sidebar.handleCommitRename)
+    // reaches this same "harmonia:room-updated" broadcast the auto-title
+    // job's own SSE "room" handler already dispatches below — until this
+    // listener existed, a rename landing anywhere other than this exact
+    // page (the sidebar, while this room was open) left the header
+    // showing the old name until a full reload, the same "reconstructed
+    // vs. live" mismatch class this project has hit before. Applied
+    // directly, no typing-reveal animation: that simulated reveal is
+    // specifically for the auto-title job's own first-appearance moment,
+    // not a human's own deliberate rename.
+    function onRoomUpdated(event: Event) {
+      const detail = (event as CustomEvent<{ room_id: string; name: string }>)
+        .detail;
+      if (!detail || detail.room_id !== roomId) return;
+      if (titleRevealTimer.current) {
+        clearInterval(titleRevealTimer.current);
+        titleRevealTimer.current = null;
+      }
+      setRoomName(detail.name);
+    }
+    window.addEventListener("harmonia:room-updated", onRoomUpdated);
+    return () =>
+      window.removeEventListener("harmonia:room-updated", onRoomUpdated);
+  }, [roomId]);
+
   const handleToggleCascading = async (enabled: boolean) => {
     if (!roomId) return;
     setAgentCascadingEnabled(enabled);
@@ -1079,6 +1105,16 @@ export default function RoomViewPage() {
   totalCostUSD += pickupUsage.costUSD;
   const hasUsageData = totalInputTokens > 0 || totalOutputTokens > 0;
 
+  // Item 9: an at-a-glance count of everything still sitting unresolved
+  // in the timeline — previously discoverable only by scrolling past
+  // every approval card to find the ones still pending. entries already
+  // keeps exactly one "approval" entry per proposal_id, updated in place
+  // once resolved (see TimelineEntry's own comment), so this is a live
+  // count, not a snapshot that can drift from what's actually shown.
+  const pendingApprovalsCount = entries.filter(
+    (e) => e.kind === "approval" && e.status === "pending",
+  ).length;
+
   const rendered: ReactNode[] = [];
   let lastDateKey: string | null = null;
   entries.forEach((entry, i) => {
@@ -1217,6 +1253,11 @@ export default function RoomViewPage() {
           mentionedAgentNames={m.mentioned_agent_ids?.map(
             (id) => agentNames[id] || "Agent",
           )}
+          unaddressed={
+            m.sender_kind === "human" &&
+            roomAgents.length >= 2 &&
+            (m.mentioned_agent_ids?.length ?? 0) === 0
+          }
           replyPreview={replyPreview}
           onOpenArtifact={handleOpenArtifact}
           pinned={pinnedMessageIds.has(m.id)}
@@ -1277,7 +1318,15 @@ export default function RoomViewPage() {
               mayBeIncomplete={artifactsMayBeIncomplete}
               onOpenArtifact={handleOpenArtifact}
             />
-            <Tooltip label={infoOpen ? "Hide room info" : "Room info"}>
+            <Tooltip
+              label={
+                pendingApprovalsCount > 0
+                  ? `Room info — ${pendingApprovalsCount} approval${pendingApprovalsCount === 1 ? "" : "s"} pending`
+                  : infoOpen
+                    ? "Hide room info"
+                    : "Room info"
+              }
+            >
               <button
                 type="button"
                 onClick={() =>
@@ -1287,13 +1336,18 @@ export default function RoomViewPage() {
                     return next;
                   })
                 }
-                className={`flex rounded-md p-1.5 ${
+                className={`relative flex rounded-md p-1.5 ${
                   infoOpen
                     ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
                     : "text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text)]"
                 }`}
               >
                 <InfoIcon />
+                {pendingApprovalsCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-[var(--room-warn)] px-[3px] font-[family-name:var(--login-font-mono)] text-[9px] font-semibold leading-none text-[var(--login-bg)]">
+                    {pendingApprovalsCount}
+                  </span>
+                )}
               </button>
             </Tooltip>
             <span className="text-[13px] text-[var(--login-text-muted)]">

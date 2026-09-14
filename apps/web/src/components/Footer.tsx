@@ -63,6 +63,25 @@ const FOOTER_COLUMNS: FooterColumn[] = [
   },
 ];
 
+// FooterLink renders a not-yet-real destination the same honest way
+// SettingsModal's own CategoryButton already treats a not-yet-built
+// section: a plain, non-interactive label plus a muted "soon" tag —
+// never an <a href="#"> that looks clickable, invites a click, and goes
+// nowhere. No real destination exists yet for any of these (this is a
+// marketing footer with no backing docs site, blog, or legal pages in
+// this codebase), so every entry gets the same treatment rather than
+// guessing which ones are "closer" to real.
+function FooterLink({ label }: { label: string }) {
+  return (
+    <span className="flex items-center gap-2 text-[15px] text-[var(--login-text-muted)]">
+      {label}
+      <span className="font-[family-name:var(--login-font-mono)] text-[10px]">
+        soon
+      </span>
+    </span>
+  );
+}
+
 function FooterColumnView({ column }: { column: FooterColumn }) {
   return (
     <div className="flex min-w-[150px] flex-col gap-3">
@@ -70,13 +89,7 @@ function FooterColumnView({ column }: { column: FooterColumn }) {
         {column.label}
       </span>
       {column.links.map((link) => (
-        <a
-          key={link}
-          href="#"
-          className="text-[15px] text-[var(--login-text)] hover:text-[var(--login-accent)] hover:underline"
-        >
-          {link}
-        </a>
+        <FooterLink key={link} label={link} />
       ))}
       {column.secondary && (
         <>
@@ -84,13 +97,7 @@ function FooterColumnView({ column }: { column: FooterColumn }) {
             {column.secondary.label}
           </span>
           {column.secondary.links.map((link) => (
-            <a
-              key={link}
-              href="#"
-              className="text-[15px] text-[var(--login-text)] hover:text-[var(--login-accent)] hover:underline"
-            >
-              {link}
-            </a>
+            <FooterLink key={link} label={link} />
           ))}
         </>
       )}
@@ -111,38 +118,27 @@ export function Footer() {
       </div>
 
       <div className="mx-auto mt-12 flex max-w-[1100px] flex-col items-start gap-5 border-t border-[var(--login-border)] pt-5 sm:flex-row sm:items-center sm:justify-between sm:gap-0">
-        <div className="flex items-center gap-4 text-[var(--login-text-secondary)]">
-          <a href="#" aria-label="X" className="hover:text-[var(--login-text)]">
+        {/* No real destination exists for any of these yet — plain,
+            non-interactive icons rather than <a href="#">, same reasoning
+            as FooterLink above. */}
+        <div className="flex items-center gap-4 text-[var(--login-text-muted)]">
+          <span aria-label="X — not yet connected">
             <XIcon />
-          </a>
-          <a
-            href="#"
-            aria-label="GitHub"
-            className="hover:text-[var(--login-text)]"
-          >
+          </span>
+          <span aria-label="GitHub — not yet connected">
             <GitHubIcon size={17} />
-          </a>
-          <a
-            href="#"
-            aria-label="LinkedIn"
-            className="hover:text-[var(--login-text)]"
-          >
+          </span>
+          <span aria-label="LinkedIn — not yet connected">
             <LinkedInIcon />
-          </a>
-          <a
-            href="#"
-            aria-label="Discord"
-            className="hover:text-[var(--login-text)]"
-          >
+          </span>
+          <span aria-label="Discord — not yet connected">
             <DiscordIcon />
-          </a>
+          </span>
         </div>
 
         <div className="flex items-center gap-2 font-[family-name:var(--login-font-mono)] text-xs text-[var(--login-text-muted)]">
           <p className="m-0">© 2026 harmonia</p>
-          <a href="#" className="text-[var(--login-text-muted)] underline">
-            Manage cookies
-          </a>
+          <span>Manage cookies (soon)</span>
         </div>
 
         <div className="flex items-center gap-2 rounded-lg border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3 py-1.5 text-xs text-[var(--login-text-secondary)]">

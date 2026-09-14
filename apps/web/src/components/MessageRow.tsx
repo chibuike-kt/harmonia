@@ -152,6 +152,13 @@ interface MessageRowProps {
    *  timeline — the message just looked like plain text and the
    *  agent(s) replied with no shown connection to it. */
   mentionedAgentNames?: string[];
+  /** True only for a human message sent into a 2+-agent room that
+   *  addressed no one — correct, intentional behavior (explicit
+   *  @mention is required so multiple agents don't all answer at once),
+   *  but total silence about it reads as broken rather than as a rule.
+   *  A single-agent room never sets this: there's only ever one
+   *  possible recipient there, so nothing was actually left ambiguous. */
+  unaddressed?: boolean;
   /** Set only when reply_to_message_id points somewhere still resolvable
    *  and it isn't the immediately preceding timeline item — see
    *  room page's own "replying to" placement logic. */
@@ -316,6 +323,7 @@ export function MessageRow({
   senderName,
   senderProvider,
   mentionedAgentNames,
+  unaddressed,
   replyPreview,
   onOpenArtifact,
   pinned,
@@ -332,6 +340,18 @@ export function MessageRow({
             <div className="mb-1 flex items-center justify-end gap-1 font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-secondary)]">
               <ReplyArrowIcon />
               {mentionedAgentNames.map((name) => `@${name}`).join(" ")}
+            </div>
+          )}
+          {unaddressed && (
+            <div className="mb-1 flex items-center justify-end gap-1">
+              <Tooltip
+                label="This room has more than one agent — @mention one to have it reply"
+                wrap
+              >
+                <span className="font-[family-name:var(--login-font-mono)] text-[12px] text-[var(--login-text-muted)]">
+                  Addressed no one
+                </span>
+              </Tooltip>
             </div>
           )}
           <div className="rounded-[14px_14px_3px_14px] border border-[var(--login-border-strong)] bg-[var(--login-surface-2)] px-3.5 py-2.5 text-[16px] leading-[1.6] text-[var(--login-text)]">

@@ -100,7 +100,7 @@ func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID
 		return
 	}
 
-	resp, err := provider.CallWithTimeout(ctx, provider.RequestTimeout, client, buildTitleRequest(firstMessageContent, loadOwnerCustomInstructions(ctx, t.users, ownerID)))
+	resp, err := provider.CallWithTimeout(ctx, provider.RequestTimeout, client, buildTitleRequest(firstMessageContent))
 	if err != nil {
 		log.Printf("ERROR message: generate title for room %s: %v", roomID, err)
 		return
@@ -170,42 +170,22 @@ func resolvePlatformProviderClient(ctx context.Context, creds *credentials.Store
 // around it — a system prompt this narrow is appropriate here in a way
 // it wouldn't be for a real conversational reply, since the only
 // output this call has any use for is the bare title string itself.
-// customInstructions is prepended the same way Orchestrator's
-// buildGenerateRequest does, so a user's stated preferences (e.g.
-// "always title things in French") apply here too — same source of
-// truth, same context-assembly point as a real reply.
-func buildTitleRequest(firstMessageContent, customInstructions string) provider.GenerateRequest {
-	systemPrompt := "Generate a short title (3 to 6 words) summarizing the topic of the message below. " +
-		"Reply with only the title itself — no quotation marks, no trailing punctuation, no preamble."
-	if customInstructions != "" {
-		systemPrompt = customInstructions + "\n\n" + systemPrompt
-	}
+// Deliberately never fed the owner's custom_instructions the way a real
+// reply is (Orchestrator.loadOwnerContext): those are the owner's
+// standing reply-style preferences for an agent's own conversational
+// voice, not a summarization instruction, and this call has no reply
+// content of its own for a human to ever see them applied to — a
+// custom instruction ("end every message with...") has previously
+// leaked verbatim into a generated title this way, since summarizing
+// "the topic of the message below" and obeying an unrelated standing
+// instruction aren't a call this system prompt was ever meant to
+// conflate.
+func buildTitleRequest(firstMessageContent string) provider.GenerateRequest {
 	return provider.GenerateRequest{
-		SystemPrompt: systemPrompt,
-		Messages:     []provider.Message{{Role: "user", Content: firstMessageContent}},
+		SystemPrompt: "Generate a short title (3 to 6 words) summarizing the topic of the message below. " +
+			"Reply with only the title itself — no quotation marks, no trailing punctuation, no preamble.",
+		Messages: []provider.Message{{Role: "user", Content: firstMessageContent}},
 	}
-}
-
-// loadOwnerCustomInstructions mirrors Orchestrator.loadOwnerContext's own
-// custom-instructions half — shared by TitleGenerator and
-// ObjectiveGenerator (autoobjective.go), both platform-level utility
-// calls scoped to the room owner rather than any one agent. Same
-// soft-fail posture as Orchestrator's own version: a lookup failure logs
-// and falls back to no instructions rather than failing generation,
-// which has no ADR-004 requirement to surface a visible failure.
-func loadOwnerCustomInstructions(ctx context.Context, users *user.Store, ownerID *uuid.UUID) string {
-	if ownerID == nil {
-		return ""
-	}
-	owner, err := users.GetByID(ctx, *ownerID)
-	if err != nil {
-		log.Printf("ERROR message: load owner %s for generation custom instructions: %v", *ownerID, err)
-		return ""
-	}
-	if owner.CustomInstructions == nil {
-		return ""
-	}
-	return *owner.CustomInstructions
 }
 
 // sanitizeTitle strips the surrounding quotes/punctuation a model adds

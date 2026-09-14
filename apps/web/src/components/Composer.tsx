@@ -72,6 +72,27 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
+// activeMentionAt finds the "@query" token the cursor currently sits
+// inside of, if any — an "@" that starts the string or follows
+// whitespace, with no whitespace between it and the cursor (a token
+// only ever grows until the next space, matching how every reference
+// product's own @-picker scopes what's being typed). Returns null the
+// moment that shape breaks — a bare "@" mid-word (an email-like
+// "name@domain"), or once a space ends the token — rather than trying
+// to keep a picker open past where a human would expect it to close.
+function activeMentionAt(
+  value: string,
+  cursor: number,
+): { start: number; query: string } | null {
+  const upToCursor = value.slice(0, cursor);
+  const at = upToCursor.lastIndexOf("@");
+  if (at === -1) return null;
+  if (at > 0 && !/\s/.test(upToCursor[at - 1])) return null;
+  const query = upToCursor.slice(at + 1);
+  if (/\s/.test(query)) return null;
+  return { start: at, query };
+}
+
 /**
  * Message composer — text input, send, an @-picker for the room's own
  * agents that allows selecting more than one (sends the structured
@@ -93,6 +114,17 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
     useState<PendingFileAttachment | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [forceSearch, setForceSearch] = useState(false);
+  // mention: non-null exactly while the cursor sits inside an "@query"
+  // token — start is that token's "@" offset into value, so selecting a
+  // candidate knows exactly what span of typed text to remove. highlight
+  // is the keyboard-navigable index into the current candidate list
+  // (recomputed below on every render from mention.query, not stored
+  // separately — there's nothing to desync it from).
+  const [mention, setMention] = useState<{
+    start: number;
+    query: string;
+  } | null>(null);
+  const [mentionHighlight, setMentionHighlight] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -174,9 +206,87 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
     setFileAttachment(null);
     setAttachmentError(null);
     setForceSearch(false);
+    setMention(null);
+  };
+
+  // Candidates for the currently-active "@query" token — every room
+  // agent not already addressed (an already-mentioned agent has nothing
+  // left to pick), name-prefix-filtered so typing narrows the list the
+  // same way every reference product's own @-picker does. Recomputed
+  // from mention/mentionedAgents/agents rather than held as its own
+  // state: there's no independent input driving it, so a derived value
+  // can't drift out of sync the way a stored copy could.
+  const mentionCandidates =
+    mention !== null
+      ? agents.filter(
+          (a) =>
+            !mentionedAgents.some((m) => m.id === a.id) &&
+            a.name.toLowerCase().startsWith(mention.query.toLowerCase()),
+        )
+      : [];
+
+  // selectMention is the one real effect of picking an agent from the
+  // autocomplete — identical to clicking that agent's own Address chip
+  // (pushes onto mentionedAgents), plus removing the typed "@query" span
+  // from the textarea, since that text has now been replaced by the same
+  // structured chip the Address row itself produces. Never a second,
+  // parallel addressing mechanism — see this file's own top-level doc
+  // comment.
+  const selectMention = (agent: RoomAgent) => {
+    if (mention === null) return;
+    const cursor = textareaRef.current?.selectionStart ?? value.length;
+    const before = value.slice(0, mention.start);
+    const after = value.slice(cursor);
+    setValue(before + after);
+    setMentionedAgents((prev) => [...prev, agent]);
+    setMention(null);
+    // Cursor restoration needs the textarea's value to have actually
+    // re-rendered with the spliced text first — a same-tick
+    // setSelectionRange would still be operating against the old value.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(before.length, before.length);
+    });
+  };
+
+  const handleValueChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newValue = e.target.value;
+    setValue(newValue);
+    const cursor = e.target.selectionStart ?? newValue.length;
+    const active = activeMentionAt(newValue, cursor);
+    setMention(active);
+    setMentionHighlight(0);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention !== null && mentionCandidates.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionHighlight((i) => (i + 1) % mentionCandidates.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionHighlight(
+          (i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length,
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        selectMention(
+          mentionCandidates[Math.min(mentionHighlight, mentionCandidates.length - 1)],
+        );
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMention(null);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -256,7 +366,13 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
         )}
 
         {mentionedAgents.length > 0 && (
-          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+          // mb-3 (not the other chip rows' mb-1.5) at narrow widths
+          // specifically: a real mis-tap risk found live on mobile — a
+          // tap meant for the text field just below could land on one of
+          // these chips instead — that a wider pointer (mouse) doesn't
+          // have the same precision problem with. sm:mb-1.5 keeps
+          // desktop's tighter spacing exactly as it was.
+          <div className="mb-3 flex flex-wrap items-center gap-1.5 px-1 sm:mb-1.5">
             {mentionedAgents.map((a) => (
               <span
                 key={a.id}
@@ -288,7 +404,9 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
         )}
 
         {agents.some((a) => !mentionedAgents.some((m) => m.id === a.id)) && (
-          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+          // See the mentionedAgents chip row's own comment above — same
+          // mobile mis-tap fix, same reasoning.
+          <div className="mb-3 flex flex-wrap items-center gap-1.5 px-1 sm:mb-1.5">
             <span className="font-[family-name:var(--login-font-mono)] text-[11px] text-[var(--login-text-muted)]">
               Address:
             </span>
@@ -377,16 +495,57 @@ export function Composer({ agents, disabled, onSend }: ComposerProps) {
           >
             <PlusIcon size={17} strokeWidth={1.6} />
           </button>
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder="Message this room — @mention an agent to address it"
-            className="no-scrollbar max-h-[160px] flex-1 resize-none bg-transparent py-2 font-[family-name:var(--login-font-sans)] text-[16px] leading-[1.5] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
-          />
+          <div className="relative min-w-0 flex-1">
+            {mention !== null && mentionCandidates.length > 0 && (
+              <div
+                role="listbox"
+                aria-label="Mention an agent"
+                className="absolute bottom-[calc(100%+8px)] left-0 flex min-w-[180px] flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
+              >
+                {mentionCandidates.map((a, i) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    role="option"
+                    aria-selected={i === mentionHighlight}
+                    // onMouseDown, not onClick: a click fires after the
+                    // textarea's own blur, which would otherwise close
+                    // this picker (mention state lives on blur-losing
+                    // focus) before the click ever registers.
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectMention(a);
+                    }}
+                    onMouseEnter={() => setMentionHighlight(i)}
+                    className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13.5px] ${
+                      i === mentionHighlight
+                        ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                        : "text-[var(--login-text-secondary)]"
+                    }`}
+                  >
+                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--login-border-strong)] text-[8px] font-semibold text-[var(--login-accent)]">
+                      <AgentAvatarGlyph
+                        provider={a.provider}
+                        name={a.name}
+                        size={9}
+                      />
+                    </span>
+                    {a.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={value}
+              onChange={handleValueChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder="Message this room — @mention an agent to address it"
+              className="no-scrollbar max-h-[160px] w-full resize-none bg-transparent py-2 font-[family-name:var(--login-font-sans)] text-[16px] leading-[1.5] text-[var(--login-text)] outline-none placeholder:text-[var(--login-text-muted)]"
+            />
+          </div>
           <button
             type="button"
             aria-label="Send message"

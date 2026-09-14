@@ -244,10 +244,24 @@ function RoomRow({
         </span>
       </Link>
 
+      {/* Always laid out (flex, never display:none) AND always real
+          clickable (pointer-events never gated by :hover) — only
+          opacity is hover-driven, purely cosmetic. Confirmed live (a
+          synthetic click landing here before hover, dispatched the same
+          way a fast real click does) that gating *clickability* on
+          :hover — whether via display:none/flex or, still, via
+          pointer-events:none/auto — leaves the exact race the live
+          finding described: "the first click after hovering onto a
+          not-yet-focused row visibly did nothing." The row's own Link
+          reserves pr-8 of space specifically so it never extends under
+          this button, so there's no dead Link-click-through risk to
+          trade for by leaving this always-hittable — a click here only
+          ever happens when the cursor is already over this exact 24×24
+          corner of this exact row, opacity settled or not. */}
       <div
         data-room-menu={room.id}
-        className={`absolute right-1 top-1/2 -translate-y-1/2 ${
-          menuOpen ? "flex" : "hidden group-hover/room:flex"
+        className={`absolute right-1 top-1/2 flex -translate-y-1/2 opacity-0 transition-opacity group-hover/room:opacity-100 ${
+          menuOpen ? "opacity-100" : ""
         }`}
       >
         <Tooltip label="More">
@@ -625,6 +639,15 @@ export function Sidebar() {
         body: { name },
       });
       await loadRooms();
+      // Tells that room's own open page directly, the same broadcast the
+      // auto-title job's own SSE "room" event already re-dispatches as —
+      // one listener on the receiving end (the room page's header)
+      // regardless of which of the two ever actually renames it.
+      window.dispatchEvent(
+        new CustomEvent("harmonia:room-updated", {
+          detail: { room_id: room.id, name },
+        }),
+      );
     } catch (err) {
       setActionError(
         err instanceof ApiError ? err.message : "Failed to rename room.",

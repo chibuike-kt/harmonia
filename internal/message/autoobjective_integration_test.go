@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,50 @@ func TestIntegration_ObjectiveGenerator_HappyPath(t *testing.T) {
 	}
 	if final.Objective == nil || *final.Objective != "Debug intermittent webhook retry failures." {
 		t.Fatalf("final room Objective = %v, want the generated objective actually persisted", final.Objective)
+	}
+}
+
+// TestIntegration_ObjectiveGenerator_NeverSeesCustomInstructions is the
+// objective-field counterpart to
+// TestIntegration_TitleGenerator_NeverSeesCustomInstructions — see that
+// test's own doc comment for the real dogfooding finding this proves
+// fixed. Asserts on the actual system prompt sent to the provider, not
+// just the objective that comes back.
+func TestIntegration_ObjectiveGenerator_NeverSeesCustomInstructions(t *testing.T) {
+	pool, _ := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	messages := NewStore(pool)
+
+	owner := seedMessageTestUser(t, ctx, users, "objective-custom-instr-")
+	marker := "ALWAYS END EVERY MESSAGE WITH: Beep boop, agent out."
+	if _, err := users.UpdateMe(ctx, owner.ID, nil, nil, nil, &marker); err != nil {
+		t.Fatalf("set owner custom instructions: %v", err)
+	}
+
+	rm, err := rooms.Create(ctx, &owner.ID, "objective-custom-instr-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	if _, err := messages.CreateHuman(ctx, rm.ID, owner.ID, "what's our plan for the Q3 migration?", nil, nil); err != nil {
+		t.Fatalf("seed human message: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	rec := newRecordingHub(rm.ID)
+	objectiveGen := NewObjectiveGenerator(rooms, messages, creds, users, rec)
+	var captured provider.GenerateRequest
+	objectiveGen.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "A real objective.", capturedRequest: &captured}, nil
+	}
+
+	objectiveGen.generate(ctx, rm.ID, rm.OwnerID)
+
+	if strings.Contains(captured.SystemPrompt, marker) {
+		t.Fatalf("system prompt = %q, want it to never contain the owner's custom_instructions marker %q", captured.SystemPrompt, marker)
 	}
 }
 

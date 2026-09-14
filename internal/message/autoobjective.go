@@ -45,9 +45,8 @@ const objectiveEarlyMessageCap = 10
 // ObjectiveGenerator generates a room's objective from its early
 // messages, asynchronously — the same platform-level-utility shape as
 // TitleGenerator (see autotitle.go), sharing that type's own BYOK
-// owner-credential resolution (resolvePlatformProviderClient) and custom
-// instructions loading (loadOwnerCustomInstructions) rather than
-// duplicating either. Kept as its own type, not folded into
+// owner-credential resolution (resolvePlatformProviderClient) rather
+// than duplicating it. Kept as its own type, not folded into
 // TitleGenerator, for the same reason TitleGenerator itself is separate
 // from Orchestrator: this needs its own message history (the early
 // window, not the first message alone), so it holds its own *Store
@@ -106,7 +105,7 @@ func (o *ObjectiveGenerator) generate(ctx context.Context, roomID uuid.UUID, own
 		return
 	}
 
-	resp, err := provider.CallWithTimeout(ctx, provider.RequestTimeout, client, buildObjectiveRequest(early, loadOwnerCustomInstructions(ctx, o.users, ownerID)))
+	resp, err := provider.CallWithTimeout(ctx, provider.RequestTimeout, client, buildObjectiveRequest(early))
 	if err != nil {
 		log.Printf("ERROR message: generate objective for room %s: %v", roomID, err)
 		return
@@ -167,14 +166,13 @@ func (o *ObjectiveGenerator) loadEarlyMessages(ctx context.Context, roomID uuid.
 // perspective here to cast either side as "assistant," so a labeled
 // transcript is the honest shape for what's actually being asked: an
 // outside summary of a conversation, not a continuation of it.
-// customInstructions is prepended the same way buildTitleRequest does,
-// so a user's stated preferences apply here too.
-func buildObjectiveRequest(early []Message, customInstructions string) provider.GenerateRequest {
+// Deliberately never fed the owner's custom_instructions — see
+// buildTitleRequest's own doc comment for why a standing reply-style
+// preference has no business being applied to a pure summarization call
+// with no reply content of its own.
+func buildObjectiveRequest(early []Message) provider.GenerateRequest {
 	systemPrompt := "Summarize the objective of the conversation below in one or two short sentences — what is this room trying to accomplish? " +
 		"Reply with only the summary itself — no preamble, no quotation marks."
-	if customInstructions != "" {
-		systemPrompt = customInstructions + "\n\n" + systemPrompt
-	}
 	var transcript strings.Builder
 	for _, m := range early {
 		speaker := "Human"
