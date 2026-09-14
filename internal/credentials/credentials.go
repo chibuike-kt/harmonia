@@ -114,7 +114,7 @@ func (s *Store) Connect(ctx context.Context, userID uuid.UUID, providerName agen
 
 	verifyCtx, cancel := context.WithTimeout(ctx, verificationTimeout)
 	defer cancel()
-	if _, err := client.Generate(verifyCtx, provider.GenerateRequest{
+	if _, err := provider.CallWithTimeout(verifyCtx, provider.RequestTimeout, client, provider.GenerateRequest{
 		Messages: []provider.Message{{Role: "user", Content: verificationPrompt}},
 	}); err != nil {
 		return Credential{}, fmt.Errorf("%w: %v", ErrVerificationFailed, err)

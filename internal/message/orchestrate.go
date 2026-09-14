@@ -30,8 +30,21 @@ import (
 // lookup, credential resolution, and the live provider call together.
 // Long enough for a real generation, short enough that a hung provider
 // call doesn't leave a goroutine (and an agent stuck showing "running")
-// alive indefinitely.
+// alive indefinitely. Comfortably above provider.RequestTimeout (the
+// single call's own bound) so that when the provider call is what times
+// out, there's still real budget left on this outer deadline for fail's
+// own recovery writes to run before this one also expires.
 const generationTimeout = 2 * time.Minute
+
+// recoveryTimeout bounds fail's own writes — the visible failure message
+// and the status reset back to available. Deliberately its own fresh
+// context.Background()-rooted deadline, never derived from whatever
+// context brought the invocation here (see fail's own doc comment for
+// why reusing that would silently defeat the entire point of this
+// function). 10s is generous for two ordinary DB writes plus a Redis
+// mirror — this only needs to survive real infrastructure, not a slow
+// provider.
+const recoveryTimeout = 10 * time.Second
 
 // cascadeDepthCap bounds how many agent-to-agent hops (ADR-006 batch B)
 // can chain off a single human-triggered mention, enforced regardless of
@@ -157,6 +170,14 @@ type Orchestrator struct {
 	// own to open.
 	beginner          store.Beginner
 	newProviderClient newProviderClientFunc
+	// generationTimeout and requestTimeout default to the package
+	// constants of the same name (set in NewOrchestrator) — fields,
+	// not bare constant references, so a test can shrink both and
+	// exercise a real hung-provider timeout deterministically in
+	// milliseconds rather than actually waiting out the production
+	// budget. See TestIntegration_Orchestrator_HungProviderTimesOut.
+	generationTimeout time.Duration
+	requestTimeout    time.Duration
 	// lastPickupEvalAt rate-limits ADR-007 batch B's own phase 1 — the
 	// last time each agent ran a classification call, in-memory only
 	// (not persisted: a server restart clearing this just means the
@@ -173,6 +194,8 @@ func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.St
 	return &Orchestrator{
 		messages: messages, agents: agents, credentials: creds, users: users, rooms: rooms, tasks: tasks, beginner: beginner, hub: hub, rdb: rdb,
 		newProviderClient: newProviderClient,
+		generationTimeout: generationTimeout,
+		requestTimeout:    provider.RequestTimeout,
 		lastPickupEvalAt:  make(map[uuid.UUID]time.Time),
 	}
 }
@@ -208,12 +231,12 @@ func NewOrchestrator(messages *Store, agents *agent.Store, creds *credentials.St
 // re-derives.
 func (o *Orchestrator) TriggerReply(mentionedAgentID uuid.UUID, roomOwnerID *uuid.UUID, triggering Message, depth int, forceSearch bool) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), generationTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), o.generationTimeout)
 		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("ERROR message: panic generating reply for agent %s: %v", mentionedAgentID, r)
-				o.fail(ctx, triggering.RoomID, mentionedAgentID, triggering.ID,
+				o.fail(triggering.RoomID, mentionedAgentID, triggering.ID,
 					"something went wrong generating this reply and it couldn't complete.")
 			}
 		}()
@@ -225,7 +248,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	a, err := o.agents.GetByID(ctx, agentID)
 	if err != nil {
 		log.Printf("ERROR message: load agent %s to generate reply: %v", agentID, err)
-		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "the mentioned agent couldn't be loaded.")
+		o.fail(triggering.RoomID, agentID, triggering.ID, "the mentioned agent couldn't be loaded.")
 		return
 	}
 	// Read before this invocation's own setStatus below overwrites it —
@@ -242,14 +265,14 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	client, err := o.resolveClient(ctx, roomOwnerID, a)
 	if err != nil {
 		log.Printf("ERROR message: resolve provider client for agent %s: %v", agentID, err)
-		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, resolveFailureReason(err))
+		o.fail(triggering.RoomID, agentID, triggering.ID, resolveFailureReason(err))
 		return
 	}
 
 	history, err := o.messages.ListByRoom(ctx, triggering.RoomID)
 	if err != nil {
 		log.Printf("ERROR message: load history for room %s: %v", triggering.RoomID, err)
-		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "recent conversation history couldn't be loaded.")
+		o.fail(triggering.RoomID, agentID, triggering.ID, "recent conversation history couldn't be loaded.")
 		return
 	}
 
@@ -330,10 +353,10 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		}
 	}
 
-	resp, err := client.Generate(ctx, req)
+	resp, err := provider.CallWithTimeout(ctx, o.requestTimeout, client, req)
 	if err != nil {
 		log.Printf("ERROR message: generate reply for agent %s: %v", agentID, err)
-		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, fmt.Sprintf("the provider call failed: %v", err))
+		o.fail(triggering.RoomID, agentID, triggering.ID, fmt.Sprintf("the provider call failed: %v", err))
 		return
 	}
 
@@ -384,7 +407,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	reply, err := o.messages.CreateAgent(ctx, triggering.RoomID, agentID, content, triggering.ID, &resp.InputTokens, &resp.OutputTokens, cascadeTargets)
 	if err != nil {
 		log.Printf("ERROR message: store generated reply for agent %s: %v", agentID, err)
-		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, "the reply was generated but couldn't be saved.")
+		o.fail(triggering.RoomID, agentID, triggering.ID, "the reply was generated but couldn't be saved.")
 		return
 	}
 	o.hub.Publish(triggering.RoomID, realtime.NewChatMessage(toChatMessage(reply)))
@@ -484,7 +507,7 @@ func (o *Orchestrator) retryForMissedCreateTask(ctx context.Context, client prov
 			"If you still mean to create it, call the tool now — don't just describe it in text. " +
 			"If you've changed your mind and no task is actually needed, just say so plainly."},
 	)
-	retried, err := client.Generate(ctx, retryReq)
+	retried, err := provider.CallWithTimeout(ctx, o.requestTimeout, client, retryReq)
 	if err != nil {
 		log.Printf("message: create_task narration retry failed, keeping the original reply: %v", err)
 		return provider.GenerateResponse{}, false
@@ -633,7 +656,7 @@ func (o *Orchestrator) EvaluateForPickup(roomAgents []agent.Agent, roomOwnerID *
 // runs for whichever agent's own atomic ClaimForPickup actually wins —
 // see that method's own doc comment for the concurrency guarantee.
 func (o *Orchestrator) evaluateOnePickup(a agent.Agent, roomOwnerID *uuid.UUID, triggering Message) {
-	ctx, cancel := context.WithTimeout(context.Background(), generationTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), o.generationTimeout)
 	defer cancel()
 	defer func() {
 		if r := recover(); r != nil {
@@ -651,7 +674,7 @@ func (o *Orchestrator) evaluateOnePickup(a agent.Agent, roomOwnerID *uuid.UUID, 
 		return
 	}
 
-	resp, err := client.Generate(ctx, provider.GenerateRequest{
+	resp, err := provider.CallWithTimeout(ctx, o.requestTimeout, client, provider.GenerateRequest{
 		SystemPrompt: fmt.Sprintf(
 			"You are silently screening one message in a chat room, on %s's behalf. "+
 				"Decide only whether it needs a response from %s — do not write a reply.",
@@ -724,7 +747,22 @@ func (o *Orchestrator) evaluateOnePickup(a agent.Agent, roomOwnerID *uuid.UUID, 
 // the agent itself (sender_kind 'agent', same as a real reply) so it
 // renders in the same place a reply would have, rather than as some
 // separate system-message concept this phase doesn't build.
-func (o *Orchestrator) fail(ctx context.Context, roomID, agentID uuid.UUID, replyToMessageID uuid.UUID, reason string) {
+//
+// Deliberately takes no ctx from its caller: this is invoked precisely
+// when something already went wrong, and the single most common reason
+// is the invocation's own context deadline (generationTimeout, or the
+// provider call's own tighter RequestTimeout) having just expired. Any
+// write here made against that same expired context would fail too —
+// silently, since these are best-effort logged errors, not something the
+// caller re-raises — leaving an agent stuck showing "running" forever
+// with no explanation on screen: the exact failure mode this function
+// exists to prevent. recoveryTimeout, rooted fresh in
+// context.Background(), is what actually guarantees these writes get a
+// real chance to run regardless of why fail was called.
+func (o *Orchestrator) fail(roomID, agentID uuid.UUID, replyToMessageID uuid.UUID, reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), recoveryTimeout)
+	defer cancel()
+
 	content := "I couldn't generate a reply — " + reason
 	msg, err := o.messages.CreateAgent(ctx, roomID, agentID, content, replyToMessageID, nil, nil, nil)
 	if err != nil {

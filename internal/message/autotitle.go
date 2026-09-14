@@ -100,7 +100,7 @@ func (t *TitleGenerator) generate(ctx context.Context, roomID uuid.UUID, ownerID
 		return
 	}
 
-	resp, err := client.Generate(ctx, buildTitleRequest(firstMessageContent, loadOwnerCustomInstructions(ctx, t.users, ownerID)))
+	resp, err := provider.CallWithTimeout(ctx, provider.RequestTimeout, client, buildTitleRequest(firstMessageContent, loadOwnerCustomInstructions(ctx, t.users, ownerID)))
 	if err != nil {
 		log.Printf("ERROR message: generate title for room %s: %v", roomID, err)
 		return

@@ -106,7 +106,7 @@ func (o *ObjectiveGenerator) generate(ctx context.Context, roomID uuid.UUID, own
 		return
 	}
 
-	resp, err := client.Generate(ctx, buildObjectiveRequest(early, loadOwnerCustomInstructions(ctx, o.users, ownerID)))
+	resp, err := provider.CallWithTimeout(ctx, provider.RequestTimeout, client, buildObjectiveRequest(early, loadOwnerCustomInstructions(ctx, o.users, ownerID)))
 	if err != nil {
 		log.Printf("ERROR message: generate objective for room %s: %v", roomID, err)
 		return
