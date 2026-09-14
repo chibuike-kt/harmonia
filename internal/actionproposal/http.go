@@ -95,7 +95,10 @@ func resolvedEnvelope(p Proposal) protocol.Envelope {
 // exact same path a human's own direct API call would use
 // (executeApprovedHandoff) — ADR-006's "approving it produces a real
 // handoff exactly as if a human had requested it," not a second,
-// parallel way of creating one.
+// parallel way of creating one. Per the ADR's 2026-09-14 addendum, that
+// execution also immediately accepts the handoff in the same
+// transaction — a human's approval here is the whole transaction's one
+// required consent, not the first of two separate gates.
 func (s *Store) ApproveHandler(rooms *room.Store, pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := loadOwnedProposal(w, r, s, rooms)
@@ -122,14 +125,15 @@ func (s *Store) ApproveHandler(rooms *room.Store, pool store.Beginner, hub realt
 			return
 		}
 
-		var handoffEnv *protocol.Envelope
+		var handoffRequestedEnv, handoffAcceptedEnv *protocol.Envelope
 		if resolved.ActionType == ActionRequestHandoff {
-			env, err := executeApprovedHandoff(ctx, tx, resolved.RoomID, resolved.ProposingAgentID, resolved.Payload)
+			requestedEnv, acceptedEnv, err := executeApprovedHandoff(ctx, tx, resolved.RoomID, resolved.ProposingAgentID, resolved.Payload)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to execute approved handoff")
 				return
 			}
-			handoffEnv = &env
+			handoffRequestedEnv = &requestedEnv
+			handoffAcceptedEnv = &acceptedEnv
 		}
 
 		resolveEnv := resolvedEnvelope(resolved)
@@ -144,8 +148,11 @@ func (s *Store) ApproveHandler(rooms *room.Store, pool store.Beginner, hub realt
 			return
 		}
 		hub.Publish(resolved.RoomID, realtime.NewEventMessage(resolveEnv))
-		if handoffEnv != nil {
-			hub.Publish(resolved.RoomID, realtime.NewEventMessage(*handoffEnv))
+		if handoffRequestedEnv != nil {
+			hub.Publish(resolved.RoomID, realtime.NewEventMessage(*handoffRequestedEnv))
+		}
+		if handoffAcceptedEnv != nil {
+			hub.Publish(resolved.RoomID, realtime.NewEventMessage(*handoffAcceptedEnv))
 		}
 
 		writeJSON(w, http.StatusOK, resolved)

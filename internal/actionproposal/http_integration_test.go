@@ -3,6 +3,7 @@ package actionproposal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,17 +51,17 @@ func withIDParam(req *http.Request, id string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
-// TestIntegration_ApproveHandler_ExecutesRealHandoffAndLeavesHandoffStatusMachineUntouched
-// is ADR-006 batch C's central approval proof: approving a
-// request_handoff proposal against real Postgres produces a real
-// handoff row via the exact same path a human's own direct
-// POST /v1/handoffs call would use — status REQUESTED, the receiving
-// agent's own accept/reject state machine (internal/handoff's
-// ErrNotRequested-guarded Accept) completely untouched by the approval
-// itself, since ADR-006 is explicit these are two different questions.
-// Requires a live Postgres — run via `make test-integration` after
-// `make up`.
-func TestIntegration_ApproveHandler_ExecutesRealHandoffAndLeavesHandoffStatusMachineUntouched(t *testing.T) {
+// TestIntegration_ApproveHandler_ExecutesRealHandoffAndAutoAccepts is
+// ADR-006 batch C's central approval proof, updated per the ADR's
+// 2026-09-14 addendum: approving a request_handoff proposal against real
+// Postgres produces a real handoff row via the exact same path a human's
+// own direct POST /v1/handoffs call would use, AND immediately accepts
+// it in the same transaction — no second, separate action required from
+// anyone. A human's approval is the whole transaction's one required
+// consent, not the first of two gates with nothing that ever triggers
+// the second. Requires a live Postgres — run via `make test-integration`
+// after `make up`.
+func TestIntegration_ApproveHandler_ExecutesRealHandoffAndAutoAccepts(t *testing.T) {
 	pool := connectActionProposalTestPool(t)
 	ctx := context.Background()
 
@@ -140,14 +141,35 @@ func TestIntegration_ApproveHandler_ExecutesRealHandoffAndLeavesHandoffStatusMac
 		t.Fatalf("find created handoff: %v", err)
 	}
 
-	// The receiving agent's own accept/reject state machine — untouched
-	// by approval itself, exactly as if a human had called
-	// POST /v1/handoffs directly and no one had accepted yet.
-	if err := handoffs.Accept(ctx, hID); err != nil {
-		t.Fatalf("Accept: %v", err)
+	// The real proof: the handoff is ALREADY accepted, with zero further
+	// action — not REQUESTED waiting on a second step nothing ever
+	// triggers. A subsequent Accept must fail exactly the way it would
+	// on any already-accepted handoff (handoff.ErrNotRequested).
+	got2, err := handoffs.GetByID(ctx, hID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
 	}
-	if err := handoffs.Accept(ctx, hID); err == nil {
-		t.Fatal("expected second Accept to fail — handoff already accepted")
+	if got2.Status != handoff.StatusAccepted {
+		t.Fatalf("handoff Status = %q, want %q (auto-accepted on approval)", got2.Status, handoff.StatusAccepted)
+	}
+	if err := handoffs.Accept(ctx, hID); !errors.Is(err, handoff.ErrNotRequested) {
+		t.Fatalf("Accept on an already-accepted handoff = %v, want %v", err, handoff.ErrNotRequested)
+	}
+
+	// The audit trail records both real legs of the transaction — a
+	// request and its accept — not one collapsed event.
+	var requestedCount, acceptedCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = $1 AND type = 'HANDOFF_REQUESTED'`, rm.ID).Scan(&requestedCount); err != nil {
+		t.Fatalf("count HANDOFF_REQUESTED events: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = $1 AND type = 'HANDOFF_ACCEPTED'`, rm.ID).Scan(&acceptedCount); err != nil {
+		t.Fatalf("count HANDOFF_ACCEPTED events: %v", err)
+	}
+	if requestedCount != 1 {
+		t.Fatalf("HANDOFF_REQUESTED events = %d, want 1", requestedCount)
+	}
+	if acceptedCount != 1 {
+		t.Fatalf("HANDOFF_ACCEPTED events = %d, want 1", acceptedCount)
 	}
 }
 

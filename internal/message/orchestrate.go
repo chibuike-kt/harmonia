@@ -55,20 +55,37 @@ const mentionAgentToolName = "mention_agent"
 // does — resolveMentionToolCalls does the actual name-to-ID lookup,
 // scoped to this room, never trusting anything the model supplies as an
 // ID directly.
-func mentionAgentTool() provider.ToolDef {
+//
+// otherAgents is this call's own invoking agent already excluded (the
+// same list built for request_handoff's tool description) — named in the
+// description here for the same reason request_handoff's own tool lists
+// real tasks and real other agents rather than letting the model invent
+// references: a model can only mention a name it's actually been told is
+// a valid target. This is advisory, not the enforcement — the invoking
+// agent's own name is never in this list in the first place, so it can't
+// leak in via the description even if the model ignores the instruction;
+// resolveMentionToolCalls's own use of this same otherAgents list (never
+// the full room roster) is the real, defensive guarantee.
+func mentionAgentTool(otherAgents []agent.Agent) provider.ToolDef {
+	var agentsList strings.Builder
+	for _, a := range otherAgents {
+		fmt.Fprintf(&agentsList, "\n- %s", a.Name)
+	}
 	return provider.ToolDef{
 		Name: mentionAgentToolName,
 		Description: "Bring another agent already in this room into the " +
 			"conversation, the same way a human @mentions someone. Only " +
 			"call this when that agent's specific expertise or action is " +
 			"genuinely needed to continue — not on every turn, and not " +
-			"more than once for the same agent.",
+			"more than once for the same agent. You cannot mention " +
+			"yourself. Other agents in this room:" +
+			agentsList.String(),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"agent_name": map[string]any{
 					"type":        "string",
-					"description": "The exact display name of the agent to mention, as it appears in this room's conversation.",
+					"description": "The exact display name of the OTHER agent to mention, as it appears in this room's conversation. Never your own name.",
 				},
 			},
 			"required": []string{"agent_name"},
@@ -78,13 +95,20 @@ func mentionAgentTool() provider.ToolDef {
 
 // resolveMentionToolCalls turns a generation's mention_agent tool calls
 // into real agent IDs — matched by exact case-insensitive name against
-// every agent actually in this room, never a raw ID the model might
-// invent, the same non-leaking validation every mention path in this
-// package already uses. A call naming an agent that doesn't exist here,
-// or repeating one already resolved, is dropped rather than treated as a
-// failure: the reply itself already generated successfully, and a model
-// naming the wrong agent shouldn't cost the human a lost reply over it.
-func resolveMentionToolCalls(calls []provider.ToolCall, roomAgents []agent.Agent) []uuid.UUID {
+// candidates, never a raw ID the model might invent, the same
+// non-leaking validation every mention path in this package already
+// uses. A call naming an agent that doesn't exist here, or repeating one
+// already resolved, is dropped rather than treated as a failure: the
+// reply itself already generated successfully, and a model naming the
+// wrong agent shouldn't cost the human a lost reply over it.
+//
+// candidates must be the invoking agent's own otherAgents list, never the
+// full room roster — this is the actual, defensive enforcement of "an
+// agent cannot cascade-mention itself" (the tool description above is
+// only advisory; a model can still name itself in the raw tool-call
+// arguments regardless of what its own tool description said, and this
+// is what stops that from ever resolving to a real cascade target).
+func resolveMentionToolCalls(calls []provider.ToolCall, candidates []agent.Agent) []uuid.UUID {
 	seen := make(map[uuid.UUID]bool, len(calls))
 	var ids []uuid.UUID
 	for _, call := range calls {
@@ -92,7 +116,7 @@ func resolveMentionToolCalls(calls []provider.ToolCall, roomAgents []agent.Agent
 			continue
 		}
 		name, _ := call.Input["agent_name"].(string)
-		id, ok := resolveAgentName(name, roomAgents)
+		id, ok := resolveAgentName(name, candidates)
 		if !ok || seen[id] {
 			continue
 		}
@@ -292,7 +316,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	} else {
 		req.Tools = append(req.Tools, createTaskTool())
 		if cascadingEnabled {
-			req.Tools = append(req.Tools, mentionAgentTool())
+			req.Tools = append(req.Tools, mentionAgentTool(otherAgents))
 		}
 		if len(activeTasks) > 0 && len(otherAgents) > 0 {
 			req.Tools = append(req.Tools, requestHandoffTool(activeTasks, otherAgents))
@@ -315,7 +339,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 	var cascadeTargets []uuid.UUID
 	var createTaskCalls, requestHandoffCalls []provider.ToolCall
 	if cascadingEnabled {
-		cascadeTargets = resolveMentionToolCalls(resp.ToolCalls, roomAgents)
+		cascadeTargets = resolveMentionToolCalls(resp.ToolCalls, otherAgents)
 	}
 	for _, call := range resp.ToolCalls {
 		switch call.Name {

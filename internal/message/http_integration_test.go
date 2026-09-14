@@ -1330,6 +1330,123 @@ func TestIntegration_Orchestrator_CascadeStopsExactlyAtDepthCap(t *testing.T) {
 	}
 }
 
+// TestIntegration_Orchestrator_CascadeCannotSelfMention is the
+// dogfooding report's own repro, made deterministic: a fake provider
+// forced to call mention_agent naming ITSELF must never cascade into a
+// second invocation of that same agent. Before the fix, resolution ran
+// against the full room roster (including the invoking agent), so a
+// self-named mention_agent call resolved to a real, valid target and
+// cascaded — confirmed live as three real, billed, empty-content replies
+// in a row before one finally produced text. This test proves both
+// halves of the fix: the tool declaration no longer lists the invoking
+// agent as a valid target (mentionAgentTool's own otherAgents param), and
+// even if a model ignores that and names itself anyway,
+// resolveMentionToolCalls's own candidate list can't resolve it to a
+// real cascade target — a self-mention now behaves exactly like naming
+// an agent that doesn't exist in the room at all: silently dropped, the
+// reply that generated it still stands, no further invocation.
+func TestIntegration_Orchestrator_CascadeCannotSelfMention(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-cascade-self-")
+	rm, err := rooms.Create(ctx, &owner.ID, "cascade-self-mention-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	enabled := true
+	if _, err := rooms.Update(ctx, rm.ID, nil, nil, &enabled, nil, nil, nil); err != nil {
+		t.Fatalf("enable cascading: %v", err)
+	}
+	ping, err := agents.Register(ctx, rm.ID, "Ping", agent.ProviderAnthropic, nil, "hash-cascade-self-ping")
+	if err != nil {
+		t.Fatalf("register Ping: %v", err)
+	}
+	// A real second agent in the room — proves the self-mention is
+	// specifically rejected (Ping naming Ping), not just that Ping
+	// happens to be the only possible target.
+	_, err = agents.Register(ctx, rm.ID, "Pong", agent.ProviderOpenAI, nil, "hash-cascade-self-pong")
+	if err != nil {
+		t.Fatalf("register Pong: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	var captured provider.GenerateRequest
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{
+			content:         "self-mentioning now",
+			toolCalls:       []provider.ToolCall{{Name: mentionAgentToolName, Input: map[string]any{"agent_name": "Ping"}}},
+			capturedRequest: &captured,
+		}, nil
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Ping go", []uuid.UUID{ping.ID}, nil)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(ping.ID, rm.OwnerID, triggering, 0, false)
+
+	running := rec.recv(t)
+	if running.Kind != realtime.KindPresence || running.Presence.AgentID != ping.ID || running.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("got %+v, want presence running for Ping", running)
+	}
+	reply := rec.recv(t)
+	if reply.Kind != realtime.KindMessage || reply.Message == nil || reply.Message.AgentID == nil || *reply.Message.AgentID != ping.ID {
+		t.Fatalf("got %+v, want Ping's own reply", reply)
+	}
+	available := rec.recv(t)
+	if available.Kind != realtime.KindPresence || available.Presence.AgentID != ping.ID || available.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("got %+v, want presence available for Ping", available)
+	}
+
+	// The real proof: nothing else ever arrives. No second invocation of
+	// Ping, no presence event, no reply — the self-mention was dropped,
+	// not cascaded. A bounded wait, not recv's own 10s timeout: this
+	// assertion is that nothing shows up, so it can't wait for a message
+	// that's never coming.
+	select {
+	case msg := <-rec.ch:
+		t.Fatalf("expected no further published message after Ping's own reply, got %+v", msg)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// Tool declaration half of the fix: Ping's own name must never appear
+	// as a candidate target in the tool description it was offered.
+	found := false
+	for _, tool := range captured.Tools {
+		if tool.Name == mentionAgentToolName {
+			found = true
+			if strings.Contains(tool.Description, "\n- Ping") {
+				t.Fatalf("mention_agent tool description offered Ping to itself: %q", tool.Description)
+			}
+			if !strings.Contains(tool.Description, "\n- Pong") {
+				t.Fatalf("mention_agent tool description didn't offer the real other agent Pong: %q", tool.Description)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("mention_agent tool was not declared at all")
+	}
+
+	stored, err := s.ListByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListByRoom: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("stored messages = %d, want 2 (the human mention and Ping's own single reply)", len(stored))
+	}
+}
+
 // TestIntegration_Orchestrator_BusyAgentRedirectsViaMentionAgent is
 // ADR-007 batch A's central proof: an agent invoked while it's already
 // running another generation is told so in its own framing and, using
