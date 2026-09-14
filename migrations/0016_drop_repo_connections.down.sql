@@ -1,0 +1,3 @@
+-- Restores 0015's shape if ever needed — see that migration for the
+-- original column definitions; not reproduced here since this is a
+-- deliberate rollback, not an active schema.
