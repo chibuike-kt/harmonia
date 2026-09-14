@@ -31,12 +31,44 @@ const (
 // createTaskTool is always offered — create_task is low-stakes and
 // already an ordinary, frequent operation in this system (ADR-006), so
 // unlike mention_agent it isn't gated behind any room setting.
-func createTaskTool() provider.ToolDef {
+//
+// activeTasks is embedded in the description the same way
+// requestHandoffTool already lists real tasks and real other agents
+// rather than letting the model invent references (a dogfooding pass
+// found cascading agents repeatedly creating a near-duplicate of a task
+// that already existed, because nothing ever told the model what was
+// already open) — this is advisory, the same as mention_agent's own
+// self-exclusion note, not a hard guarantee: a model can still call
+// create_task with a genuine duplicate objective despite being shown the
+// list, since deciding "is this the same work" is a judgment call this
+// package can't safely make on the model's behalf (a task the model
+// itself frames as follow-on or narrower-scoped work — real language
+// this codebase's own dogfooding pass saw more than once — must still be
+// allowed through; a hard duplicate-objective block would just as easily
+// reject that as it would a real duplicate). Real accidental duplicates
+// are exactly the case this visibility is aimed at: a model that would
+// have created a duplicate with no way to know one already existed now
+// has that information in front of it every time.
+func createTaskTool(activeTasks []task.Task) provider.ToolDef {
+	var tasksList strings.Builder
+	if len(activeTasks) == 0 {
+		tasksList.WriteString(" none yet.")
+	} else {
+		tasksList.WriteString(":")
+		for _, t := range activeTasks {
+			fmt.Fprintf(&tasksList, "\n- %s", t.Objective)
+		}
+	}
 	return provider.ToolDef{
 		Name: createTaskToolName,
 		Description: "Create a new task in this room. Executes immediately " +
 			"— the same as a human posting it directly — so only call this " +
-			"for real, actionable work, not to narrate what you're already doing.",
+			"for real, actionable work, not to narrate what you're already " +
+			"doing. Check the room's own currently open tasks below first — " +
+			"if one already covers this work, don't create a near-duplicate; " +
+			"only call this for work that genuinely isn't tracked yet. " +
+			"Currently open tasks in this room:" +
+			tasksList.String(),
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

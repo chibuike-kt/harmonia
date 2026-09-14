@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AddAgentMenu, type AddedAgent } from "./AddAgentMenu";
 import { CloseIcon } from "./icons";
+import { MarkdownProse } from "./MessageRow";
 import { AgentAvatarGlyph } from "./providerLogos";
 import { Tooltip } from "./Tooltip";
 
@@ -331,7 +332,7 @@ export function RoomInfoPanel({
                     key={d.id}
                     className="border-b border-[var(--login-border)] py-2 text-[13px] leading-[1.5] text-[var(--login-text)] last:border-b-0"
                   >
-                    {d.content}
+                    <MarkdownProse text={d.content.trim()} />
                   </div>
                 ))
               )}

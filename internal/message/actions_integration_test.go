@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -97,6 +98,266 @@ func TestIntegration_Orchestrator_CreateTaskExecutesImmediately(t *testing.T) {
 	}
 	if active[0].Status != task.StatusQueued {
 		t.Fatalf("task status = %s, want %s", active[0].Status, task.StatusQueued)
+	}
+}
+
+// sequencedFakeAgent returns one provider.GenerateResponse per call, in
+// order (pinned to the last one once exhausted) — unlike the shared
+// fakeProviderAgent, which always returns the same fixed response, this
+// exists specifically to test a mitigation whose whole point is "the
+// model's SECOND response differs from its first."
+type sequencedFakeAgent struct {
+	responses []provider.GenerateResponse
+	requests  []provider.GenerateRequest
+}
+
+func (f *sequencedFakeAgent) Generate(_ context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
+	f.requests = append(f.requests, req)
+	idx := len(f.requests) - 1
+	if idx >= len(f.responses) {
+		idx = len(f.responses) - 1
+	}
+	return f.responses[idx], nil
+}
+
+// TestIntegration_Orchestrator_CreateTaskNarrationRetryRecoversRealTask
+// is P1's own real proof for the create_task-narration mitigation: a
+// model's first reply narrates creating a task in plain text with no
+// actual tool call (the exact live shape the dogfooding pass found —
+// "Now, I will create a task... Creating the task now..." and nothing in
+// ToolCalls) triggers exactly one retry, and the retry's own real
+// create_task call is what actually executes — a real task row, not a
+// second narrated non-event. The FINAL stored reply is the retry's
+// content, not the original narration, so the human never sees the
+// broken first attempt at all.
+func TestIntegration_Orchestrator_CreateTaskNarrationRetryRecoversRealTask(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-narration-retry-")
+	rm, err := rooms.Create(ctx, &owner.ID, "narration-retry-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-narration-retry")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	const objective = "write the release notes"
+	fake := &sequencedFakeAgent{
+		responses: []provider.GenerateResponse{
+			// First attempt: real narration, no tool call — the exact
+			// live-reproduced bug shape.
+			{Content: "Now, I will create a task for this. Creating the task now..."},
+			// Retry: the model actually calls the tool this time.
+			{
+				Content:   "Done — I've created the task.",
+				ToolCalls: []provider.ToolCall{{Name: createTaskToolName, Input: map[string]any{"objective": objective}}},
+			},
+		},
+	}
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) { return fake, nil }
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude please track this", []uuid.UUID{a.ID}, nil)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
+
+	// Same sequence TestIntegration_Orchestrator_CreateTaskExecutesImmediately
+	// already relies on: running -> reply -> available -> TASK.CREATE
+	// event, in that exact order. Waiting for the real TASK.CREATE event
+	// (rather than polling for the reply row and immediately checking the
+	// tasks table) is what actually proves executeCreateTask's own
+	// transaction committed — those two effects happen sequentially in
+	// the same goroutine but aren't atomic with each other, so a
+	// poll-then-immediately-check on the reply row alone would race
+	// against the create_task commit that follows it.
+	if msg := rec.recv(t); msg.Kind != realtime.KindPresence || msg.Presence.Status != string(agent.StatusRunning) {
+		t.Fatalf("first published message = %+v, want presence running", msg)
+	}
+	replyMsg := rec.recv(t)
+	if replyMsg.Kind != realtime.KindMessage {
+		t.Fatalf("second published message = %+v, want the reply", replyMsg)
+	}
+	if msg := rec.recv(t); msg.Kind != realtime.KindPresence || msg.Presence.Status != string(agent.StatusAvailable) {
+		t.Fatalf("third published message = %+v, want presence available", msg)
+	}
+	taskEvent := rec.recv(t)
+	if taskEvent.Kind != realtime.KindEvent || taskEvent.Event == nil || taskEvent.Event.Type != "TASK.CREATE" {
+		t.Fatalf("fourth published message = %+v, want the TASK.CREATE event — the retry's tool call must have actually executed", taskEvent)
+	}
+
+	if len(fake.requests) != 2 {
+		t.Fatalf("provider Generate call count = %d, want exactly 2 (original + one bounded retry)", len(fake.requests))
+	}
+
+	// The retry request must carry the original narrated reply plus a
+	// real nudge turn — proof the retry actually gave the model its own
+	// prior text back, not a blind re-ask of the identical prompt.
+	retryMessages := fake.requests[1].Messages
+	if len(retryMessages) == 0 || retryMessages[len(retryMessages)-1].Role != "user" {
+		t.Fatalf("retry request's last message = %+v, want a user-role nudge", retryMessages[len(retryMessages)-1])
+	}
+	if !strings.Contains(retryMessages[len(retryMessages)-1].Content, "create_task") {
+		t.Fatalf("retry nudge = %q, want it to name create_task", retryMessages[len(retryMessages)-1].Content)
+	}
+	foundNarration := false
+	for _, m := range retryMessages {
+		if m.Role == "assistant" && strings.Contains(m.Content, "Creating the task now") {
+			foundNarration = true
+		}
+	}
+	if !foundNarration {
+		t.Fatalf("retry request never included the model's own original narration as an assistant turn: %+v", retryMessages)
+	}
+
+	active, err := tasks.ListActiveByRoom(ctx, rm.ID)
+	if err != nil {
+		t.Fatalf("ListActiveByRoom: %v", err)
+	}
+	if len(active) != 1 || active[0].Objective != objective {
+		t.Fatalf("active tasks = %+v, want exactly one with objective %q", active, objective)
+	}
+
+	// The human-visible reply is the retry's own content, never the
+	// original broken narration.
+	if replyMsg.Message == nil || replyMsg.Message.Content != "Done — I've created the task." {
+		t.Fatalf("stored reply content = %+v, want the retry's own content, not the original narration", replyMsg.Message)
+	}
+}
+
+// TestIntegration_Orchestrator_CreateTaskToolListsOpenTasks is the
+// dogfooding report's own duplicate-task repro, made deterministic and
+// proven at the tool-declaration layer: a room's currently open tasks
+// are embedded directly in create_task's own description, the same
+// pattern already proven for request_handoff's tasks/agents lists, so a
+// model has real visibility into what's already tracked before deciding
+// to create something new. Checks both the populated case (an existing
+// task's objective must appear verbatim) and the empty case (no active
+// tasks reads as "none yet," not a blank or malformed description).
+func TestIntegration_Orchestrator_CreateTaskToolListsOpenTasks(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-create-task-lists-")
+	rm, err := rooms.Create(ctx, &owner.ID, "create-task-lists-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-create-task-lists")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	const existingObjective = "Write API documentation for the new endpoint"
+	if _, err := tasks.Create(ctx, rm.ID, existingObjective, nil); err != nil {
+		t.Fatalf("seed existing task: %v", err)
+	}
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	var captured provider.GenerateRequest
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "ok", capturedRequest: &captured}, nil
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID}, nil)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
+	waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
+
+	var createTask *provider.ToolDef
+	for i, tool := range captured.Tools {
+		if tool.Name == createTaskToolName {
+			createTask = &captured.Tools[i]
+		}
+	}
+	if createTask == nil {
+		t.Fatal("create_task was not offered at all")
+	}
+	if !strings.Contains(createTask.Description, existingObjective) {
+		t.Fatalf("create_task description didn't list the existing open task %q: %q", existingObjective, createTask.Description)
+	}
+}
+
+// TestIntegration_Orchestrator_CreateTaskToolListsNoOpenTasks proves the
+// empty-room half: with no active tasks, create_task's description
+// reads as a real, well-formed "none yet" rather than a blank or
+// malformed list — the same tool declaration must read sensibly whether
+// or not there's anything to list.
+func TestIntegration_Orchestrator_CreateTaskToolListsNoOpenTasks(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-create-task-empty-")
+	rm, err := rooms.Create(ctx, &owner.ID, "create-task-empty-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	a, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-create-task-empty")
+	if err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	var captured provider.GenerateRequest
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{content: "ok", capturedRequest: &captured}, nil
+	}
+
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude hi", []uuid.UUID{a.ID}, nil)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(a.ID, rm.OwnerID, triggering, 0, false)
+	waitForReplyMessage(t, ctx, s, rm.ID, triggering.ID)
+
+	var createTask *provider.ToolDef
+	for i, tool := range captured.Tools {
+		if tool.Name == createTaskToolName {
+			createTask = &captured.Tools[i]
+		}
+	}
+	if createTask == nil {
+		t.Fatal("create_task was not offered at all")
+	}
+	if !strings.Contains(createTask.Description, "none yet") {
+		t.Fatalf("create_task description with no open tasks = %q, want it to read as \"none yet\"", createTask.Description)
 	}
 }
 

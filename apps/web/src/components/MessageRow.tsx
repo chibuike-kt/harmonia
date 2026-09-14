@@ -95,7 +95,14 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
 };
 
-function MarkdownProse({ text }: { text: string }) {
+// Exported so any other surface rendering real message content — Room
+// Info's own Decisions panel, currently the only other consumer — uses
+// this exact same rendering path rather than a second, parallel one that
+// would drift from it. A pinned decision is literally a message's own
+// content, so it needs the identical treatment: raw markdown syntax
+// (bold, links, citation markers) must render the same way here as it
+// did in the timeline message it was pinned from.
+export function MarkdownProse({ text }: { text: string }) {
   return (
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
       {text}

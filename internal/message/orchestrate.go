@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -314,7 +315,7 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		req.WebSearchEnabled = true
 		req.RequireToolCall = true
 	} else {
-		req.Tools = append(req.Tools, createTaskTool())
+		req.Tools = append(req.Tools, createTaskTool(activeTasks))
 		if cascadingEnabled {
 			req.Tools = append(req.Tools, mentionAgentTool(otherAgents))
 		}
@@ -334,6 +335,25 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		log.Printf("ERROR message: generate reply for agent %s: %v", agentID, err)
 		o.fail(ctx, triggering.RoomID, agentID, triggering.ID, fmt.Sprintf("the provider call failed: %v", err))
 		return
+	}
+
+	// create_task narration without ever actually calling the tool is a
+	// real, named, accepted limitation (ADR-006's "Known limitation" —
+	// advisory "auto" tool_choice isn't reliable when multiple tools
+	// compete for a turn) — not something forcing tool_choice can safely
+	// fix here, since create_task usually isn't the only tool on offer
+	// and forcing "call something" could just as easily push the model
+	// into mention_agent or request_handoff instead (see
+	// RequireToolCall's own doc comment on exactly this risk). Only
+	// checked when create_task was actually offered this turn —
+	// forceSearch's own Tools is search-only, so there's nothing to
+	// retry there. A detected case gets one bounded retry with a plain
+	// textual nudge, the same fix that worked live during the
+	// dogfooding pass, before anything is stored or shown to the human.
+	if !forceSearch && looksLikeUnexecutedCreateTaskNarration(resp) {
+		if retried, ok := o.retryForMissedCreateTask(ctx, client, req, resp); ok {
+			resp = retried
+		}
 	}
 
 	var cascadeTargets []uuid.UUID
@@ -407,6 +427,77 @@ func (o *Orchestrator) invoke(ctx context.Context, agentID uuid.UUID, roomOwnerI
 		// propagates across a cascade.
 		o.TriggerReply(targetID, roomOwnerID, reply, depth+1, false)
 	}
+}
+
+// createTaskNarrationPattern matches a reply's own text describing
+// creating a task ("I'll create a task...", "creating the task now...")
+// — the exact shape a live dogfooding pass found a real model producing
+// instead of actually calling create_task on a longer, more complex
+// turn. Deliberately loose (creat(e|ing) within a short distance of
+// "task"), not a strict phrase list: tightening it risks missing real
+// narration phrased differently, and a false match here only costs one
+// extra, bounded retry call — see retryForMissedCreateTask's own doc
+// comment for why that's always safe, never a lost or corrupted reply.
+//
+// Known false-positive risk, stated plainly: this can't distinguish
+// "I'll create a task for this" from a negation like "I won't create a
+// task for this" or "no task needed here" — both match the same
+// creat(e|ing)...task shape. A false match on a clean negation still
+// only costs one extra generation call; the retry prompt explicitly
+// allows "say so plainly" if no task is actually needed, so the
+// retried reply typically just restates the same judgment and the
+// human-visible outcome barely changes. Trading occasional wasted spend
+// on a clean negation against missing a real narrated-but-never-
+// executed task is a deliberate choice here, not an oversight.
+var createTaskNarrationPattern = regexp.MustCompile(`(?i)creat(?:e|ing)\b.{0,20}\btask\b`)
+
+// looksLikeUnexecutedCreateTaskNarration is false whenever create_task
+// was actually called this turn — regardless of what the accompanying
+// text says — since that's the case this mitigation exists to catch,
+// not a general "did the model talk about tasks" detector.
+func looksLikeUnexecutedCreateTaskNarration(resp provider.GenerateResponse) bool {
+	for _, call := range resp.ToolCalls {
+		if call.Name == createTaskToolName {
+			return false
+		}
+	}
+	return createTaskNarrationPattern.MatchString(resp.Content)
+}
+
+// retryForMissedCreateTask re-runs the same generation once, with the
+// model's own narrated-but-toolless reply appended as its own prior turn
+// plus a plain, textual nudge to actually call the tool if it still
+// means to — never a forced tool_choice (see this function's own
+// call-site comment in invoke for why forcing risks pushing the model
+// into a different tool entirely rather than the one actually missed).
+// ok is false on any retry failure (a provider error on the retry call
+// itself) — the caller keeps the original, narrated-but-toolless
+// response rather than losing the reply outright over a failed
+// mitigation attempt: a human still gets a real answer, just possibly
+// without the task this time, the same tolerant-degrade philosophy this
+// package already applies to a bad or dropped tool call elsewhere.
+func (o *Orchestrator) retryForMissedCreateTask(ctx context.Context, client provider.Agent, req provider.GenerateRequest, original provider.GenerateResponse) (provider.GenerateResponse, bool) {
+	retryReq := req
+	retryReq.Messages = append(append([]provider.Message{}, req.Messages...),
+		provider.Message{Role: "assistant", Content: original.Content},
+		provider.Message{Role: "user", Content: "You described creating a task above but didn't actually call the create_task tool. " +
+			"If you still mean to create it, call the tool now — don't just describe it in text. " +
+			"If you've changed your mind and no task is actually needed, just say so plainly."},
+	)
+	retried, err := client.Generate(ctx, retryReq)
+	if err != nil {
+		log.Printf("message: create_task narration retry failed, keeping the original reply: %v", err)
+		return provider.GenerateResponse{}, false
+	}
+	recovered := false
+	for _, call := range retried.ToolCalls {
+		if call.Name == createTaskToolName {
+			recovered = true
+			break
+		}
+	}
+	log.Printf("message: create_task narration retry completed, recovered_tool_call=%t", recovered)
+	return retried, true
 }
 
 // pickupEvalCooldown bounds how often one agent's own phase-1
