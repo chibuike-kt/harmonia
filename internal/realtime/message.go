@@ -17,12 +17,13 @@ import (
 type Kind string
 
 const (
-	KindEvent       Kind = "event"
-	KindPresence    Kind = "presence"
-	KindMessage     Kind = "message"
-	KindRoom        Kind = "room"
-	KindPickupUsage Kind = "pickup_usage"
-	KindObjective   Kind = "objective"
+	KindEvent           Kind = "event"
+	KindPresence        Kind = "presence"
+	KindMessage         Kind = "message"
+	KindRoom            Kind = "room"
+	KindPickupUsage     Kind = "pickup_usage"
+	KindObjective       Kind = "objective"
+	KindCompanionAction Kind = "companion_action"
 )
 
 // Message is what flows through the Hub — a tagged union of the distinct
@@ -35,13 +36,14 @@ const (
 // single tagged type rather than separate ones, so a subscriber has one
 // channel type to read regardless of which kind arrives.
 type Message struct {
-	Kind        Kind                 `json:"kind"`
-	Event       *protocol.Envelope   `json:"event,omitempty"`
-	Presence    *Presence            `json:"presence,omitempty"`
-	Message     *ChatMessage         `json:"message,omitempty"`
-	Room        *RoomUpdate          `json:"room,omitempty"`
-	PickupUsage *PickupUsage         `json:"pickup_usage,omitempty"`
-	Objective   *RoomObjectiveUpdate `json:"objective,omitempty"`
+	Kind            Kind                 `json:"kind"`
+	Event           *protocol.Envelope   `json:"event,omitempty"`
+	Presence        *Presence            `json:"presence,omitempty"`
+	Message         *ChatMessage         `json:"message,omitempty"`
+	Room            *RoomUpdate          `json:"room,omitempty"`
+	PickupUsage     *PickupUsage         `json:"pickup_usage,omitempty"`
+	Objective       *RoomObjectiveUpdate `json:"objective,omitempty"`
+	CompanionAction *CompanionAction     `json:"companion_action,omitempty"`
 }
 
 // ChatMessage mirrors internal/message.Message's wire shape. Defined
@@ -163,6 +165,34 @@ func NewRoomRenamedMessage(roomID uuid.UUID, name string) Message {
 // actually committed — same ordering rule as NewEventMessage.
 func NewRoomObjectiveMessage(roomID uuid.UUID, objective string) Message {
 	return Message{Kind: KindObjective, Objective: &RoomObjectiveUpdate{RoomID: roomID, Objective: objective}}
+}
+
+// CompanionAction is one agent-initiated companion action (ADR-010's
+// relay protocol) relayed from the backend to the one browser tab
+// holding that room's live companion WebSocket. Actor is always "agent"
+// on the wire — this Kind only ever carries agent-driven actions; a
+// human typing directly into the terminal talks to the companion over
+// its own already-open WebSocket and never touches the backend at all.
+// Carrying Actor explicitly anyway (rather than leaving it implicit)
+// means the frontend's terminal rendering — which must mark every
+// agent-driven action visibly and unambiguously the instant it happens
+// (ADR-010) — never has to infer whose action this is from which code
+// path delivered it; it just reads the field.
+type CompanionAction struct {
+	ID     uuid.UUID `json:"id"`
+	RoomID uuid.UUID `json:"room_id"`
+	Type   string    `json:"type"`
+	Data   string    `json:"data"`
+	Actor  string    `json:"actor"`
+}
+
+// NewCompanionActionMessage wraps an agent-initiated companion action
+// for publishing over the room's existing live channel — the hub/SSE
+// stream every other Message kind already rides, per ADR-010's decision
+// that a cloud backend can only reach a loopback-bound companion process
+// through the browser tab that already has it open.
+func NewCompanionActionMessage(action CompanionAction) Message {
+	return Message{Kind: KindCompanionAction, CompanionAction: &action}
 }
 
 // NewPickupUsageMessage wraps one phase-1 classification call's real

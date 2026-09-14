@@ -730,6 +730,22 @@ export function FileIcon() {
   );
 }
 
+export function FolderIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      aria-hidden="true"
+    >
+      <path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0114 6v6a1.5 1.5 0 01-1.5 1.5h-9A1.5 1.5 0 012 12v-7.5z" />
+    </svg>
+  );
+}
+
 // Room-header icons — direct ports of the inline SVGs in
 // docs/design/room-mockup.html's room-header-right section.
 

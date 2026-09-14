@@ -690,18 +690,18 @@ export function Sidebar() {
         <span className="whitespace-nowrap text-[17px] font-semibold tracking-[-0.01em] text-[var(--login-text)]">
           Harmonia
         </span>
-        <Tooltip label={isMobile ? "Close menu" : "Collapse sidebar"}>
-          <button
-            type="button"
-            aria-label={isMobile ? "Close menu" : "Collapse sidebar"}
-            onClick={() =>
-              isMobile ? setMobileOpen(false) : setCollapsed(true)
-            }
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
-          >
-            {isMobile ? <CloseIcon /> : <ChevronLeftIcon />}
-          </button>
-        </Tooltip>
+        {isMobile && (
+          <Tooltip label="Close menu">
+            <button
+              type="button"
+              aria-label="Close menu"
+              onClick={() => setMobileOpen(false)}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+            >
+              <CloseIcon />
+            </button>
+          </Tooltip>
+        )}
       </div>
 
       <nav className="flex flex-col gap-0.5 px-2.5">
@@ -861,9 +861,55 @@ export function Sidebar() {
       )}
       {roomsCollapsed && <div className="flex-1" />}
 
+      {/* Mode switch + collapse, relocated here from the top header —
+          the bottom, next to the account footer, rather than a small
+          icon competing with the "Harmonia" wordmark for attention at
+          the top. Rooms is this same chat/room product; IDE is the
+          separate, engineer-only surface (local companion process, a
+          real file tree/editor/terminal against the user's own
+          machine) — a genuinely different product, not a view of a
+          room the way Code view is of Chat, so it gets its own route
+          rather than living inside RoomViewPage's own toggle. */}
+      <div className="mt-auto flex shrink-0 items-center justify-between gap-2 border-t border-[var(--login-border)] px-2.5 pt-2.5">
+        <div className="flex flex-1 items-center rounded-lg border border-[var(--login-border-strong)] p-0.5">
+          <Link
+            href="/dashboard"
+            className={`flex-1 rounded-md px-2.5 py-1 text-center text-[12.5px] ${
+              !pathname.startsWith("/ide")
+                ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                : "text-[var(--login-text-muted)] hover:text-[var(--login-text-secondary)]"
+            }`}
+          >
+            Rooms
+          </Link>
+          <Link
+            href="/ide"
+            className={`flex-1 rounded-md px-2.5 py-1 text-center text-[12.5px] ${
+              pathname.startsWith("/ide")
+                ? "bg-[var(--login-surface-2)] text-[var(--login-text)]"
+                : "text-[var(--login-text-muted)] hover:text-[var(--login-text-secondary)]"
+            }`}
+          >
+            IDE
+          </Link>
+        </div>
+        {!isMobile && (
+          <Tooltip label="Collapse sidebar">
+            <button
+              type="button"
+              aria-label="Collapse sidebar"
+              onClick={() => setCollapsed(true)}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--login-text-muted)] hover:bg-[var(--login-surface-2)] hover:text-[var(--login-text-secondary)]"
+            >
+              <ChevronLeftIcon />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+
       <div
         ref={profileRef}
-        className="relative mt-auto shrink-0 border-t border-[var(--login-border)] p-2.5"
+        className="relative shrink-0 p-2.5"
       >
         {profileOpen && (
           <div className="absolute bottom-[calc(100%+6px)] left-2.5 right-2.5 flex flex-col gap-px rounded-[10px] border border-[var(--login-border-strong)] bg-[var(--login-surface)] p-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.4)]">

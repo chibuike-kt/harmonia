@@ -60,6 +60,12 @@ services:
       HARMONIA_DATABASE_URL: postgres://harmonia_app:harmonia_app@postgres:5432/harmonia?sslmode=disable
       HARMONIA_REDIS_ADDR: "redis:6379"
       HARMONIA_HTTP_ADDR: ":8080"
+    volumes:
+      # GITHUB_APP_PRIVATE_KEY_PATH (.env) is a relative path resolved
+      # against the container's own root (no WORKDIR set in the final
+      # Dockerfile stage) — real key material, read-only, never baked
+      # into the image itself.
+      - ./secrets:/secrets:ro
     ports:
       - "8080:8080"
     depends_on:

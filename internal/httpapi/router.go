@@ -17,6 +17,7 @@ import (
 
 	"github.com/chibuike-kt/harmonia/internal/actionproposal"
 	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/companionrelay"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
 	"github.com/chibuike-kt/harmonia/internal/credentials"
 	"github.com/chibuike-kt/harmonia/internal/decision"
@@ -170,6 +171,19 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
 		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, listMessages, sumPickupUsage, hub, st.Redis))
+		pr.Post("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceHeartbeatHandler(rooms, st.Redis))
+		pr.Delete("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceLeaveHandler(rooms, st.Redis))
+	})
+
+	// relay is the backend half of ADR-010's relay protocol — see
+	// internal/companionrelay's own package doc. Dispatch isn't called
+	// from anywhere yet (wiring an agent's file/shell tool calls into it
+	// is Batch 2's job, per docs/companion-ide-safety-brief.md), but the
+	// result endpoint below is real and load-bearing the moment it is.
+	relay := companionrelay.NewCoordinator()
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/rooms/{room_id}/companion_actions/{action_id}/result", companionrelay.ResultHandler(rooms, relay))
 	})
 
 	githubCfg := user.NewGitHubConfig(
