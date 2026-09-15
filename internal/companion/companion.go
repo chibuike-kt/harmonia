@@ -181,6 +181,8 @@ func (s *session) serve() {
 
 func (s *session) handle(msg clientMessage) {
 	switch msg.Type {
+	case "pick_folder":
+		s.pickFolder()
 	case "open_folder":
 		s.openFolder(msg.Path)
 	case "list_dir":

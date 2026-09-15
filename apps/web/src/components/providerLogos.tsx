@@ -75,6 +75,50 @@ export const PROVIDER_LABELS: Record<string, string> = {
   openai: "ChatGPT",
 };
 
+/**
+ * Provider-*family* tag color — by provider, never by individual agent
+ * (docs/design/harmonia-ide-mockup.html, IDE design overhaul point 10).
+ * Two agents on the same provider ("ChatGPT" and "ChatGPT 2") share this
+ * color on purpose; the visible name is what tells them apart, color
+ * only signals which model family. Defined once, here, so every screen
+ * that ever needs an agent tag's color reads the same mapping instead of
+ * picking one ad hoc — currently the IDE's terminal transcript and live
+ * cursor tags.
+ *
+ * Deliberately excludes --login-accent (teal): that color is reserved
+ * strictly for Harmonia's own liveness signal (presence rings, live
+ * cursors, live dots), never a provider's identity color, so the two
+ * meanings can't collide for someone reading the UI. openai reuses
+ * --room-task-blue directly (the same blue already used for task cards
+ * elsewhere in the app) rather than a new token; anthropic gets its own
+ * --ide-provider-anthropic-tag since no existing token matches the
+ * mockup's own chosen value for it.
+ */
+export const PROVIDER_TAG_COLORS: Record<
+  string,
+  { fg: string; bg: string; border: string }
+> = {
+  openai: {
+    fg: "var(--room-task-blue)",
+    bg: "rgba(91,157,245,.12)",
+    border: "rgba(91,157,245,.3)",
+  },
+  anthropic: {
+    fg: "var(--ide-provider-anthropic-tag)",
+    bg: "rgba(232,139,107,.12)",
+    border: "rgba(232,139,107,.3)",
+  },
+};
+
+/** Fallback tag color for a provider not yet in PROVIDER_TAG_COLORS —
+ *  neutral, not accent teal (see PROVIDER_TAG_COLORS' own doc comment on
+ *  why teal is never a provider color). */
+export const DEFAULT_TAG_COLOR = {
+  fg: "var(--ide-text-secondary)",
+  bg: "var(--ide-surface-2)",
+  border: "var(--ide-border-strong)",
+};
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";

@@ -51,6 +51,35 @@
   --room-task-blue: #5b9df5;
   --room-handoff-purple: #b08ff0;
   --room-warn: #e8a33d;
+  /* IDE view only (docs/design/harmonia-ide-mockup.html) — a finer-
+     grained set of near-black surfaces than the shared --login-* block
+     above (a real menu bar, sidebar, and panel each need their own
+     shade), plus the provider-family tag color the design overhaul's
+     agent-presence system needs. --accent itself is deliberately NOT
+     redefined here: the mockup's own --accent (#4cd3c2) is byte-
+     identical to --login-accent, and per point 10 of the overhaul's own
+     requirements, accent teal is reserved strictly for Harmonia's own
+     liveness signal (presence rings, live cursors, live dots) — reusing
+     --login-accent directly, rather than a parallel --ide-accent, is
+     what keeps that reservation real instead of just a comment. */
+  --ide-bg: #0a0c11;
+  --ide-bg-menu: #0d1016;
+  --ide-bg-sidebar: #0e1117;
+  --ide-bg-panel: #10141b;
+  --ide-surface: #141821;
+  --ide-surface-2: #1a1f29;
+  --ide-border: #1e242e;
+  --ide-border-strong: #2a313d;
+  --ide-text: #eceef1;
+  --ide-text-secondary: #9ba3b0;
+  --ide-text-muted: #5c6472;
+  /* Anthropic-family agent tag color — not one of the four reused-
+     elsewhere palette colors (task-blue/handoff-purple/warn-amber/
+     accent teal), a distinct warm tone the mockup itself introduces
+     specifically for this. OpenAI-family agents reuse --room-task-blue
+     directly instead of a parallel --ide-provider-openai-tag: same
+     value, no reason to name it twice. */
+  --ide-provider-anthropic-tag: #e88b6b;
   --login-font-sans:
     var(--font-space-grotesk), -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -147,4 +176,35 @@ body {
 }
 .timeline-enter {
   animation: timeline-enter 0.22s ease-out;
+}
+
+/*
+ * IDE live agent presence (docs/design/harmonia-ide-mockup.html,
+ * app/(shell)/ide/page.tsx) — a line an agent just wrote gets a brief
+ * fading highlight so a recent real edit is visible without staying
+ * permanently marked up, and a live cursor tag blinks the same way a
+ * real text-cursor does. Both plain CSS animations for the same reason
+ * timeline-enter above is: they play from the moment a Monaco decoration
+ * with this class is applied, no JS timer needed to drive the fade
+ * itself (only to remove the decoration ~2.5s later, once it's already
+ * invisible).
+ */
+@keyframes ide-agent-edit-fade {
+  from {
+    background: rgba(76, 211, 194, 0.28);
+  }
+  to {
+    background: rgba(76, 211, 194, 0);
+  }
+}
+.ide-agent-recent-edit {
+  animation: ide-agent-edit-fade 2.5s ease-out forwards;
+}
+@keyframes ide-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.ide-agent-cursor-caret {
+  animation: ide-cursor-blink 1s step-end infinite;
 }

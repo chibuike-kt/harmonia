@@ -173,6 +173,7 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Get("/v1/rooms/{room_id}/stream", realtime.StreamHandler(rooms, agents, events, listMessages, sumPickupUsage, hub, st.Redis))
 		pr.Post("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceHeartbeatHandler(rooms, st.Redis))
 		pr.Delete("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceLeaveHandler(rooms, st.Redis))
+		pr.Post("/v1/rooms/{room_id}/agent_cursor", realtime.AgentCursorHandler(rooms, hub))
 	})
 
 	// relay is the backend half of ADR-010's relay protocol — see

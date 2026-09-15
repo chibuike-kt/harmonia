@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Harmonia IDE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0A0C11; --bg-menu: #0D1016; --bg-sidebar: #0E1117; --bg-panel: #10141B;
+    --surface: #141821; --surface-2: #1A1F29;
+    --border: #1E242E; --border-strong: #2A313D;
+    --text: #ECEEF1; --text-secondary: #9BA3B0; --text-muted: #5C6472;
+    --accent: #4CD3C2; --accent-glow: rgba(76,211,194,.28); --accent-dim: rgba(76,211,194,.1);
+    --font-sans: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text); font-family: var(--font-sans); font-size: 14px; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  .no-scrollbar { scrollbar-width: none; } .no-scrollbar::-webkit-scrollbar { display: none; }
+
+  /* ---------- Menu bar ---------- */
+  .menubar { display: flex; align-items: center; justify-content: space-between; padding: 0 10px; height: 34px; background: var(--bg-menu); border-bottom: 1px solid var(--border); flex-shrink: 0; position: relative; z-index: 30; }
+  .menubar-left { display: flex; align-items: center; gap: 2px; }
+  .brand-mark { display: flex; align-items: center; gap: 7px; padding-right: 10px; margin-right: 6px; border-right: 1px solid var(--border); }
+  .brand-mark span { font-size: 12.5px; font-weight: 500; color: var(--text-secondary); }
+  .menu-item { position: relative; padding: 5px 10px; border-radius: 5px; cursor: pointer; color: var(--text-secondary); font-size: 12.5px; transition: background .1s ease, color .1s ease; }
+  .menu-item:hover, .menu-item.open { background: var(--surface-2); color: var(--text); }
+  .dropdown { position: absolute; top: 100%; left: 0; margin-top: 6px; min-width: 250px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 5px; box-shadow: 0 12px 32px rgba(0,0,0,.55); display: none; flex-direction: column; }
+  .menu-item.open .dropdown { display: flex; }
+  .dropdown-item { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-radius: 5px; color: var(--text); cursor: pointer; white-space: nowrap; font-size: 13px; }
+  .dropdown-item:hover { background: var(--accent); color: #0A0C11; }
+  .dropdown-item .shortcut { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-left: 20px; }
+  .dropdown-item:hover .shortcut { color: rgba(10,12,17,.65); }
+  .dropdown-divider { height: 1px; background: var(--border); margin: 5px 6px; }
+  .dropdown-item.checked::before { content: "✓"; margin-right: 8px; color: var(--accent); }
+  .dropdown-item:hover.checked::before { color: #0A0C11; }
+
+  /* Presence cluster — real, not decorative: who's actually in this session */
+  .presence-cluster { display: flex; align-items: center; gap: 10px; }
+  .presence-avatars { display: flex; align-items: center; }
+  .presence-avatar { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-2); border: 2px solid var(--bg-menu); outline: 1px solid var(--border-strong); display: flex; align-items: center; justify-content: center; font-size: 9.5px; font-weight: 600; color: var(--text-secondary); margin-left: -7px; position: relative; }
+  .presence-avatar:first-child { margin-left: 0; }
+  .presence-avatar.active { color: var(--accent); }
+  .presence-avatar.active::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 1.5px solid var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
+  .presence-avatar svg { color: var(--text-secondary); }
+  .cmdk-hint { display: flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 11.5px; cursor: pointer; }
+  .cmdk-hint:hover { color: var(--text-secondary); border-color: var(--border-strong); }
+  .cmdk-hint kbd { font-family: var(--font-mono); background: var(--surface-2); border-radius: 3px; padding: 1px 5px; font-size: 10.5px; }
+
+  /* ---------- Body ---------- */
+  .ide-body { flex: 1; display: flex; min-height: 0; }
+
+  .activity-bar { width: 48px; flex-shrink: 0; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding-top: 10px; gap: 6px; }
+  .activity-icon { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--text-muted); cursor: pointer; position: relative; transition: color .12s ease; }
+  .activity-icon.active { color: var(--text); background: var(--surface-2); }
+  .activity-icon.active::before { content: ""; position: absolute; left: -9px; top: 6px; bottom: 6px; width: 2px; background: var(--accent); border-radius: 2px; box-shadow: 0 0 6px var(--accent-glow); }
+  .activity-icon:hover:not(.active) { color: var(--text-secondary); }
+
+  .explorer { width: 250px; flex-shrink: 0; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .explorer-header { padding: 12px 16px 8px; font-size: 10.5px; letter-spacing: .06em; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; }
+  .tree { flex: 1; overflow-y: auto; padding: 2px 8px; }
+  .tree-row { display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 6px; cursor: pointer; color: var(--text-secondary); white-space: nowrap; font-size: 13px; transition: background .1s ease; }
+  .tree-row:hover { background: var(--surface); }
+  .tree-row.active-file { background: var(--accent-dim); color: var(--text); }
+  .tree-row.active-file svg { color: var(--accent); }
+  .tree-row svg { flex-shrink: 0; opacity: .85; }
+  .tree-indent-1 { padding-left: 26px; }
+
+  .editor-area { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg-panel); }
+  .tabstrip { display: flex; align-items: flex-end; background: var(--bg-sidebar); border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; padding-top: 6px; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin: 0 2px; border-radius: 8px 8px 0 0; color: var(--text-secondary); font-size: 12.5px; cursor: pointer; white-space: nowrap; transition: background .1s ease, color .1s ease; }
+  .tab:hover:not(.active) { background: rgba(255,255,255,.02); color: var(--text-secondary); }
+  .tab.active { background: var(--bg-panel); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+  .tab .tab-close { opacity: 0; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border-radius: 4px; }
+  .tab:hover .tab-close { opacity: .7; }
+  .tab .tab-close:hover { opacity: 1; background: var(--border-strong); }
+
+  .code-pane { flex: 1; overflow: auto; padding: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; }
+  .code-line { display: flex; }
+  .line-no { width: 52px; text-align: right; padding-right: 18px; color: var(--text-muted); user-select: none; flex-shrink: 0; opacity: .6; }
+  .line-content { color: var(--text-secondary); white-space: pre; }
+  .kw { color: #B08FF0; } .fn { color: #5B9DF5; } .cm { color: var(--text-muted); } .str { color: #E8A33D; }
+
+  /* ---------- Bottom panel ---------- */
+  .panel { flex-shrink: 0; background: var(--bg-panel); border-top: 1px solid var(--border); display: flex; flex-direction: column; height: 320px; transition: height .18s cubic-bezier(.4,0,.2,1); }
+  .panel.closed { height: 0; border-top: none; overflow: hidden; }
+  .panel-tabs { display: flex; align-items: center; justify-content: space-between; padding: 0 12px; height: 34px; flex-shrink: 0; }
+  .panel-tabs-left { display: flex; align-items: center; height: 100%; gap: 4px; }
+  .panel-tab { padding: 0 4px; height: 100%; display: flex; align-items: center; font-size: 11.5px; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; transition: color .1s ease; }
+  .panel-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .panel-actions { display: flex; align-items: center; gap: 2px; }
+  .panel-btn { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; color: var(--text-muted); cursor: pointer; background: none; border: none; transition: background .1s ease, color .1s ease; }
+  .panel-btn:hover { background: var(--surface-2); color: var(--text); }
+  .panel-body { flex: 1; overflow: auto; padding: 10px 14px; font-family: var(--font-mono); font-size: 12.5px; }
+  .term-line { display: flex; gap: 8px; margin-bottom: 5px; align-items: flex-start; }
+  .term-agent-tag { display: flex; align-items: center; gap: 4px; background: rgba(91,157,245,.12); color: #5B9DF5; border: 1px solid rgba(91,157,245,.3); border-radius: 5px; padding: 1px 6px; font-size: 10px; flex-shrink: 0; height: 18px; margin-top: 1px; }
+  .term-agent-tag.provider-anthropic { background: rgba(232,139,107,.12); color: #E88B6B; border-color: rgba(232,139,107,.3); }
+  .term-human-tag { display: flex; align-items: center; gap: 4px; background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border-strong); border-radius: 5px; padding: 1px 6px; font-size: 10px; flex-shrink: 0; height: 18px; margin-top: 1px; font-weight: 600; }
+  .term-human { color: var(--text); }
+  .term-say { color: var(--text-secondary); line-height: 1.5; }
+  .term-out { color: var(--text-muted); }
+  .term-prompt { color: var(--accent); flex-shrink: 0; }
+  .term-diff { color: var(--text-muted); }
+  .term-diff .plus { color: var(--accent); }
+
+  .panel-restore { height: 24px; flex-shrink: 0; display: none; align-items: center; padding: 0 12px; background: var(--bg-sidebar); border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); cursor: pointer; gap: 6px; transition: color .1s ease; }
+  .panel-restore:hover { color: var(--text-secondary); }
+  .panel.closed ~ .panel-restore { display: flex; }
+
+  /* ---------- Status bar ---------- */
+  .statusbar { height: 24px; flex-shrink: 0; background: linear-gradient(90deg, var(--accent), #3fc2b0); color: #0A0C11; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; font-size: 11px; font-family: var(--font-mono); font-weight: 500; }
+  .statusbar-left, .statusbar-right { display: flex; align-items: center; gap: 14px; }
+  .statusbar-item { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .statusbar-item:hover { opacity: .75; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #0A0C11; }
+
+  .tree-row.folder svg { color: #E8A33D; }
+  .tree-row.file-css svg { color: #B08FF0; }
+  .tree-row.file-markup svg { color: #5B9DF5; }
+  .tree-row.file-config svg { color: var(--accent); }
+
+  /* ---------- Empty state — no folder open ---------- */
+  .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .empty-state canvas { opacity: .16; margin-bottom: 28px; }
+  .empty-actions { display: flex; flex-direction: column; gap: 2px; min-width: 280px; }
+  .empty-action { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-radius: 8px; cursor: pointer; }
+  .empty-action:hover { background: var(--surface); }
+  .empty-action-label { font-size: 14px; color: var(--text-secondary); }
+  .empty-action:hover .empty-action-label { color: var(--text); }
+  .empty-action-keys { display: flex; gap: 4px; }
+  .empty-action-keys kbd { font-family: var(--font-mono); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px; padding: 2px 7px; font-size: 10.5px; color: var(--text-muted); }
+  .demo-switch { position: fixed; bottom: 30px; right: 12px; z-index: 200; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 8px; font-size: 10.5px; color: var(--text-muted); cursor: pointer; }
+  .demo-switch-2 { position: fixed; bottom: 60px; right: 12px; z-index: 200; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 8px; font-size: 10.5px; color: var(--text-muted); cursor: pointer; }
+
+  /* ---------- Live agent presence in the editor ---------- */
+  .line-content { position: relative; }
+  .agent-recent-edit { background: rgba(76,211,194,.1); animation: fadeEdit 2.5s ease-out forwards; margin: 0 -12px; padding: 0 12px; }
+  @keyframes fadeEdit { from { background: rgba(76,211,194,.28); } to { background: rgba(76,211,194,0); } }
+
+  .agent-cursor { position: relative; display: inline-block; }
+  .agent-cursor::after { content: ""; position: absolute; left: 0; top: -1px; bottom: -1px; width: 2px; background: var(--accent); box-shadow: 0 0 6px var(--accent-glow); animation: cursorBlink 1s step-end infinite; }
+  .agent-cursor-tag { position: absolute; left: 0; top: -22px; display: flex; align-items: center; gap: 4px; background: var(--accent); color: #0A0C11; font-size: 10.5px; font-weight: 600; padding: 2px 7px 2px 5px; border-radius: 5px 5px 5px 0; white-space: nowrap; }
+  @keyframes cursorBlink { 50% { opacity: 0; } }
+
+  .tab-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 5px var(--accent-glow); flex-shrink: 0; }
+  .tree-row-live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 4px var(--accent-glow); margin-left: auto; flex-shrink: 0; }
+
+  .cmdk-backdrop { position: fixed; inset: 0; background: rgba(6,8,11,.6); backdrop-filter: blur(3px); display: none; align-items: flex-start; justify-content: center; padding-top: 120px; z-index: 100; }
+  .cmdk-backdrop.open { display: flex; }
+  .cmdk { width: 560px; max-width: 90vw; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 24px 64px rgba(0,0,0,.6), 0 0 0 1px var(--accent-glow); overflow: hidden; }
+  .cmdk-input-row { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .cmdk-input-row canvas { flex-shrink: 0; }
+  .cmdk-input-row input { flex: 1; background: none; border: none; outline: none; color: var(--text); font-family: var(--font-sans); font-size: 14.5px; }
+  .cmdk-input-row input::placeholder { color: var(--text-muted); }
+  .cmdk-results { padding: 6px; max-height: 320px; overflow-y: auto; }
+  .cmdk-section-label { font-size: 10.5px; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: .05em; padding: 8px 10px 4px; }
+  .cmdk-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 7px; cursor: pointer; color: var(--text-secondary); font-size: 13.5px; }
+  .cmdk-item:hover, .cmdk-item.selected { background: var(--accent-dim); color: var(--text); }
+  .cmdk-item svg { flex-shrink: 0; opacity: .8; }
+  .cmdk-item .cmdk-shortcut { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<div class="menubar">
+  <div class="menubar-left">
+    <div class="brand-mark"><canvas id="brandOrb" width="16" height="16"></canvas><span>Harmonia</span></div>
+    <div class="menu-item" data-menu="file">
+      File
+      <div class="dropdown">
+        <div class="dropdown-item">Open Folder… <span class="shortcut">Ctrl+O</span></div>
+        <div class="dropdown-item">Close Folder <span class="shortcut">Ctrl+K F</span></div>
+        <div class="dropdown-divider"></div>
+        <div class="dropdown-item">Save <span class="shortcut">Ctrl+S</span></div>
+        <div class="dropdown-item">Save As… <span class="shortcut">Ctrl+Shift+S</span></div>
+        <div class="dropdown-divider"></div>
+        <div class="dropdown-item checked">Auto Save</div>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="edit">
+      Edit
+      <div class="dropdown">
+        <div class="dropdown-item">Undo <span class="shortcut">Ctrl+Z</span></div>
+        <div class="dropdown-item">Redo <span class="shortcut">Ctrl+Y</span></div>
+        <div class="dropdown-divider"></div>
+        <div class="dropdown-item">Find <span class="shortcut">Ctrl+F</span></div>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="view">
+      View
+      <div class="dropdown">
+        <div class="dropdown-item checked" id="toggleExplorerItem">Explorer <span class="shortcut">Ctrl+B</span></div>
+        <div class="dropdown-item checked" id="togglePanelItem">Terminal Panel <span class="shortcut">Ctrl+`</span></div>
+        <div class="dropdown-divider"></div>
+        <div class="dropdown-item" id="openCmdkItem">Command Palette <span class="shortcut">Ctrl+K</span></div>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="terminal">
+      Terminal
+      <div class="dropdown">
+        <div class="dropdown-item" id="newTerminalItem">New Terminal <span class="shortcut">Ctrl+Shift+`</span></div>
+      </div>
+    </div>
+    <div class="menu-item" data-menu="help">
+      Help
+      <div class="dropdown"><div class="dropdown-item">About Harmonia</div></div>
+    </div>
+  </div>
+
+  <div class="presence-cluster">
+    <div class="cmdk-hint" id="cmdkHintBtn"><kbd>Ctrl</kbd><kbd>K</kbd> Command palette</div>
+    <div class="presence-avatars">
+      <div class="presence-avatar" title="Kingsley">KC</div>
+      <div class="presence-avatar active" title="ChatGPT — active">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M15.68 8.18c0-.58-.05-1.13-.15-1.67H8v3.17h4.3c-.19 1-.75 1.85-1.6 2.42v2h2.59c1.51-1.4 2.39-3.45 2.39-5.92z"/><path d="M8 16c2.16 0 3.97-.72 5.29-1.94l-2.59-2c-.72.48-1.63.77-2.7.77-2.08 0-3.84-1.4-4.47-3.29H.86v2.07C2.17 14.2 4.89 16 8 16z"/><path d="M3.53 9.54c-.16-.48-.25-.99-.25-1.54s.09-1.06.25-1.54V4.39H.86A7.97 7.97 0 000 8c0 1.29.31 2.51.86 3.61l2.67-2.07z"/><path d="M8 3.18c1.17 0 2.23.4 3.06 1.19l2.3-2.3C11.96.9 10.15.14 8 .14 4.89.14 2.17 1.94.86 4.39l2.67 2.07C4.16 4.58 5.92 3.18 8 3.18z"/></svg>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="ide-body">
+  <div class="activity-bar" id="activityBar">
+    <div class="activity-icon active" title="Explorer">
+      <svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8h14"/></svg>
+    </div>
+    <div class="activity-icon" title="Search">
+      <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="5"/><path d="M14 14l-3.5-3.5"/></svg>
+    </div>
+  </div>
+
+  <div class="explorer" id="explorerPanel">
+    <div class="explorer-header">NewPortfolio-main</div>
+    <div class="tree no-scrollbar">
+      <div class="tree-row file-markup"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>README.md</div>
+      <div class="tree-row folder"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h5A1.5 1.5 0 0114.5 6v6.5A1.5 1.5 0 0113 14H3.5A1.5 1.5 0 012 12.5v-8z"/></svg>assets</div>
+      <div class="tree-row folder"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h5A1.5 1.5 0 0114.5 6v6.5A1.5 1.5 0 0113 14H3.5A1.5 1.5 0 012 12.5v-8z"/></svg>docs</div>
+      <div class="tree-row folder"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h5A1.5 1.5 0 0114.5 6v6.5A1.5 1.5 0 0113 14H3.5A1.5 1.5 0 012 12.5v-8z"/></svg>css</div>
+      <div class="tree-row tree-indent-1 active-file file-css">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>
+        animations.css
+        <span class="tree-row-live-dot" id="treeLiveDot" style="display:none;"></span>
+      </div>
+      <div class="tree-row tree-indent-1 file-css"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>components.css</div>
+      <div class="tree-row tree-indent-1 file-css"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>layout.css</div>
+      <div class="tree-row tree-indent-1 file-css"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>tokens.css</div>
+      <div class="tree-row file-markup"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>index.html</div>
+      <div class="tree-row folder"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h5A1.5 1.5 0 0114.5 6v6.5A1.5 1.5 0 0113 14H3.5A1.5 1.5 0 012 12.5v-8z"/></svg>js</div>
+      <div class="tree-row file-config"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>vercel.json</div>
+    </div>
+  </div>
+
+  <div class="editor-area" id="populatedView">
+    <div class="tabstrip">
+      <div class="tab active">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>
+        animations.css
+        <span class="tab-live-dot" id="tabLiveDot" style="display:none;"></span>
+        <div class="tab-close"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg></div>
+      </div>
+      <div class="tab">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>
+        vercel.json
+        <div class="tab-close"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg></div>
+      </div>
+    </div>
+
+    <div class="code-pane no-scrollbar">
+      <div class="code-line"><span class="line-no">1</span><span class="line-content"><span class="cm">/* animations.css — Keyframes & Transitions */</span></span></div>
+      <div class="code-line"><span class="line-no">2</span><span class="line-content"></span></div>
+      <div class="code-line"><span class="line-no">3</span><span class="line-content"><span class="cm">/* — Cursor blink — */</span></span></div>
+      <div class="code-line"><span class="line-no">4</span><span class="line-content"><span class="kw">@keyframes</span> <span class="fn">blink</span> {</span></div>
+      <div class="code-line"><span class="line-no">5</span><span class="line-content">  0%, 100% { opacity: <span class="str">1</span>; }</span></div>
+      <div class="code-line"><span class="line-no">6</span><span class="line-content">  50%      { opacity: <span class="str">0</span>; }</span></div>
+      <div class="code-line"><span class="line-no">7</span><span class="line-content">}</span></div>
+      <div class="code-line"><span class="line-no">8</span><span class="line-content"></span></div>
+      <div class="code-line"><span class="line-no">9</span><span class="line-content">.terminal__cursor {</span></div>
+      <div class="code-line"><span class="line-no">10</span><span class="line-content">  animation: <span class="fn">blink</span> 1s step-end infinite;</span></div>
+      <div class="code-line"><span class="line-no">11</span><span class="line-content">}</span></div>
+      <div class="code-line" id="liveLine1" style="display:none;"><span class="line-no">12</span><span class="line-content"></span></div>
+      <div class="code-line" id="liveLine2" style="display:none;"><span class="line-no">13</span><span class="line-content agent-recent-edit"><span class="cm">/* — Live status pulse — */</span></span></div>
+      <div class="code-line" id="liveLine3" style="display:none;"><span class="line-no">14</span><span class="line-content agent-recent-edit"><span class="kw">@keyframes</span> <span class="fn">livePulse</span> {</span></div>
+      <div class="code-line" id="liveLine4" style="display:none;"><span class="line-no">15</span><span class="line-content">  0%   { opacity: <span class="str">1</span>; }<span class="agent-cursor"><span class="agent-cursor-tag"><canvas width="8" height="8"></canvas>ChatGPT</span></span></div>
+    </div>
+
+    <div class="panel" id="panel">
+      <div class="panel-tabs">
+        <div class="panel-tabs-left">
+          <div class="panel-tab">Problems</div>
+          <div class="panel-tab">Output</div>
+          <div class="panel-tab active">Terminal</div>
+        </div>
+        <div class="panel-actions">
+          <button class="panel-btn" title="New terminal"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v12M2 8h12"/></svg></button>
+          <button class="panel-btn" id="closePanelBtn" title="Close panel (Ctrl+`)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        </div>
+      </div>
+      <div class="panel-body no-scrollbar">
+        <div class="term-line"><span class="term-human-tag">you</span><span class="term-human">@ChatGPT the pulse animation looks janky on mobile, can you check?</span></div>
+
+        <div class="term-line"><span class="term-agent-tag"><canvas width="9" height="9"></canvas>ChatGPT</span><span class="term-say">Looking at animations.css now.</span></div>
+        <div class="term-line"><span class="term-prompt">➜</span><span class="term-agent-tag"><canvas width="9" height="9"></canvas>ChatGPT</span><span class="term-human">grep -A3 pulse css/animations.css</span></div>
+        <div class="term-line" style="padding-left:20px;"><span class="term-out">@keyframes pulse {<br>&nbsp;&nbsp;0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(74,222,128,.4); }<br>&nbsp;&nbsp;50%     { opacity: .6; box-shadow: 0 0 0 4px rgba(74,222,128,0); }</span></div>
+        <div class="term-line"><span class="term-agent-tag"><canvas width="9" height="9"></canvas>ChatGPT</span><span class="term-say">Found it — the box-shadow animation isn't GPU-accelerated. Adding <span class="fn">will-change: opacity</span>.</span></div>
+        <div class="term-line"><span class="term-diff">&nbsp;&nbsp;animations.css | <span class="plus">1 +</span></span></div>
+
+        <div class="term-line"><span class="term-agent-tag"><canvas width="9" height="9"></canvas>ChatGPT 2</span><span class="term-say">Also worth reducing the blur radius — that box-shadow is heavy on lower-end mobile GPUs either way.</span></div>
+
+        <div class="term-line"><span class="term-human-tag">you</span><span class="term-human">good catch, do both</span></div>
+
+        <div class="term-line"><span class="term-agent-tag"><canvas width="9" height="9"></canvas>ChatGPT</span><span class="term-say">Done — both changes applied.</span></div>
+        <div class="term-line"><span class="term-diff">&nbsp;&nbsp;animations.css | <span class="plus">2 +</span>-</span></div>
+
+        <div class="term-line"><span class="term-prompt">➜</span><span class="term-human" id="cursorLine">&nbsp;</span></div>
+      </div>
+    </div>
+    <div class="panel-restore" id="restoreBar">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 6l4 4 4-4"/></svg>
+      Terminal (closed) — click or Ctrl+` to reopen
+    </div>
+  </div>
+
+  <div class="editor-area" id="emptyView" style="display:none;">
+    <div class="empty-state">
+      <canvas id="emptyOrb" width="120" height="120"></canvas>
+      <div class="empty-actions">
+        <div class="empty-action">
+          <span class="empty-action-label">Open Folder</span>
+          <span class="empty-action-keys"><kbd>Ctrl</kbd><kbd>O</kbd></span>
+        </div>
+        <div class="empty-action">
+          <span class="empty-action-label">Open Recent</span>
+          <span class="empty-action-keys"><kbd>Ctrl</kbd><kbd>R</kbd></span>
+        </div>
+        <div class="empty-action">
+          <span class="empty-action-label">Command Palette</span>
+          <span class="empty-action-keys"><kbd>Ctrl</kbd><kbd>K</kbd></span>
+        </div>
+        <div class="empty-action">
+          <span class="empty-action-label">Switch to Rooms</span>
+          <span class="empty-action-keys"><kbd>Ctrl</kbd><kbd>1</kbd></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="statusbar-left">
+    <div class="statusbar-item"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="4" r="2"/><circle cx="5" cy="12" r="2"/><path d="M5 6v6M5 9h4a2 2 0 002-2V4"/></svg>main*</div>
+    <div class="statusbar-item"><span class="dot"></span>companion: connected — C:\Users\HomePC\Downloads\NewPortfolio-main</div>
+  </div>
+  <div class="statusbar-right">
+    <div class="statusbar-item">Ln 5, Col 1</div>
+    <div class="statusbar-item">Spaces: 2</div>
+    <div class="statusbar-item">UTF-8</div>
+    <div class="statusbar-item">CSS</div>
+  </div>
+</div>
+
+<div class="cmdk-backdrop" id="cmdkBackdrop">
+  <div class="cmdk">
+    <div class="cmdk-input-row">
+      <canvas id="cmdkOrb" width="18" height="18"></canvas>
+      <input type="text" placeholder="Ask an agent, or jump to a file…" autofocus>
+    </div>
+    <div class="cmdk-results no-scrollbar">
+      <div class="cmdk-section-label">Ask</div>
+      <div class="cmdk-item selected">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.5" cy="6" r="2"/><circle cx="11" cy="6" r="1.8"/><path d="M1.5 14c0-2.2 1.8-3.5 4-3.5s4 1.3 4 3.5M10 10.7c1.8.1 3 1.2 3 3.3"/></svg>
+        Ask ChatGPT about animations.css
+      </div>
+      <div class="cmdk-section-label">Go to File</div>
+      <div class="cmdk-item"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>components.css</div>
+      <div class="cmdk-item"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z"/></svg>tokens.css</div>
+      <div class="cmdk-section-label">Actions</div>
+      <div class="cmdk-item">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v12M2 8h12"/></svg>
+        New Terminal <span class="cmdk-shortcut">Ctrl+Shift+`</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="demo-switch" id="demoSwitch">mockup only: toggle empty state</div>
+<div class="demo-switch-2" id="demoSwitch2">mockup only: toggle agent live-editing</div>
+
+<script>
+  function drawOrb(canvas, dotCount, radius, dotSize) {
+    const ctx = canvas.getContext('2d');
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    const dots = Array.from({ length: dotCount }, (_, i) => ({
+      angle: (i / dotCount) * Math.PI * 2, tilt: 0.4 + (i % 3) * 0.15,
+      speed: 0.02 + (i % 4) * 0.006, r: radius * (0.6 + (i % 3) * 0.2)
+    }));
+    function frame() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      dots.forEach(d => {
+        d.angle += d.speed;
+        const x = cx + Math.cos(d.angle) * d.r, y = cy + Math.sin(d.angle) * d.r * d.tilt;
+        const depth = (Math.sin(d.angle) * d.tilt + 1) / 2;
+        ctx.beginPath();
+        ctx.arc(x, y, dotSize * (0.5 + depth * 0.5), 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(76, 211, 194, ${0.4 + depth * 0.55})`;
+        ctx.fill();
+      });
+      requestAnimationFrame(frame);
+    }
+    frame();
+  }
+  drawOrb(document.getElementById('brandOrb'), 6, 6, 1);
+  drawOrb(document.getElementById('cmdkOrb'), 7, 7, 1.1);
+  drawOrb(document.getElementById('emptyOrb'), 11, 42, 3.2);
+  document.querySelectorAll('.term-agent-tag canvas, .agent-cursor-tag canvas').forEach(c => drawOrb(c, 5, 5, 0.9));
+
+  document.getElementById('demoSwitch2').addEventListener('click', () => {
+    const nowShowing = document.getElementById('liveLine1').style.display !== 'none';
+    ['liveLine1','liveLine2','liveLine3','liveLine4'].forEach(id => {
+      document.getElementById(id).style.display = nowShowing ? 'none' : 'flex';
+    });
+    document.getElementById('tabLiveDot').style.display = nowShowing ? 'none' : 'block';
+    document.getElementById('treeLiveDot').style.display = nowShowing ? 'none' : 'block';
+  });
+
+  const populatedView = document.getElementById('populatedView');
+  const emptyView = document.getElementById('emptyView');
+  const explorerPanel = document.getElementById('explorerPanel');
+  document.getElementById('demoSwitch').addEventListener('click', () => {
+    const showingEmpty = emptyView.style.display !== 'none';
+    emptyView.style.display = showingEmpty ? 'none' : 'flex';
+    populatedView.style.display = showingEmpty ? 'flex' : 'none';
+    explorerPanel.style.display = showingEmpty ? 'flex' : 'none';
+  });
+
+  const menuItems = document.querySelectorAll('.menu-item');
+  menuItems.forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasOpen = item.classList.contains('open');
+      menuItems.forEach(m => m.classList.remove('open'));
+      if (!wasOpen) item.classList.add('open');
+    });
+  });
+  document.addEventListener('click', () => menuItems.forEach(m => m.classList.remove('open')));
+
+  const panel = document.getElementById('panel');
+  function setPanelOpen(open) {
+    panel.classList.toggle('closed', !open);
+    document.getElementById('togglePanelItem').classList.toggle('checked', open);
+  }
+  document.getElementById('closePanelBtn').addEventListener('click', () => setPanelOpen(false));
+  document.getElementById('restoreBar').addEventListener('click', () => setPanelOpen(true));
+  document.getElementById('togglePanelItem').addEventListener('click', () => setPanelOpen(panel.classList.contains('closed')));
+  document.getElementById('newTerminalItem').addEventListener('click', () => setPanelOpen(true));
+
+  const explorer = document.querySelector('.explorer');
+  document.getElementById('toggleExplorerItem').addEventListener('click', function() {
+    const willShow = explorer.style.display === 'none';
+    explorer.style.display = willShow ? 'flex' : 'none';
+    this.classList.toggle('checked', willShow);
+  });
+
+  const cmdkBackdrop = document.getElementById('cmdkBackdrop');
+  function openCmdk() { cmdkBackdrop.classList.add('open'); cmdkBackdrop.querySelector('input').focus(); }
+  function closeCmdk() { cmdkBackdrop.classList.remove('open'); }
+  document.getElementById('cmdkHintBtn').addEventListener('click', openCmdk);
+  document.getElementById('openCmdkItem').addEventListener('click', openCmdk);
+  cmdkBackdrop.addEventListener('click', (e) => { if (e.target === cmdkBackdrop) closeCmdk(); });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === '`') { e.preventDefault(); setPanelOpen(panel.classList.contains('closed')); }
+    if (e.ctrlKey && e.key.toLowerCase() === 'k') { e.preventDefault(); openCmdk(); }
+    if (e.key === 'Escape') closeCmdk();
+  });
+
+  setInterval(() => {
+    const c = document.getElementById('cursorLine');
+    c.textContent = c.textContent === '\u2588' ? '\u00a0' : '\u2588';
+  }, 500);
+</script>
+
+</body>
+</html>

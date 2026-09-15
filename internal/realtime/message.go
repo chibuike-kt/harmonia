@@ -24,6 +24,7 @@ const (
 	KindPickupUsage     Kind = "pickup_usage"
 	KindObjective       Kind = "objective"
 	KindCompanionAction Kind = "companion_action"
+	KindAgentCursor     Kind = "agent_cursor"
 )
 
 // Message is what flows through the Hub — a tagged union of the distinct
@@ -44,6 +45,7 @@ type Message struct {
 	PickupUsage     *PickupUsage         `json:"pickup_usage,omitempty"`
 	Objective       *RoomObjectiveUpdate `json:"objective,omitempty"`
 	CompanionAction *CompanionAction     `json:"companion_action,omitempty"`
+	AgentCursor     *AgentCursor         `json:"agent_cursor,omitempty"`
 }
 
 // ChatMessage mirrors internal/message.Message's wire shape. Defined
@@ -193,6 +195,35 @@ type CompanionAction struct {
 // through the browser tab that already has it open.
 func NewCompanionActionMessage(action CompanionAction) Message {
 	return Message{Kind: KindCompanionAction, CompanionAction: &action}
+}
+
+// AgentCursor is one agent's live edit position in one open file — the
+// IDE design overhaul's live multiplayer-cursor signal (VS Code
+// LiveShare/Google-Docs-style). Active false is the explicit "stopped
+// editing" transition, published the instant an agent's file/shell tools
+// stop being available (a human's presence lapsing, per
+// realtime.IsHumanPresent, or the agent simply finishing) — the
+// frontend must remove the cursor, its tag, and any live dots the
+// moment this arrives, with no fade and no lingering frozen state; a
+// stale "still editing" cursor after presence is gone is exactly the
+// ambiguity the whole presence-gate model exists to prevent, and that
+// has to be as true on screen as it is in the backend's own tool
+// availability.
+type AgentCursor struct {
+	AgentID  uuid.UUID `json:"agent_id"`
+	RoomID   uuid.UUID `json:"room_id"`
+	Path     string    `json:"path"`
+	Line     int       `json:"line"`
+	Column   int       `json:"column"`
+	Active   bool      `json:"active"`
+	Name     string    `json:"name"`
+	Provider string    `json:"provider,omitempty"`
+}
+
+// NewAgentCursorMessage wraps a live agent cursor position/transition for
+// publishing over the room's existing live channel.
+func NewAgentCursorMessage(cursor AgentCursor) Message {
+	return Message{Kind: KindAgentCursor, AgentCursor: &cursor}
 }
 
 // NewPickupUsageMessage wraps one phase-1 classification call's real
