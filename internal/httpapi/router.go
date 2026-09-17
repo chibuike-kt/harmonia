@@ -182,7 +182,6 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceHeartbeatHandler(rooms, st.Redis))
 		pr.Delete("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceLeaveHandler(rooms, st.Redis))
 		pr.Post("/v1/rooms/{room_id}/agent_cursor", realtime.AgentCursorHandler(rooms, hub))
-		pr.Post("/v1/rooms/{room_id}/test_presence", realtime.TestSetPresenceHandler(rooms, hub))
 	})
 
 	r.Group(func(pr chi.Router) {

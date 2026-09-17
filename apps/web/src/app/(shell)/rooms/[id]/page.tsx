@@ -1431,6 +1431,27 @@ export default function RoomViewPage() {
           </p>
         )}
 
+        {/* This room's own real, designed silence: 2+ agents with
+            autonomous pickup off means an unaddressed message gets no
+            reply at all, on purpose, for cost reasons (no forced
+            classification call on every message). Without this, that
+            reads as broken rather than intentional — a real, non-
+            blocking explanation plus a real way to change it, not a
+            warning (nothing has gone wrong). */}
+        {roomAgents.length > 1 && !autonomousPickupEnabled && (
+          <p className="mx-auto w-full max-w-[720px] px-6 text-[13px] text-[var(--login-text-muted)]">
+            No agent was addressed — mention one, or{" "}
+            <button
+              type="button"
+              onClick={() => setInfoOpen(true)}
+              className="underline decoration-dotted underline-offset-2 hover:text-[var(--login-text)]"
+            >
+              enable autonomous pickup in Room Info
+            </button>
+            .
+          </p>
+        )}
+
         <Composer
           agents={roomAgents}
           onSend={(c, a, attachment, forceSearch) =>
