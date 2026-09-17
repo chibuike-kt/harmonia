@@ -120,10 +120,18 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/handoffs/{id}/accept", handoffs.AcceptHandler(beginner, hub))
 	})
 
+	// relay is the backend half of ADR-010's relay protocol — see
+	// internal/companionrelay's own package doc. Built here, ahead of
+	// its first real caller below (an approved propose_file_edit
+	// proposal's real write), the same "mechanism ready before its real
+	// caller" shape this project's other agent-tool integrations follow.
+	relay := companionrelay.NewCoordinator()
+
 	proposals := actionproposal.NewStore(st.Pool)
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
-		pr.Post("/v1/action_proposals/{id}/approve", proposals.ApproveHandler(rooms, beginner, hub))
+		pr.Get("/v1/action_proposals/{id}", proposals.GetHandler(rooms))
+		pr.Post("/v1/action_proposals/{id}/approve", proposals.ApproveHandler(rooms, beginner, hub, relay))
 		pr.Post("/v1/action_proposals/{id}/reject", proposals.RejectHandler(rooms, beginner, hub))
 	})
 
@@ -174,14 +182,9 @@ func NewRouter(st *store.Store) http.Handler {
 		pr.Post("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceHeartbeatHandler(rooms, st.Redis))
 		pr.Delete("/v1/rooms/{room_id}/presence/heartbeat", realtime.HumanPresenceLeaveHandler(rooms, st.Redis))
 		pr.Post("/v1/rooms/{room_id}/agent_cursor", realtime.AgentCursorHandler(rooms, hub))
+		pr.Post("/v1/rooms/{room_id}/test_presence", realtime.TestSetPresenceHandler(rooms, hub))
 	})
 
-	// relay is the backend half of ADR-010's relay protocol — see
-	// internal/companionrelay's own package doc. Dispatch isn't called
-	// from anywhere yet (wiring an agent's file/shell tool calls into it
-	// is Batch 2's job, per docs/companion-ide-safety-brief.md), but the
-	// result endpoint below is real and load-bearing the moment it is.
-	relay := companionrelay.NewCoordinator()
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
 		pr.Post("/v1/rooms/{room_id}/companion_actions/{action_id}/result", companionrelay.ResultHandler(rooms, relay))

@@ -89,6 +89,9 @@ export function MenuBar({
   onOpenCmdk,
   onNewTerminal,
   onGoToFile,
+  followingAgentId,
+  onToggleFollow,
+  onStopFollowing,
 }: {
   folderOpen: boolean;
   autoSave: boolean;
@@ -98,6 +101,9 @@ export function MenuBar({
   canRedo: boolean;
   humanInitials: string;
   agents: PresenceAgent[];
+  followingAgentId: string | null;
+  onToggleFollow: (agentId: string) => void;
+  onStopFollowing: () => void;
   onOpenFolder: () => void;
   onCloseFolder: () => void;
   onSave: () => void;
@@ -336,24 +342,69 @@ export function MenuBar({
             {humanInitials}
           </div>
           {agents.map((agent, i) => (
-            <div
+            <button
               key={agent.id}
-              title={`${agent.name}${agent.active ? " — active" : ""}`}
+              type="button"
+              disabled={!agent.active}
+              title={
+                agent.active
+                  ? `${agent.name} — active, click to follow`
+                  : agent.name
+              }
+              onClick={() => agent.active && onToggleFollow(agent.id)}
               style={{ marginLeft: -7, zIndex: 10 - (i + 1) }}
               className={`relative flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--ide-bg-menu)] bg-[var(--ide-surface-2)] outline outline-1 ${
                 agent.active
-                  ? "outline-[var(--login-accent)] shadow-[0_0_8px_rgba(76,211,194,.28)]"
-                  : "outline-[var(--ide-border-strong)]"
-              }`}
+                  ? "cursor-pointer outline-[var(--login-accent)] shadow-[0_0_8px_rgba(76,211,194,.28)]"
+                  : "cursor-default outline-[var(--ide-border-strong)]"
+              } ${followingAgentId === agent.id ? "ring-2 ring-[var(--login-accent)] ring-offset-1 ring-offset-[var(--ide-bg-menu)]" : ""}`}
             >
               <AgentAvatarGlyph
                 provider={agent.provider}
                 name={agent.name}
                 size={13}
               />
-            </div>
+            </button>
           ))}
         </div>
+
+        {/* Follow mode's own visible indicator — never silent state; a
+            human following an agent always has a clear way to see it and
+            stop (design overhaul point 8). */}
+        {followingAgentId && (
+          <div className="flex items-center gap-1.5 rounded-full border border-[rgba(76,211,194,.35)] bg-[rgba(76,211,194,.1)] py-[3px] pr-1.5 pl-2 text-[11px] text-[var(--login-accent)]">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+            >
+              <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" />
+              <circle cx="8" cy="8" r="2" />
+            </svg>
+            Following{" "}
+            {agents.find((a) => a.id === followingAgentId)?.name ?? "agent"}
+            <button
+              type="button"
+              title="Stop following"
+              onClick={onStopFollowing}
+              className="flex items-center opacity-70 hover:opacity-100"
+            >
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+              >
+                <path d="M4 4l8 8M12 4l-8 8" />
+              </svg>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

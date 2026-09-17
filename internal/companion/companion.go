@@ -21,11 +21,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -76,13 +74,18 @@ var upgrader = websocket.Upgrader{
 // clientMessage is every shape a connected web page can send — a tagged
 // union over Type, matching the same "one envelope, several real
 // payloads" shape this codebase's own realtime.Message already uses on
-// the server-sent side.
+// the server-sent side. TerminalID/Cols/Rows are the real multi-terminal
+// protocol's own fields — every terminal_* message is scoped to one
+// real terminal instance by TerminalID, never an implicit "the" shell.
 type clientMessage struct {
 	Type          string `json:"type"`
 	Path          string `json:"path,omitempty"`
 	ContentBase64 string `json:"content_base64,omitempty"`
 	Data          string `json:"data,omitempty"`
 	Command       string `json:"command,omitempty"`
+	TerminalID    string `json:"terminal_id,omitempty"`
+	Cols          int    `json:"cols,omitempty"`
+	Rows          int    `json:"rows,omitempty"`
 }
 
 type serverMessage struct {
@@ -93,6 +96,8 @@ type serverMessage struct {
 	Data          string     `json:"data,omitempty"`
 	ExitCode      *int       `json:"exit_code,omitempty"`
 	Message       string     `json:"message,omitempty"`
+	TerminalID    string     `json:"terminal_id,omitempty"`
+	Cwd           string     `json:"cwd,omitempty"`
 }
 
 type DirEntry struct {
@@ -131,13 +136,26 @@ func Handler(allowed AllowedOrigins, consent *ConsentStore) http.HandlerFunc {
 		}
 		defer func() { _ = conn.Close() }()
 
-		s := &session{conn: conn}
+		s := &session{conn: conn, terminals: make(map[string]*terminal), done: make(chan struct{})}
+		if sessionCreated != nil {
+			sessionCreated(s)
+		}
+		defer close(s.done)
 		s.serve()
 	}
 }
 
+// sessionCreated, set only by this package's own tests, is invoked with
+// every session Handler creates — the one way a test can observe real
+// session teardown (every terminal's real OS process actually exited,
+// not just had its handles closed; see stopAllTerminals) instead of
+// racing httptest.Server.Close, which does not wait for hijacked
+// connections (a WebSocket upgrade hijacks the connection, so Close
+// returns without waiting for serve() to return).
+var sessionCreated func(*session)
+
 // session is one connected web page's own state — the folder it opened
-// (if any) and the shell process it started (if any). Every file
+// (if any) and every real terminal instance it has started. Every file
 // operation is checked against rootDir before it touches disk (see
 // resolvePath) — even on a trusted local process, a page that somehow
 // sent a crafted path shouldn't be able to read or write outside the
@@ -148,9 +166,11 @@ type session struct {
 	mu      sync.Mutex
 	rootDir string
 
-	shellMu  sync.Mutex
-	shellCmd *exec.Cmd
-	shellIn  io.WriteCloser
+	termMu    sync.Mutex
+	terminals map[string]*terminal
+	termWG    sync.WaitGroup
+
+	done chan struct{}
 }
 
 func (s *session) send(msg serverMessage) {
@@ -166,7 +186,7 @@ func (s *session) sendError(format string, args ...any) {
 }
 
 func (s *session) serve() {
-	defer s.stopShell()
+	defer s.stopAllTerminals()
 	for {
 		var msg clientMessage
 		if err := s.conn.ReadJSON(&msg); err != nil {
@@ -191,10 +211,16 @@ func (s *session) handle(msg clientMessage) {
 		s.readFile(msg.Path)
 	case "write_file":
 		s.writeFile(msg.Path, msg.ContentBase64)
-	case "start_shell":
-		s.startShell()
-	case "shell_input":
-		s.writeShellInput(msg.Data)
+	case "create_terminal":
+		s.createTerminal(msg.Cols, msg.Rows)
+	case "terminal_input":
+		s.terminalInput(msg.TerminalID, msg.Data)
+	case "terminal_resize":
+		s.resizeTerminal(msg.TerminalID, msg.Cols, msg.Rows)
+	case "kill_terminal":
+		s.killTerminal(msg.TerminalID)
+	case "terminal_narrate":
+		s.narrateTerminal(msg.TerminalID, msg.Data)
 	default:
 		s.sendError("unknown message type %q", msg.Type)
 	}

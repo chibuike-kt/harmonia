@@ -184,8 +184,13 @@ type CompanionAction struct {
 	ID     uuid.UUID `json:"id"`
 	RoomID uuid.UUID `json:"room_id"`
 	Type   string    `json:"type"`
-	Data   string    `json:"data"`
-	Actor  string    `json:"actor"`
+	// Path is set for file-scoped actions (write_file) — kept separate
+	// from Data rather than folded into one string, mirroring the real
+	// companion wire protocol's own write_file message shape (Path +
+	// ContentBase64 as two distinct fields).
+	Path  string `json:"path,omitempty"`
+	Data  string `json:"data"`
+	Actor string `json:"actor"`
 }
 
 // NewCompanionActionMessage wraps an agent-initiated companion action

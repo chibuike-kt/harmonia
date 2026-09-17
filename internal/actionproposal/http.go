@@ -3,11 +3,13 @@ package actionproposal
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/chibuike-kt/harmonia/internal/companionrelay"
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/protocol"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
@@ -86,6 +88,36 @@ func resolvedEnvelope(p Proposal) protocol.Envelope {
 	})
 }
 
+// approveRequest is the optional body POST .../approve accepts —
+// meaningful only for a propose_file_edit proposal. content_base64,
+// when present, is what actually gets written instead of the proposal's
+// own stored new_content — see executeApprovedFileEdit's own doc
+// comment on why this (not a second endpoint) is what makes per-hunk
+// resolution real: a human accepting some hunks and rejecting others
+// sends the real merged result it computed, not an all-or-nothing pick
+// of the two stored versions. An empty or absent body is Accept All.
+type approveRequest struct {
+	ContentBase64 *string `json:"content_base64,omitempty"`
+}
+
+// GetHandler returns the handler for GET /v1/action_proposals/{id}.
+// Mount it behind user.Authenticate. The ACTION.PROPOSE event a client
+// sees over the live channel deliberately carries only a summary (id,
+// action_type, and for a file edit, the path) — the full payload (a
+// file edit's real old/new content) is what this fetches on demand, the
+// same "event announces, a real fetch gets the full content" split the
+// rest of this API already uses for anything bigger than a summary
+// belongs in a live push.
+func (s *Store) GetHandler(rooms *room.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := loadOwnedProposal(w, r, s, rooms)
+		if !ok {
+			return
+		}
+		writeJSON(w, http.StatusOK, p)
+	}
+}
+
 // ApproveHandler returns the handler for POST
 // /v1/action_proposals/{id}/approve. Mount it behind user.Authenticate —
 // a human approves, never an agent. Resolving pending -> approved is
@@ -99,11 +131,30 @@ func resolvedEnvelope(p Proposal) protocol.Envelope {
 // execution also immediately accepts the handoff in the same
 // transaction — a human's approval here is the whole transaction's one
 // required consent, not the first of two separate gates.
-func (s *Store) ApproveHandler(rooms *room.Store, pool store.Beginner, hub realtime.Publisher) http.HandlerFunc {
+//
+// Approving a propose_file_edit proposal is different in kind, not just
+// in payload: the real write isn't a database operation the transaction
+// can perform at all, it's a live round trip through the reviewing
+// human's own browser tab and companion (ADR-010's relay protocol) — see
+// executeApprovedFileEdit's own doc comment on why that happens outside
+// the transaction that resolved the proposal, after it has already
+// committed. A relay failure (the tab closed mid-review, the write timed
+// out) is reported for real rather than silently swallowed, but doesn't
+// roll the approval itself back — a human's own decision stays durable
+// regardless of whether the mechanical write happened to land.
+func (s *Store) ApproveHandler(rooms *room.Store, pool store.Beginner, hub realtime.Publisher, relay *companionrelay.Coordinator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := loadOwnedProposal(w, r, s, rooms)
 		if !ok {
 			return
+		}
+
+		var body approveRequest
+		if r.Body != nil {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
 		}
 
 		ctx := r.Context()
@@ -153,6 +204,19 @@ func (s *Store) ApproveHandler(rooms *room.Store, pool store.Beginner, hub realt
 		}
 		if handoffAcceptedEnv != nil {
 			hub.Publish(resolved.RoomID, realtime.NewEventMessage(*handoffAcceptedEnv))
+		}
+
+		if resolved.ActionType == ActionProposeFileEdit {
+			if _, err := executeApprovedFileEdit(ctx, resolved.RoomID, resolved.Payload, body.ContentBase64, hub, relay); err != nil {
+				// The approval itself already committed and published —
+				// only the real write failed. Reported honestly as its
+				// own distinct outcome, not masked as an approve failure.
+				writeJSON(w, http.StatusBadGateway, map[string]any{
+					"proposal": resolved,
+					"error":    "approved, but the real write failed: " + err.Error(),
+				})
+				return
+			}
 		}
 
 		writeJSON(w, http.StatusOK, resolved)

@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +27,17 @@ func grantedConsent(t *testing.T) *ConsentStore {
 
 func dialTestServer(t *testing.T, allowed AllowedOrigins, origin string) (*websocket.Conn, func()) {
 	t.Helper()
+
+	// Capture the real session Handler creates for this connection so
+	// cleanup can wait for its real teardown (every terminal's real OS
+	// process actually exited) — httptest.Server.Close does not wait for
+	// a hijacked (WebSocket) connection's handler goroutine, so without
+	// this a test's own t.TempDir() cleanup can race a real child
+	// process that still has it open (e.g. as its working directory).
+	sessions := make(chan *session, 1)
+	sessionCreated = func(s *session) { sessions <- s }
+	t.Cleanup(func() { sessionCreated = nil })
+
 	srv := httptest.NewServer(Handler(allowed, grantedConsent(t)))
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
 	headers := map[string][]string{}
@@ -43,6 +53,33 @@ func dialTestServer(t *testing.T, allowed AllowedOrigins, origin string) (*webso
 	}
 	return conn, func() {
 		_ = conn.Close()
+		select {
+		case s := <-sessions:
+			select {
+			case <-s.done:
+				// s.done closing means Wait() already observed every
+				// real terminal's process as exited — but on Windows,
+				// a process signaling "exited" and the OS actually
+				// finishing releasing every handle it held (its
+				// current-working-directory lock included) are not
+				// perfectly synchronous; the kernel's own handle
+				// teardown can trail the exit signal by a short,
+				// variable amount under load. A brief bounded wait
+				// here is a real, known OS quirk's real workaround,
+				// not a cover for a synchronization bug in this
+				// package's own code — found live as an intermittent
+				// t.TempDir() cleanup failure ("being used by another
+				// process") immediately after this select otherwise
+				// returned.
+				time.Sleep(150 * time.Millisecond)
+			case <-time.After(15 * time.Second):
+				t.Errorf("session teardown did not complete within 15s of closing the connection")
+			}
+		case <-time.After(1 * time.Second):
+			// No session was ever created on this connection (e.g. an
+			// origin-check test whose dial never completed) — nothing
+			// real to wait for.
+		}
 		srv.Close()
 	}
 }
@@ -178,56 +215,6 @@ func TestResolvePath_RejectsEscapingTheOpenFolder(t *testing.T) {
 	}
 }
 
-// TestShell_RunsARealCommandAndReturnsRealOutput is IDE Stage's own real
-// proof for the terminal: a real shell process, spawned by the
-// companion, actually executes a real command against the open folder
-// and the real output comes back over the wire — not a simulated
-// response.
-func TestShell_RunsARealCommandAndReturnsRealOutput(t *testing.T) {
-	dir := t.TempDir()
-	conn, cleanup := dialTestServer(t, NewAllowedOrigins("http://localhost:3000"), "http://localhost:3000")
-	defer cleanup()
-
-	if err := conn.WriteJSON(clientMessage{Type: "open_folder", Path: dir}); err != nil {
-		t.Fatalf("write open_folder: %v", err)
-	}
-	_ = readMsg(t, conn) // folder_opened
-
-	if err := conn.WriteJSON(clientMessage{Type: "start_shell"}); err != nil {
-		t.Fatalf("write start_shell: %v", err)
-	}
-	started := readMsg(t, conn)
-	if started.Type != "shell_started" {
-		t.Fatalf("started = %+v, want type shell_started", started)
-	}
-
-	marker := "HARMONIA_COMPANION_REAL_OUTPUT_MARKER_7f3a"
-	var command string
-	if runtime.GOOS == "windows" {
-		command = "Write-Output '" + marker + "'\r\n"
-	} else {
-		command = "echo " + marker + "\n"
-	}
-	if err := conn.WriteJSON(clientMessage{Type: "shell_input", Data: command}); err != nil {
-		t.Fatalf("write shell_input: %v", err)
-	}
-
-	// Real process output arrives as one or more shell_output chunks —
-	// accumulate until the real marker shows up or we give up.
-	var accumulated strings.Builder
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		var msg serverMessage
-		if err := conn.ReadJSON(&msg); err != nil {
-			t.Fatalf("read shell output: %v", err)
-		}
-		if msg.Type == "shell_output" {
-			accumulated.WriteString(msg.Data)
-			if strings.Contains(accumulated.String(), marker) {
-				return
-			}
-		}
-	}
-	t.Fatalf("shell output never contained the real marker; got: %q", accumulated.String())
-}
+// Real terminal tests live in terminal_test.go — the multi-instance,
+// real-PTY protocol that replaced this package's original single-shell,
+// plain-pipe implementation.

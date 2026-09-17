@@ -30,7 +30,7 @@ func TestDispatch_RoundTripsThroughTheRealHub(t *testing.T) {
 	}
 	done := make(chan dispatchOutcome, 1)
 	go func() {
-		r, err := Dispatch(context.Background(), c, hub, roomID, "shell_input", "echo hi\n", 5*time.Second)
+		r, err := Dispatch(context.Background(), c, hub, roomID, "shell_input", "", "echo hi\n", 5*time.Second)
 		done <- dispatchOutcome{r, err}
 	}()
 
@@ -100,7 +100,7 @@ func TestDispatch_TimesOutCleanlyWhenNoResultArrives(t *testing.T) {
 	defer unsubscribe()
 
 	start := time.Now()
-	_, err := Dispatch(context.Background(), c, hub, roomID, "shell_input", "rm -rf /\n", 200*time.Millisecond)
+	_, err := Dispatch(context.Background(), c, hub, roomID, "shell_input", "", "rm -rf /\n", 200*time.Millisecond)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -141,7 +141,7 @@ func TestDispatch_ContextCanceledReturnsCleanly(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := Dispatch(ctx, c, hub, roomID, "shell_input", "echo hi\n", 30*time.Second)
+		_, err := Dispatch(ctx, c, hub, roomID, "shell_input", "", "echo hi\n", 30*time.Second)
 		done <- err
 	}()
 

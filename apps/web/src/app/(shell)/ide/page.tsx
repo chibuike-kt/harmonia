@@ -14,13 +14,16 @@ import {
 } from "@/lib/ideRecents";
 import { MenuBar, type PresenceAgent } from "@/components/ide/MenuBar";
 import { CommandPalette } from "@/components/ide/CommandPalette";
+import { DiffView, type FileEditProposal } from "@/components/ide/DiffView";
 import {
   TerminalPanel,
   type BottomTab,
   type TerminalMode,
+  type TerminalPanelHandle,
   type TranscriptEntry,
 } from "@/components/ide/TerminalPanel";
 import { ChevronRightIcon, CloseIcon } from "@/components/icons";
+import { fileIconUrl, folderIconUrl } from "@/lib/fileIcons";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
@@ -45,6 +48,8 @@ interface ServerMessage {
   data?: string;
   exit_code?: number;
   message?: string;
+  terminal_id?: string;
+  cwd?: string;
 }
 
 interface OpenFile {
@@ -86,6 +91,19 @@ interface RealtimeMessage {
     active: boolean;
     name: string;
     provider?: string;
+  };
+  companion_action?: {
+    id: string;
+    room_id: string;
+    type: string;
+    path?: string;
+    data: string;
+    actor: string;
+  };
+  event?: {
+    type: string;
+    payload: Record<string, unknown>;
+    sender: { agent_id?: string };
   };
 }
 
@@ -148,55 +166,26 @@ function languageForPath(path: string): string {
   return map[ext] ?? "plaintext";
 }
 
-function fileKind(name: string): "css" | "markup" | "config" | "other" {
-  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  if (ext === "css") return "css";
-  if (ext === "html" || ext === "htm" || ext === "md") return "markup";
-  if (ext === "json" || ext === "yml" || ext === "yaml" || ext === "toml")
-    return "config";
-  return "other";
-}
-
-// Colors reuse Harmonia's own existing palette, never new ones, per the
-// IDE design overhaul's own point 4.
-const FILE_ICON_COLOR: Record<string, string> = {
-  folder: "var(--room-warn)",
-  css: "var(--room-handoff-purple)",
-  markup: "var(--room-task-blue)",
-  config: "var(--login-accent)",
-  other: "var(--ide-text-secondary)",
-};
-
-function FileGlyph({ isDir, name }: { isDir: boolean; name: string }) {
-  const color = isDir ? FILE_ICON_COLOR.folder : FILE_ICON_COLOR[fileKind(name)];
-  if (isDir) {
-    return (
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke={color}
-        strokeWidth="1.3"
-        className="shrink-0"
-      >
-        <path d="M2 4.5A1.5 1.5 0 013.5 3h3l1.5 1.5h5A1.5 1.5 0 0114.5 6v6.5A1.5 1.5 0 0113 14H3.5A1.5 1.5 0 012 12.5v-8z" />
-      </svg>
-    );
-  }
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke={color}
-      strokeWidth="1.3"
-      className="shrink-0"
-    >
-      <path d="M9 2H4.5A1.5 1.5 0 003 3.5v9A1.5 1.5 0 004.5 14h7a1.5 1.5 0 001.5-1.5V6L9 2z" />
-    </svg>
-  );
+// Real, specific file-extension icons — material-icon-theme's own real
+// icon set and real extension/filename mapping (see lib/fileIcons.ts's
+// own doc comment for sourcing), not the earlier coarse 4-color-bucket
+// approximation. A folder's open/closed state genuinely changes which
+// real icon renders (many real themes, including this one, ship a
+// distinct "expanded" variant for common folder names).
+function FileGlyph({
+  isDir,
+  name,
+  expanded,
+}: {
+  isDir: boolean;
+  name: string;
+  expanded?: boolean;
+}) {
+  const src = isDir ? folderIconUrl(name, !!expanded) : fileIconUrl(name);
+  // A real static SVG asset from public/file-icons/, not a data URL or
+  // remote fetch — next/image's optimizer adds nothing here.
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt="" width={16} height={16} className="shrink-0" />;
 }
 
 function humanInitialsFor(name: string): string {
@@ -276,12 +265,22 @@ export default function IdePage() {
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [panelOpen, setPanelOpen] = useState(true);
   const [bottomTab, setBottomTab] = useState<BottomTab>("terminal");
-  const [shellRunning, setShellRunning] = useState(false);
   const [terminalMode, setTerminalMode] = useState<TerminalMode>("shell");
-  const [shellValue, setShellValue] = useState("");
   const [chatValue, setChatValue] = useState("");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const pendingOutputId = useRef<string | null>(null);
+  const terminalPanelRef = useRef<TerminalPanelHandle | null>(null);
+  // The one companion_action currently forwarded to the companion and
+  // awaiting its real response — the relay protocol's frontend half
+  // (ADR-010: "backend -> existing live channel -> frontend -> the
+  // browser's WebSocket to companion -> result relayed back"). Only one
+  // at a time: today's real callers (approved file-edit proposals) are
+  // never concurrent with each other for the same browser tab.
+  const pendingRelayAction = useRef<{
+    id: string;
+    roomId: string;
+    type: string;
+    path?: string;
+  } | null>(null);
 
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
@@ -293,11 +292,20 @@ export default function IdePage() {
   // null until a folder is open and the room lookup/creation resolves.
   const [roomId, setRoomId] = useState<string | null>(null);
   const [roomAgents, setRoomAgents] = useState<RoomAgentDTO[]>([]);
+  const roomAgentsRef = useRef<RoomAgentDTO[]>([]);
   const [agentStatus, setAgentStatus] = useState<Record<string, string>>({});
   const [agentCursors, setAgentCursors] = useState<Record<string, AgentCursorState>>({});
   const [humanName, setHumanName] = useState("You");
+  const [followingAgentId, setFollowingAgentId] = useState<string | null>(null);
+  // The pending-approval diff view — ADR-010's presence-gone fallback.
+  // A full view takeover while pending (see this feature's own report
+  // for why), cleared the instant its ACTION.RESOLVE arrives, whether
+  // that resolution came from this tab or another one watching the same
+  // room.
+  const [pendingFileEdit, setPendingFileEdit] = useState<FileEditProposal | null>(null);
 
   const editorRef = useRef<monacoEditor.editor.IStandaloneCodeEditor | null>(null);
+  const editorContainerRef = useRef<HTMLDivElement | null>(null);
   const monacoNsRef = useRef<typeof monacoEditor | null>(null);
   const cursorWidgetsRef = useRef<Record<string, monacoEditor.editor.IContentWidget>>({});
   const editFadeDecorationsRef = useRef<
@@ -310,6 +318,24 @@ export default function IdePage() {
       wsRef.current.send(JSON.stringify(msg));
     }
   }, []);
+
+  // Answers the backend's companionrelay.Dispatch call that's still
+  // blocked waiting for this — the frontend's own end of ADR-010's relay
+  // protocol. Real message correlation (the action id), not a guess:
+  // Dispatch already times out cleanly on its own if this never arrives
+  // (a closed tab mid-command), so a failed POST here is a real,
+  // non-fatal race with that timeout, not something this needs to retry.
+  const postRelayResult = useCallback(
+    (roomId: string, actionId: string, result: { output?: string; err?: string }) => {
+      void fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/rooms/${roomId}/companion_actions/${actionId}/result`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(result),
+      }).catch(() => {});
+    },
+    [],
+  );
 
   // ---------- Companion WebSocket ----------
 
@@ -336,67 +362,43 @@ export default function IdePage() {
           },
         }));
         break;
-      case "file_written":
+      case "file_written": {
         if (!msg.path) break;
         setOpenFiles((prev) => {
           const existing = prev[msg.path as string];
           if (!existing) return prev;
           return { ...prev, [msg.path as string]: { ...existing, dirty: false } };
         });
-        break;
-      case "shell_started":
-        setShellRunning(true);
-        break;
-      case "shell_output": {
-        // The ref write happens here, in this single-invoke handler —
-        // never inside the setTranscript updater below. React 18 Strict
-        // Mode intentionally double-invokes an updater function to
-        // surface exactly this class of bug: the first (discarded)
-        // invocation would assign and commit a new id to the ref, so the
-        // second (real) invocation would see a non-null id that names an
-        // entry which was never actually added to the committed state —
-        // its lookup finds nothing, and the chunk silently vanishes.
-        // Found live: real shell output never rendering despite the
-        // command line itself appearing correctly.
-        let outputId = pendingOutputId.current;
-        if (!outputId) {
-          outputId = nextEntryId();
-          pendingOutputId.current = outputId;
+        const pending = pendingRelayAction.current;
+        if (pending && pending.type === "write_file" && pending.path === msg.path) {
+          pendingRelayAction.current = null;
+          postRelayResult(pending.roomId, pending.id, { output: "written" });
         }
-        const id = outputId;
-        setTranscript((prev) => {
-          if (prev.some((e) => e.id === id && e.kind === "output")) {
-            return prev.map((e) =>
-              e.id === id && e.kind === "output"
-                ? { ...e, text: e.text + (msg.data ?? "") }
-                : e,
-            );
-          }
-          return [...prev, { kind: "output", id, text: msg.data ?? "" }];
-        });
         break;
       }
-      case "shell_exited":
-        setShellRunning(false);
-        pendingOutputId.current = null;
-        setTranscript((prev) => [
-          ...prev,
-          { kind: "output", id: nextEntryId(), text: `[process exited with code ${msg.exit_code}]` },
-        ]);
-        break;
       case "error": {
         const message = msg.message ?? "Unknown companion error.";
         setConnectionError(message);
         // A companion error while a folder is open must land somewhere
         // a human will actually see it — the empty-state screen (the
         // only other place connectionError renders) is gone by then.
-        // Found live: a shell_input sent to a session with no shell
-        // running failed silently here before this existed.
         setTranscript((prev) => [...prev, { kind: "error", id: nextEntryId(), text: message }]);
+        const pending = pendingRelayAction.current;
+        if (pending) {
+          pendingRelayAction.current = null;
+          postRelayResult(pending.roomId, pending.id, { err: message });
+        }
         break;
       }
+      default:
+        // Every real terminal_* message (terminal_created, terminal_output,
+        // terminal_cwd, terminal_exited) — TerminalPanel owns every real
+        // terminal instance's own lifecycle; this page only owns the wire.
+        if (msg.type.startsWith("terminal_")) {
+          terminalPanelRef.current?.dispatch(msg);
+        }
     }
-  }, [send]);
+  }, [send, postRelayResult]);
 
   const connect = useCallback(() => {
     if (!COMPANION_URL) return;
@@ -407,7 +409,7 @@ export default function IdePage() {
     // double-invoke in dev, or any future cause) ever called connect()
     // again while a connection is already live, wsRef.current would
     // silently start pointing at that new, blank session while
-    // React state (folderPath, shellRunning, the file tree) kept
+    // React state (folderPath, terminal state, the file tree) kept
     // reflecting whatever the *previous* session had — every further
     // send() would then go to a session with no folder and no shell
     // open, failing in ways the UI had no way to explain. Real bug,
@@ -452,8 +454,7 @@ export default function IdePage() {
       setOpenTabs([]);
       setOpenFiles({});
       setActivePath(null);
-      setShellRunning(false);
-      pendingOutputId.current = null;
+      terminalPanelRef.current?.reset();
     };
     ws.onmessage = (event) => {
       if (wsRef.current !== ws) return;
@@ -564,8 +565,14 @@ export default function IdePage() {
   useEffect(() => {
     if (!roomId) return;
     apiFetch<RoomAgentDTO[]>(`/v1/rooms/${roomId}/agents`)
-      .then(setRoomAgents)
-      .catch(() => setRoomAgents([]));
+      .then((list) => {
+        roomAgentsRef.current = list;
+        setRoomAgents(list);
+      })
+      .catch(() => {
+        roomAgentsRef.current = [];
+        setRoomAgents([]);
+      });
   }, [roomId]);
 
   const chatEntryFromMessage = useCallback(
@@ -677,11 +684,79 @@ export default function IdePage() {
       }));
     });
 
+    // ADR-010's relay protocol, frontend half: the backend dispatched
+    // this because an agent action (today, an approved file-edit
+    // proposal's real write) needs the browser's own already-open
+    // companion connection to actually reach the local filesystem — see
+    // internal/companionrelay's own package doc. write_file is the one
+    // real caller today; a future shell_input caller (Batch 2's agent
+    // shell-exec tool) would forward the same way, correlated the same
+    // way, through this same switch.
+    source.addEventListener("companion_action", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      const action = msg.companion_action;
+      if (!action || !roomId) return;
+      pendingRelayAction.current = {
+        id: action.id,
+        roomId,
+        type: action.type,
+        path: action.path,
+      };
+      if (action.type === "write_file" && action.path) {
+        send({ type: "write_file", path: action.path, content_base64: action.data });
+      } else {
+        // A real, honest failure for any action type this relay doesn't
+        // implement yet, rather than leaving the backend's Dispatch call
+        // hanging until its own timeout.
+        pendingRelayAction.current = null;
+        postRelayResult(roomId, action.id, {
+          err: `companion action type ${action.type} not implemented in this browser session`,
+        });
+      }
+    });
+
+    // The pending-approval diff view's own real trigger: an
+    // ACTION.PROPOSE event for a propose_file_edit proposal. The event
+    // itself only ever carries a summary (proposal_id, path) — the real
+    // old/new content is fetched on demand via GET
+    // /v1/action_proposals/{id} (actionproposal.GetHandler), never
+    // pushed live, since it can be arbitrarily large. ACTION.RESOLVE for
+    // that same proposal clears the view — resolved by any tab watching
+    // this room, not just the one that resolved it.
+    source.addEventListener("event", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      const env = msg.event;
+      if (!env) return;
+      if (env.type === "ACTION.RESOLVE") {
+        const proposalId = env.payload.proposal_id as string | undefined;
+        setPendingFileEdit((prev) => (prev && prev.proposalId === proposalId ? null : prev));
+        return;
+      }
+      if (env.type !== "ACTION.PROPOSE" || env.payload.action_type !== "propose_file_edit") return;
+      const proposalId = env.payload.proposal_id as string;
+      const path = (env.payload.path as string) ?? "";
+      const agent = roomAgentsRef.current.find((a) => a.id === env.sender.agent_id);
+      apiFetch<{ payload: { old_content_base64?: string; new_content_base64?: string } }>(
+        `/v1/action_proposals/${proposalId}`,
+      )
+        .then((full) => {
+          setPendingFileEdit({
+            proposalId,
+            path,
+            agentName: agent?.name ?? "An agent",
+            provider: agent?.provider,
+            oldContent: base64ToText(full.payload.old_content_base64 ?? ""),
+            newContent: base64ToText(full.payload.new_content_base64 ?? ""),
+          });
+        })
+        .catch(() => {});
+    });
+
     return () => {
       source.close();
       if (esRef.current === source) esRef.current = null;
     };
-  }, [roomId, chatEntryFromMessage]);
+  }, [roomId, chatEntryFromMessage, send, postRelayResult]);
 
   // ---------- Human presence heartbeat (IsHumanPresent) ----------
   // Point 9's real requirement: the moment this tab stops watching, live
@@ -864,6 +939,48 @@ export default function IdePage() {
     [send],
   );
 
+  // Follow mode — continuous, not a one-shot jump: this effect re-runs
+  // on every real cursor update for the followed agent (agentCursors is
+  // a dependency), so the viewport keeps tracking as the agent keeps
+  // moving, for as long as following stays on. If the agent's cursor is
+  // in a different file than the one currently open, this switches to
+  // it first — VS Code Live Share's own "Follow" behavior when the
+  // followed participant changes files — then reveals the position once
+  // that file's editor is the active one (the effect naturally re-fires
+  // when activePath catches up, since it's also a dependency).
+  //
+  // "Am I still actually following anyone" is derived from
+  // followingAgentId + agentCursors on every render, not synchronized
+  // into its own state — an agent's cursor disappearing (presence lost,
+  // or it simply finished) genuinely ends following the instant that
+  // happens, with nothing to reset via an effect.
+  const followedCursor = followingAgentId
+    ? (agentCursors[followingAgentId] ?? null)
+    : null;
+  const effectivelyFollowing = followingAgentId !== null && followedCursor !== null;
+
+  useEffect(() => {
+    if (!followedCursor) return;
+    if (followedCursor.path !== activePath) {
+      // Reacting to a real external signal (the followed agent's live
+      // cursor moving to a different file) — same justification as this
+      // codebase's other effects that sync to an external system rather
+      // than to React's own state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      openFile(followedCursor.path);
+      return;
+    }
+    editorRef.current?.revealPositionInCenter(
+      { lineNumber: followedCursor.line, column: followedCursor.column },
+      monacoNsRef.current?.editor.ScrollType.Smooth,
+    );
+  }, [followedCursor, activePath, openFile]);
+
+  const toggleFollow = useCallback((agentId: string) => {
+    setFollowingAgentId((prev) => (prev === agentId ? null : agentId));
+  }, []);
+  const stopFollowing = useCallback(() => setFollowingAgentId(null), []);
+
   const closeTab = (path: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     setOpenTabs((prev) => {
@@ -963,23 +1080,12 @@ export default function IdePage() {
     setChatValue("");
   };
 
-  const submitShell = () => {
-    if (!shellValue.trim()) return;
-    if (!shellRunning) send({ type: "start_shell" });
-    pendingOutputId.current = null;
-    setTranscript((prev) => [
-      ...prev,
-      { kind: "command", id: nextEntryId(), actor: "human", text: shellValue },
-    ]);
-    send({ type: "shell_input", data: shellValue + "\r\n" });
-    setShellValue("");
-  };
-
-  const startShell = () => {
+  const openTerminalTab = useCallback(() => {
     setPanelOpen(true);
     setBottomTab("terminal");
-    if (!shellRunning) send({ type: "start_shell" });
-  };
+    setTerminalMode("shell");
+    terminalPanelRef.current?.createTerminal();
+  }, []);
 
   // ---------- Global keyboard shortcuts ----------
 
@@ -996,9 +1102,17 @@ export default function IdePage() {
       }
       if (e.key === "`") {
         e.preventDefault();
-        if (e.shiftKey) startShell();
+        if (e.shiftKey) openTerminalTab();
         else setPanelOpen((p) => !p);
       } else if (e.key.toLowerCase() === "k") {
+        // A real terminal surface handles its own real Ctrl+K (clear
+        // scrollback) via attachCustomKeyEventHandler — the same
+        // focus-scoped resolution VS Code itself uses between its
+        // `terminalFocus` keybindings and this same global shortcut, so
+        // this handler defers to it instead of racing it for the
+        // command palette.
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.closest("[data-terminal-surface]")) return;
         e.preventDefault();
         setCmdkOpen(true);
       } else if (e.key.toLowerCase() === "b") {
@@ -1026,8 +1140,27 @@ export default function IdePage() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePath, saveActiveFile, router, send]);
+  }, [activePath, saveActiveFile, router, send, openTerminalTab]);
+
+  // Monaco's own `automaticLayout` option only reacts to the window
+  // resizing, not a sibling flex box (the terminal panel opening,
+  // closing, or resizing) changing how much real height this container
+  // has — found live: opening the terminal panel left the editor's own
+  // real hit-tested box sized for the space it had before the panel
+  // appeared, silently eating clicks meant for the terminal underneath
+  // even though the editor had stopped painting that far down. A real
+  // ResizeObserver on the editor's own container, calling its real
+  // layout() on every genuine size change, is what the editor's own
+  // upstream examples use for exactly this "resizable sibling" case.
+  useEffect(() => {
+    const container = editorContainerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() => {
+      editorRef.current?.layout();
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [activePath]);
 
   const renderEntries = (dirPath: string, depth: number) => {
     const entries = dirListings[dirPath];
@@ -1047,7 +1180,7 @@ export default function IdePage() {
               <span className={`flex shrink-0 transition-transform ${isOpen ? "rotate-90" : ""}`}>
                 <ChevronRightIcon />
               </span>
-              <FileGlyph isDir name={entry.name} />
+              <FileGlyph isDir name={entry.name} expanded={isOpen} />
               <span className="truncate">{entry.name}</span>
             </button>
             {isOpen && renderEntries(entry.path, depth + 1)}
@@ -1181,6 +1314,9 @@ export default function IdePage() {
         canRedo={!!activePath}
         humanInitials={humanInitialsFor(humanName)}
         agents={presenceAgents}
+        followingAgentId={effectivelyFollowing ? followingAgentId : null}
+        onToggleFollow={toggleFollow}
+        onStopFollowing={stopFollowing}
         onOpenFolder={() => send({ type: "pick_folder" })}
         onCloseFolder={closeFolder}
         onSave={saveActiveFile}
@@ -1198,11 +1334,18 @@ export default function IdePage() {
         onToggleExplorer={() => setExplorerOpen((v) => !v)}
         onTogglePanel={() => setPanelOpen((v) => !v)}
         onOpenCmdk={() => setCmdkOpen(true)}
-        onNewTerminal={startShell}
+        onNewTerminal={openTerminalTab}
         onGoToFile={() => setCmdkOpen(true)}
       />
 
       <div className="flex min-h-0 flex-1">
+        {pendingFileEdit ? (
+          <DiffView
+            proposal={pendingFileEdit}
+            onResolved={() => setPendingFileEdit(null)}
+          />
+        ) : (
+          <>
         {folderPath && explorerOpen && (
           <div className="flex w-[250px] shrink-0 flex-col border-r border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)]">
             <div className="px-4 pt-3 pb-2 font-[family-name:var(--login-font-mono)] text-[10.5px] tracking-wide text-[var(--ide-text-muted)] uppercase">
@@ -1254,7 +1397,7 @@ export default function IdePage() {
                   })}
                 </div>
               )}
-              <div className="min-h-0 flex-1">
+              <div ref={editorContainerRef} className="min-h-0 flex-1">
                 {!activePath && (
                   <div className="flex h-full items-center justify-center text-[13px] text-[var(--ide-text-muted)]">
                     Select a file to edit it.
@@ -1276,7 +1419,7 @@ export default function IdePage() {
                         [activeFile.path]: { ...prev[activeFile.path], content: value ?? "", dirty: true },
                       }))
                     }
-                    options={{ minimap: { enabled: false }, fontSize: 13 }}
+                    options={{ minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
                   />
                 )}
               </div>
@@ -1287,21 +1430,18 @@ export default function IdePage() {
               className="shrink-0 overflow-hidden border-t border-[var(--ide-border)] bg-[var(--ide-bg-panel)] transition-[height] duration-[180ms] ease-[cubic-bezier(.4,0,.2,1)]"
             >
               <TerminalPanel
+                ref={terminalPanelRef}
                 bottomTab={bottomTab}
                 onBottomTabChange={setBottomTab}
                 onClose={() => setPanelOpen(false)}
-                onNewTerminal={startShell}
                 transcript={transcript}
                 mode={terminalMode}
                 onModeChange={setTerminalMode}
                 chatValue={chatValue}
                 onChatChange={setChatValue}
                 onChatSubmit={submitChat}
-                shellValue={shellValue}
-                onShellChange={setShellValue}
-                onShellSubmit={submitShell}
-                shellRunning={shellRunning}
-                onStartShell={startShell}
+                send={send}
+                folderOpen={!!folderPath}
               />
             </div>
             {!panelOpen && (
@@ -1349,6 +1489,8 @@ export default function IdePage() {
             )}
           </div>
         )}
+          </>
+        )}
       </div>
 
       <div className="flex h-6 shrink-0 items-center justify-between bg-gradient-to-r from-[var(--login-accent)] to-[#3fc2b0] px-2.5 font-[family-name:var(--login-font-mono)] text-[11px] font-medium text-[var(--ide-bg)]">
@@ -1387,7 +1529,7 @@ export default function IdePage() {
         }}
         onOpenFile={openFile}
         actions={[
-          { id: "new-terminal", label: "New Terminal", shortcut: "Ctrl+Shift+`", run: startShell },
+          { id: "new-terminal", label: "New Terminal", shortcut: "Ctrl+Shift+`", run: openTerminalTab },
         ]}
       />
 

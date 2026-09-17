@@ -88,7 +88,7 @@ func TestIntegration_ResultHandler_OwnershipAndRealResolve(t *testing.T) {
 	dispatchDone := make(chan struct{})
 	go func() {
 		defer close(dispatchDone)
-		_, _ = Dispatch(context.Background(), c, hub, rm.ID, "shell_input", "echo hi\n", 5*time.Second)
+		_, _ = Dispatch(context.Background(), c, hub, rm.ID, "shell_input", "", "echo hi\n", 5*time.Second)
 	}()
 	var action realtime.Message
 	select {

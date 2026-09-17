@@ -960,6 +960,16 @@ func (f roomFraming) describe() string {
 	}
 	if len(f.otherAgentNames) > 0 {
 		fmt.Fprintf(&b, " Other agents also in this room: %s.", strings.Join(f.otherAgentNames, ", "))
+		// A real, cheap nudge toward considering delegation at all — not a
+		// fix for advisory tool_choice's own reliability limitation (a
+		// model can still ignore this the same way it can ignore any
+		// other instruction), just priming: today nothing in this framing
+		// suggests splitting a task is ever an option, so a model has no
+		// reason to even consider mention_agent/request_handoff unless a
+		// human happens to ask for it by name. Deliberately conditional on
+		// there being real other agents to split with — dangling this
+		// suggestion in a single-agent room would just be noise.
+		b.WriteString(" If this task has enough scope that splitting it with another agent in this room would help, consider proposing that split rather than doing everything alone.")
 	} else {
 		b.WriteString(" You're currently the only agent in this room.")
 	}

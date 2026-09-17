@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/companionrelay"
 	"github.com/chibuike-kt/harmonia/internal/handoff"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
@@ -103,7 +104,7 @@ func TestIntegration_ApproveHandler_ExecutesRealHandoffAndAutoAccepts(t *testing
 		t.Fatalf("seed proposal: %v", err)
 	}
 
-	h := proposals.ApproveHandler(rooms, beginner, realtime.NewHub())
+	h := proposals.ApproveHandler(rooms, beginner, realtime.NewHub(), companionrelay.NewCoordinator())
 
 	doApprove := func(caller user.User, id string) *httptest.ResponseRecorder {
 		req := httptest.NewRequestWithContext(user.NewContext(ctx, caller), http.MethodPost, "/v1/action_proposals/"+id+"/approve", nil)
@@ -212,7 +213,7 @@ func TestIntegration_ApproveHandler_Ownership(t *testing.T) {
 		t.Fatalf("seed proposal: %v", err)
 	}
 
-	h := proposals.ApproveHandler(rooms, beginner, realtime.NewHub())
+	h := proposals.ApproveHandler(rooms, beginner, realtime.NewHub(), companionrelay.NewCoordinator())
 
 	do := func(caller user.User, id string) *httptest.ResponseRecorder {
 		req := httptest.NewRequestWithContext(user.NewContext(ctx, caller), http.MethodPost, "/v1/action_proposals/"+id+"/approve", nil)
@@ -268,7 +269,7 @@ func TestIntegration_ApproveHandler_AlreadyResolved(t *testing.T) {
 		t.Fatalf("seed proposal: %v", err)
 	}
 
-	approve := proposals.ApproveHandler(rooms, beginner, realtime.NewHub())
+	approve := proposals.ApproveHandler(rooms, beginner, realtime.NewHub(), companionrelay.NewCoordinator())
 	reject := proposals.RejectHandler(rooms, beginner, realtime.NewHub())
 
 	do := func(h http.HandlerFunc) *httptest.ResponseRecorder {

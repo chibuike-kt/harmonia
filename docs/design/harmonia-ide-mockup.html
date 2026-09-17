@@ -134,6 +134,47 @@
   .empty-action-keys kbd { font-family: var(--font-mono); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px; padding: 2px 7px; font-size: 10.5px; color: var(--text-muted); }
   .demo-switch { position: fixed; bottom: 30px; right: 12px; z-index: 200; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 8px; font-size: 10.5px; color: var(--text-muted); cursor: pointer; }
   .demo-switch-2 { position: fixed; bottom: 60px; right: 12px; z-index: 200; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 8px; font-size: 10.5px; color: var(--text-muted); cursor: pointer; }
+  .demo-switch-3 { position: fixed; bottom: 90px; right: 12px; z-index: 200; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; padding: 4px 8px; font-size: 10.5px; color: var(--text-muted); cursor: pointer; }
+
+  /* ---------- Follow mode ---------- */
+  .presence-avatar.followable { cursor: pointer; }
+  .following-pill { display: none; align-items: center; gap: 6px; background: var(--accent-dim); border: 1px solid rgba(76,211,194,.35); color: var(--accent); font-size: 11px; padding: 3px 10px 3px 8px; border-radius: 999px; margin-left: 8px; }
+  .following-pill.on { display: flex; }
+  .following-pill button { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; display: flex; opacity: .7; }
+  .following-pill button:hover { opacity: 1; }
+  .jump-flash { animation: jumpFlash 1s ease-out; }
+  @keyframes jumpFlash { 0% { background: rgba(76,211,194,.35); } 100% { background: transparent; } }
+
+  /* ---------- Pending-approval diff view (presence-gone fallback) ---------- */
+  .approval-banner { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: rgba(232,163,61,.08); border-bottom: 1px solid rgba(232,163,61,.25); flex-shrink: 0; }
+  .approval-banner-text { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); }
+  .approval-banner-text svg { color: #E8A33D; flex-shrink: 0; }
+  .approval-banner-actions { display: flex; gap: 8px; }
+  .approval-btn { font-size: 11.5px; font-weight: 500; padding: 5px 12px; border-radius: 6px; cursor: pointer; border: none; }
+  .approval-btn.accept-all { background: var(--accent); color: #0A0C11; }
+  .approval-btn.reject-all { background: var(--surface-2); color: var(--text-secondary); border: 1px solid var(--border-strong); }
+
+  .diff-pane { flex: 1; display: flex; overflow: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; }
+  .diff-lines { flex: 1; padding: 12px 0; }
+  .diff-line { display: flex; align-items: center; }
+  .diff-line.removed { background: rgba(240,112,91,.08); }
+  .diff-line.added { background: rgba(76,211,194,.08); }
+  .diff-marker { width: 20px; text-align: center; color: var(--text-muted); flex-shrink: 0; user-select: none; }
+  .diff-line.removed .diff-marker { color: #F0705B; }
+  .diff-line.added .diff-marker { color: var(--accent); }
+  .diff-line-no { width: 40px; text-align: right; padding-right: 14px; color: var(--text-muted); user-select: none; flex-shrink: 0; opacity: .55; }
+  .diff-content { white-space: pre; color: var(--text-secondary); }
+  .diff-line.removed .diff-content { color: #F0705B; opacity: .85; text-decoration: line-through; text-decoration-color: rgba(240,112,91,.4); }
+  .diff-line.added .diff-content { color: var(--text); }
+  .diff-hunk-controls { display: flex; align-items: center; gap: 4px; padding: 3px 10px; margin: 6px 0; }
+  .diff-hunk-btn { display: flex; align-items: center; gap: 4px; font-size: 10.5px; padding: 2px 8px; border-radius: 5px; cursor: pointer; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-secondary); }
+  .diff-hunk-btn.accept:hover { border-color: var(--accent); color: var(--accent); }
+  .diff-hunk-btn.reject:hover { border-color: #F0705B; color: #F0705B; }
+
+  .diff-ruler { width: 12px; flex-shrink: 0; background: var(--bg-sidebar); border-left: 1px solid var(--border); position: relative; }
+  .diff-ruler-tick { position: absolute; left: 2px; width: 8px; height: 3px; border-radius: 1px; }
+  .diff-ruler-tick.added { background: var(--accent); }
+  .diff-ruler-tick.removed { background: #F0705B; }
 
   /* ---------- Live agent presence in the editor ---------- */
   .line-content { position: relative; }
@@ -214,8 +255,13 @@
     <div class="cmdk-hint" id="cmdkHintBtn"><kbd>Ctrl</kbd><kbd>K</kbd> Command palette</div>
     <div class="presence-avatars">
       <div class="presence-avatar" title="Kingsley">KC</div>
-      <div class="presence-avatar active" title="ChatGPT — active">
+      <div class="presence-avatar active followable" id="agentAvatar" title="ChatGPT — active, click to follow">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M15.68 8.18c0-.58-.05-1.13-.15-1.67H8v3.17h4.3c-.19 1-.75 1.85-1.6 2.42v2h2.59c1.51-1.4 2.39-3.45 2.39-5.92z"/><path d="M8 16c2.16 0 3.97-.72 5.29-1.94l-2.59-2c-.72.48-1.63.77-2.7.77-2.08 0-3.84-1.4-4.47-3.29H.86v2.07C2.17 14.2 4.89 16 8 16z"/><path d="M3.53 9.54c-.16-.48-.25-.99-.25-1.54s.09-1.06.25-1.54V4.39H.86A7.97 7.97 0 000 8c0 1.29.31 2.51.86 3.61l2.67-2.07z"/><path d="M8 3.18c1.17 0 2.23.4 3.06 1.19l2.3-2.3C11.96.9 10.15.14 8 .14 4.89.14 2.17 1.94.86 4.39l2.67 2.07C4.16 4.58 5.92 3.18 8 3.18z"/></svg>
+      </div>
+      <div class="following-pill" id="followingPill">
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z"/><circle cx="8" cy="8" r="2"/></svg>
+        Following ChatGPT
+        <button id="stopFollowing" title="Stop following"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
       </div>
     </div>
   </div>
@@ -345,6 +391,45 @@
       </div>
     </div>
   </div>
+
+  <div class="editor-area" id="approvalView" style="display:none;">
+    <div class="approval-banner">
+      <div class="approval-banner-text">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 1.5l5 2v4c0 3.5-2.2 5.8-5 7-2.8-1.2-5-3.5-5-7v-4l5-2z"/></svg>
+        ChatGPT proposed changes to <b>animations.css</b> while no one was watching — review before they're applied.
+      </div>
+      <div class="approval-banner-actions">
+        <button class="approval-btn reject-all">Reject all</button>
+        <button class="approval-btn accept-all">Accept all</button>
+      </div>
+    </div>
+    <div class="diff-pane no-scrollbar">
+      <div class="diff-lines">
+        <div class="diff-line"><span class="diff-marker"></span><span class="diff-line-no">15</span><span class="diff-content">  0%   { opacity: 1; box-shadow: 0 0 0 0 rgba(74,222,128,.4); }</span></div>
+        <div class="diff-line removed"><span class="diff-marker">−</span><span class="diff-line-no">16</span><span class="diff-content">  50%  { opacity: .6; box-shadow: 0 0 0 4px rgba(74,222,128,0); }</span></div>
+        <div class="diff-line added"><span class="diff-marker">+</span><span class="diff-line-no">16</span><span class="diff-content">  50%  { opacity: .6; box-shadow: 0 0 0 4px rgba(74,222,128,0); will-change: opacity; }</span></div>
+        <div class="diff-hunk-controls">
+          <div class="diff-hunk-btn accept">✓ Accept hunk</div>
+          <div class="diff-hunk-btn reject">✕ Reject hunk</div>
+        </div>
+        <div class="diff-line"><span class="diff-marker"></span><span class="diff-line-no">17</span><span class="diff-content">}</span></div>
+        <div class="diff-line"><span class="diff-marker"></span><span class="diff-line-no">18</span><span class="diff-content"></span></div>
+        <div class="diff-line removed"><span class="diff-marker">−</span><span class="diff-line-no">19</span><span class="diff-content">.avail__dot { box-shadow: 0 0 12px rgba(74,222,128,.5); }</span></div>
+        <div class="diff-line added"><span class="diff-marker">+</span><span class="diff-line-no">19</span><span class="diff-content">.avail__dot { box-shadow: 0 0 6px rgba(74,222,128,.5); }</span></div>
+        <div class="diff-hunk-controls">
+          <div class="diff-hunk-btn accept">✓ Accept hunk</div>
+          <div class="diff-hunk-btn reject">✕ Reject hunk</div>
+        </div>
+        <div class="diff-line"><span class="diff-marker"></span><span class="diff-line-no">20</span><span class="diff-content"></span></div>
+      </div>
+      <div class="diff-ruler">
+        <div class="diff-ruler-tick removed" style="top:24px;"></div>
+        <div class="diff-ruler-tick added" style="top:41px;"></div>
+        <div class="diff-ruler-tick removed" style="top:126px;"></div>
+        <div class="diff-ruler-tick added" style="top:143px;"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="statusbar">
@@ -386,6 +471,7 @@
 
 <div class="demo-switch" id="demoSwitch">mockup only: toggle empty state</div>
 <div class="demo-switch-2" id="demoSwitch2">mockup only: toggle agent live-editing</div>
+<div class="demo-switch-3" id="demoSwitch3">mockup only: toggle pending-approval diff</div>
 
 <script>
   function drawOrb(canvas, dotCount, radius, dotSize) {
@@ -424,6 +510,44 @@
     document.getElementById('treeLiveDot').style.display = nowShowing ? 'none' : 'block';
   });
 
+  // Follow mode — click the active agent's avatar to auto-track its
+  // cursor. In the real app this drives continuous viewport scroll;
+  // here it demonstrates the interaction with a one-time jump + flash.
+  let following = false;
+  document.getElementById('agentAvatar').addEventListener('click', () => {
+    following = !following;
+    document.getElementById('followingPill').classList.toggle('on', following);
+    if (following) {
+      const liveLine = document.getElementById('liveLine4');
+      if (liveLine.style.display !== 'none') {
+        liveLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        liveLine.classList.add('jump-flash');
+        setTimeout(() => liveLine.classList.remove('jump-flash'), 1000);
+      }
+    }
+  });
+  document.getElementById('stopFollowing').addEventListener('click', (e) => {
+    e.stopPropagation();
+    following = false;
+    document.getElementById('followingPill').classList.remove('on');
+  });
+
+  // Pending-approval diff view — the presence-gone fallback.
+  const approvalView = document.getElementById('approvalView');
+  document.getElementById('demoSwitch3').addEventListener('click', () => {
+    const showingApproval = approvalView.style.display !== 'none';
+    approvalView.style.display = showingApproval ? 'none' : 'flex';
+    populatedView.style.display = showingApproval ? 'flex' : 'none';
+    explorerPanel.style.display = showingApproval ? 'flex' : 'none';
+    emptyView.style.display = 'none';
+  });
+  document.querySelectorAll('.diff-hunk-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      this.closest('.diff-hunk-controls').style.opacity = '.35';
+      this.closest('.diff-hunk-controls').style.pointerEvents = 'none';
+    });
+  });
+
   const populatedView = document.getElementById('populatedView');
   const emptyView = document.getElementById('emptyView');
   const explorerPanel = document.getElementById('explorerPanel');
@@ -432,6 +556,7 @@
     emptyView.style.display = showingEmpty ? 'none' : 'flex';
     populatedView.style.display = showingEmpty ? 'flex' : 'none';
     explorerPanel.style.display = showingEmpty ? 'flex' : 'none';
+    approvalView.style.display = 'none';
   });
 
   const menuItems = document.querySelectorAll('.menu-item');

@@ -81,7 +81,7 @@ func (c *Coordinator) PendingCount() int {
 // action's entry from the pending map before returning, so a
 // caller that gives up never leaves this Coordinator waiting on a result
 // that will now never be read.
-func Dispatch(ctx context.Context, c *Coordinator, hub realtime.Publisher, roomID uuid.UUID, actionType, data string, timeout time.Duration) (Result, error) {
+func Dispatch(ctx context.Context, c *Coordinator, hub realtime.Publisher, roomID uuid.UUID, actionType, path, data string, timeout time.Duration) (Result, error) {
 	actionID := uuid.New()
 	resultCh := make(chan Result, 1)
 
@@ -99,6 +99,7 @@ func Dispatch(ctx context.Context, c *Coordinator, hub realtime.Publisher, roomI
 		ID:     actionID,
 		RoomID: roomID,
 		Type:   actionType,
+		Path:   path,
 		Data:   data,
 		Actor:  "agent",
 	}))

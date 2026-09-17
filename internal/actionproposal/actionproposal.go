@@ -31,10 +31,15 @@ const (
 type ActionType string
 
 const (
-	// ActionRequestHandoff is the only action_type the database's own
-	// CHECK constraint allows today (migrations/0011_multi_agent_dynamics
-	// .up.sql) — create_task never reaches this table at all.
+	// ActionRequestHandoff is ADR-006 batch C's original proposal kind.
+	// create_task never reaches this table at all — it executes
+	// immediately, per that same ADR.
 	ActionRequestHandoff ActionType = "request_handoff"
+	// ActionProposeFileEdit is the IDE design overhaul's presence-gone
+	// fallback (migrations/0017_propose_file_edit): an agent's file-edit
+	// tool, when no human is currently present to watch a direct write
+	// happen, queues a reviewable diff here instead — see fileedit.go.
+	ActionProposeFileEdit ActionType = "propose_file_edit"
 )
 
 // Event types recorded to the audit trail for each proposal
