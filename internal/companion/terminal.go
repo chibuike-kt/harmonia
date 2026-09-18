@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"os"
 	"regexp"
 	"sync"
 
@@ -55,8 +56,17 @@ func (s *session) createTerminal(cols, rows int) {
 	root := s.rootDir
 	s.mu.Unlock()
 	if root == "" {
-		s.sendError("create terminal: no folder is open")
-		return
+		// A terminal is genuinely useful before any project is open — git
+		// clone something, look around, run a command before deciding
+		// what to open. Falls back to the real user home directory, the
+		// same starting point a fresh terminal window on this machine
+		// would use, rather than refusing outright.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			s.sendError("create terminal: %v", err)
+			return
+		}
+		root = home
 	}
 	if cols <= 0 {
 		cols = defaultTerminalCols
@@ -167,7 +177,17 @@ func (s *session) narrateTerminal(id, text string) {
 		s.sendError("terminal narrate: no such terminal %q", id)
 		return
 	}
-	s.send(serverMessage{Type: "terminal_output", TerminalID: id, Data: "\r\n" + text + "\r\n"})
+	// A full blank line before every narration line, not just a single
+	// \r\n — real readability fix, found live: narration ran visually
+	// flush against whatever real output preceded it (a shell prompt, a
+	// command's own output), with only ANSI color carrying the
+	// distinction between "the shell said this" and "an agent said
+	// this." A real blank line is a much stronger, color-independent
+	// separator; the single trailing \r\n is enough after, since
+	// whatever comes next (a real prompt reappearing, or another
+	// narration line, which now always leads with its own blank line)
+	// supplies its own separation.
+	s.send(serverMessage{Type: "terminal_output", TerminalID: id, Data: "\r\n\r\n" + text + "\r\n"})
 }
 
 func (s *session) stopAllTerminals() {

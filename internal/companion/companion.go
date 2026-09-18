@@ -80,24 +80,32 @@ var upgrader = websocket.Upgrader{
 type clientMessage struct {
 	Type          string `json:"type"`
 	Path          string `json:"path,omitempty"`
+	NewPath       string `json:"new_path,omitempty"`
 	ContentBase64 string `json:"content_base64,omitempty"`
 	Data          string `json:"data,omitempty"`
 	Command       string `json:"command,omitempty"`
+	Query         string `json:"query,omitempty"`
 	TerminalID    string `json:"terminal_id,omitempty"`
 	Cols          int    `json:"cols,omitempty"`
 	Rows          int    `json:"rows,omitempty"`
 }
 
 type serverMessage struct {
-	Type          string     `json:"type"`
-	Path          string     `json:"path,omitempty"`
-	Entries       []DirEntry `json:"entries,omitempty"`
-	ContentBase64 string     `json:"content_base64,omitempty"`
-	Data          string     `json:"data,omitempty"`
-	ExitCode      *int       `json:"exit_code,omitempty"`
-	Message       string     `json:"message,omitempty"`
-	TerminalID    string     `json:"terminal_id,omitempty"`
-	Cwd           string     `json:"cwd,omitempty"`
+	Type          string          `json:"type"`
+	Path          string          `json:"path,omitempty"`
+	NewPath       string          `json:"new_path,omitempty"`
+	Entries       []DirEntry      `json:"entries,omitempty"`
+	ContentBase64 string          `json:"content_base64,omitempty"`
+	Data          string          `json:"data,omitempty"`
+	ExitCode      *int            `json:"exit_code,omitempty"`
+	Message       string          `json:"message,omitempty"`
+	TerminalID    string          `json:"terminal_id,omitempty"`
+	Cwd           string          `json:"cwd,omitempty"`
+	GitBranch     string          `json:"git_branch,omitempty"`
+	GitFiles      []GitFileStatus `json:"git_files,omitempty"`
+	GitRepo       bool            `json:"git_repo,omitempty"`
+	SearchResults []SearchMatch   `json:"search_results,omitempty"`
+	SearchQuery   string          `json:"search_query,omitempty"`
 }
 
 type DirEntry struct {
@@ -211,6 +219,24 @@ func (s *session) handle(msg clientMessage) {
 		s.readFile(msg.Path)
 	case "write_file":
 		s.writeFile(msg.Path, msg.ContentBase64)
+	case "create_file":
+		s.createFile(msg.Path)
+	case "create_folder":
+		s.createFolder(msg.Path)
+	case "delete_path":
+		s.deletePath(msg.Path)
+	case "rename_path":
+		s.renamePath(msg.Path, msg.NewPath)
+	case "git_status":
+		s.gitStatus()
+	case "git_stage":
+		s.gitStage(msg.Path)
+	case "git_unstage":
+		s.gitUnstage(msg.Path)
+	case "git_commit":
+		s.gitCommit(msg.Data)
+	case "search_text":
+		s.searchText(msg.Query)
 	case "create_terminal":
 		s.createTerminal(msg.Cols, msg.Rows)
 	case "terminal_input":
@@ -271,10 +297,21 @@ func (s *session) listDir(rel string) {
 		s.sendError("list dir: %v", err)
 		return
 	}
+	if err := s.sendDirListing(rel, dir); err != nil {
+		s.sendError("list dir: %v", err)
+	}
+}
+
+// sendDirListing is listDir's own real work, factored out so
+// create/delete/rename below can push a fresh listing for whatever
+// directory they just changed — the exact same real dir_listing message
+// the frontend's file tree already knows how to apply, so a create,
+// delete, or rename shows up there with no new client-side message type
+// to handle.
+func (s *session) sendDirListing(rel, dir string) error {
 	items, err := os.ReadDir(dir)
 	if err != nil {
-		s.sendError("list dir: %v", err)
-		return
+		return err
 	}
 	entries := make([]DirEntry, 0, len(items))
 	for _, it := range items {
@@ -285,6 +322,130 @@ func (s *session) listDir(rel string) {
 		})
 	}
 	s.send(serverMessage{Type: "dir_listing", Path: rel, Entries: entries})
+	return nil
+}
+
+// refreshDir best-effort re-sends a directory's listing after a real
+// create/delete/rename — silent on failure (the parent might no longer
+// exist at all, e.g. after deleting the last entry of an already-removed
+// directory), since the operation's own real success or failure was
+// already reported to the human via its own serverMessage/sendError.
+func (s *session) refreshDir(rel string) {
+	dir, err := s.resolvePath(rel)
+	if err != nil {
+		return
+	}
+	_ = s.sendDirListing(rel, dir)
+}
+
+// parentRel returns rel's own parent directory, in the same "/"-joined,
+// root-relative shape every path in this protocol already uses — "" for
+// a top-level entry, meaning the open folder's own root listing.
+func parentRel(rel string) string {
+	rel = strings.TrimSuffix(filepath.ToSlash(rel), "/")
+	idx := strings.LastIndex(rel, "/")
+	if idx < 0 {
+		return ""
+	}
+	return rel[:idx]
+}
+
+// createFile makes a real, empty file at rel — real O_EXCL so this can
+// never silently truncate something already there; New File in the
+// Explorer's own real right-click menu is this call's one real caller.
+func (s *session) createFile(rel string) {
+	full, err := s.resolvePath(rel)
+	if err != nil {
+		s.sendError("create file: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		s.sendError("create file: %v", err)
+		return
+	}
+	f, err := os.OpenFile(full, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		s.sendError("create file: %v", err)
+		return
+	}
+	_ = f.Close()
+	s.send(serverMessage{Type: "path_created", Path: rel})
+	s.refreshDir(parentRel(rel))
+}
+
+// createFolder makes a real directory at rel, including any missing
+// real parent directories — New Folder's one real caller.
+func (s *session) createFolder(rel string) {
+	full, err := s.resolvePath(rel)
+	if err != nil {
+		s.sendError("create folder: %v", err)
+		return
+	}
+	if _, err := os.Stat(full); err == nil {
+		s.sendError("create folder: %q already exists", rel)
+		return
+	}
+	if err := os.MkdirAll(full, 0o755); err != nil {
+		s.sendError("create folder: %v", err)
+		return
+	}
+	s.send(serverMessage{Type: "path_created", Path: rel})
+	s.refreshDir(parentRel(rel))
+}
+
+// deletePath removes a real file or, recursively, a real directory — the
+// Explorer's own real right-click Delete. Refuses to delete the open
+// folder's own root ("" resolves to rootDir itself, and root can never
+// legitimately be one of its own listing's entries, so a real rel here
+// is always something a human explicitly chose in the tree).
+func (s *session) deletePath(rel string) {
+	if rel == "" {
+		s.sendError("delete: cannot delete the open folder itself")
+		return
+	}
+	full, err := s.resolvePath(rel)
+	if err != nil {
+		s.sendError("delete: %v", err)
+		return
+	}
+	if err := os.RemoveAll(full); err != nil {
+		s.sendError("delete: %v", err)
+		return
+	}
+	s.send(serverMessage{Type: "path_deleted", Path: rel})
+	s.refreshDir(parentRel(rel))
+}
+
+// renamePath moves rel to newRel, both still real, verified-inside-root
+// paths — the Explorer's own real right-click Rename (a rename to a
+// path in the same directory) and, generally, a real move to a different
+// one. Refuses to silently overwrite an existing real file or folder at
+// the destination.
+func (s *session) renamePath(rel, newRel string) {
+	full, err := s.resolvePath(rel)
+	if err != nil {
+		s.sendError("rename: %v", err)
+		return
+	}
+	newFull, err := s.resolvePath(newRel)
+	if err != nil {
+		s.sendError("rename: %v", err)
+		return
+	}
+	if _, err := os.Stat(newFull); err == nil {
+		s.sendError("rename: %q already exists", newRel)
+		return
+	}
+	if err := os.Rename(full, newFull); err != nil {
+		s.sendError("rename: %v", err)
+		return
+	}
+	s.send(serverMessage{Type: "path_renamed", Path: rel, NewPath: newRel})
+	oldParent, newParent := parentRel(rel), parentRel(newRel)
+	s.refreshDir(oldParent)
+	if newParent != oldParent {
+		s.refreshDir(newParent)
+	}
 }
 
 func (s *session) readFile(rel string) {

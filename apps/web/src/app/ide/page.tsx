@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type * as monacoEditor from "monaco-editor";
 import { OrbMark } from "@/components/OrbMark";
+import { Tooltip } from "@/components/Tooltip";
 import { apiFetch } from "@/lib/api";
 import {
   findRecentFolder,
@@ -13,9 +14,23 @@ import {
   type RecentFolder,
 } from "@/lib/ideRecents";
 import { ReconnectingEventSource } from "@/lib/sseReconnect";
+import { useResizable } from "@/lib/useResizable";
+import {
+  EDITOR_THEMES,
+  loadStoredEditorTheme,
+  registerEditorTheme,
+  storeEditorTheme,
+} from "@/lib/editorThemes";
 import { MenuBar, type PresenceAgent } from "@/components/ide/MenuBar";
+import { type AddedAgent } from "@/components/AddAgentMenu";
+import { readFileAsBase64 } from "@/components/Composer";
 import { CommandPalette } from "@/components/ide/CommandPalette";
 import { DiffView, type FileEditProposal } from "@/components/ide/DiffView";
+import { ActivityBar, type SidebarView } from "@/components/ide/ActivityBar";
+import { ExplorerPanel, FileGlyph, type DirEntry } from "@/components/ide/ExplorerPanel";
+import { SearchPanel, type SearchMatch } from "@/components/ide/SearchPanel";
+import { SourceControlPanel, type GitStatusState } from "@/components/ide/SourceControlPanel";
+import { ThemePicker } from "@/components/ide/ThemePicker";
 import {
   TerminalPanel,
   type AgentSessionState,
@@ -25,8 +40,7 @@ import {
   type TerminalPanelHandle,
   type TranscriptEntry,
 } from "@/components/ide/TerminalPanel";
-import { ChevronRightIcon, CloseIcon } from "@/components/icons";
-import { fileIconUrl, folderIconUrl } from "@/lib/fileIcons";
+import { CloseIcon } from "@/components/icons";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
@@ -37,15 +51,10 @@ const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ),
 });
 
-interface DirEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-}
-
 interface ServerMessage {
   type: string;
   path?: string;
+  new_path?: string;
   entries?: DirEntry[];
   content_base64?: string;
   data?: string;
@@ -53,6 +62,11 @@ interface ServerMessage {
   message?: string;
   terminal_id?: string;
   cwd?: string;
+  git_repo?: boolean;
+  git_branch?: string;
+  git_files?: { path: string; staged: string; worktree: string }[];
+  search_results?: SearchMatch[];
+  search_query?: string;
 }
 
 interface OpenFile {
@@ -80,6 +94,7 @@ interface ChatMessageDTO {
   sender_kind: "human" | "agent";
   agent_id?: string;
   content: string;
+  mentioned_agent_ids?: string[];
 }
 
 interface RealtimeMessage {
@@ -178,28 +193,6 @@ function languageForPath(path: string): string {
   return map[ext] ?? "plaintext";
 }
 
-// Real, specific file-extension icons — material-icon-theme's own real
-// icon set and real extension/filename mapping (see lib/fileIcons.ts's
-// own doc comment for sourcing), not the earlier coarse 4-color-bucket
-// approximation. A folder's open/closed state genuinely changes which
-// real icon renders (many real themes, including this one, ship a
-// distinct "expanded" variant for common folder names).
-function FileGlyph({
-  isDir,
-  name,
-  expanded,
-}: {
-  isDir: boolean;
-  name: string;
-  expanded?: boolean;
-}) {
-  const src = isDir ? folderIconUrl(name, !!expanded) : fileIconUrl(name);
-  // A real static SVG asset from public/file-icons/, not a data URL or
-  // remote fetch — next/image's optimizer adds nothing here.
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img src={src} alt="" width={16} height={16} className="shrink-0" />;
-}
-
 function humanInitialsFor(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -263,6 +256,20 @@ export default function IdePage() {
     "disconnected" | "connecting" | "connected" | "error"
   >("disconnected");
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  // Real gap found live: a list_dir/git_status request that runs
+  // automatically in the background (on folder-open, on switching to
+  // Source Control) has nothing to do with any conversation, yet its
+  // raw companion error string ("list dir: no folder is open") was
+  // landing straight in the Chat transcript, interleaved with real
+  // messages it had zero connection to. This is where those two error
+  // kinds go instead — the status bar, companion connectivity's own
+  // real home, visible regardless of which panel is open (unlike the
+  // empty-state screen connectionError also feeds, which unmounts the
+  // moment a folder is open). Cleared the moment the same kind of
+  // request next succeeds.
+  const [backgroundNotice, setBackgroundNotice] = useState<string | null>(
+    null,
+  );
   const [consentState, setConsentState] = useState<ConsentState>("checking");
 
   const [folderPath, setFolderPath] = useState<string | null>(null);
@@ -275,6 +282,26 @@ export default function IdePage() {
   const [autoSave, setAutoSave] = useState(false);
 
   const [explorerOpen, setExplorerOpen] = useState(true);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("explorer");
+  // Real drag-to-resize, the exact same mechanism Harmonia's own main
+  // Sidebar already uses (see useResizable's own doc comment) — the
+  // Explorer's own right-edge handle grows the panel when dragged right
+  // (normal), the Terminal's own top-edge handle grows it when dragged
+  // up, i.e. a *smaller* clientY (reverse).
+  const explorerResize = useResizable({ axis: "x", initial: 250, min: 170, max: 520 });
+  const terminalResize = useResizable({
+    axis: "y",
+    initial: 320,
+    min: 120,
+    max: 720,
+    direction: "reverse",
+  });
+  const [gitStatus, setGitStatus] = useState<GitStatusState | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
+  const [searching, setSearching] = useState(false);
+  const pendingRevealLineRef = useRef<{ path: string; line: number } | null>(null);
+  const [editorTheme, setEditorTheme] = useState(loadStoredEditorTheme);
   const [panelOpen, setPanelOpen] = useState(true);
   const [bottomTab, setBottomTab] = useState<BottomTab>("terminal");
   const [terminalMode, setTerminalMode] = useState<TerminalMode>("shell");
@@ -386,6 +413,7 @@ export default function IdePage() {
             ...prev,
             [msg.path ?? ""]: msg.entries ?? [],
           }));
+          setBackgroundNotice(null);
           break;
         case "file_content": {
           if (!msg.path) break;
@@ -410,6 +438,17 @@ export default function IdePage() {
               loading: false,
             },
           }));
+          // A Search result's own real "jump to this line" — the file
+          // just finished loading, so this is the first real point
+          // Monaco has real content to reveal a position in. A short
+          // defer lets this same render actually mount the editor for a
+          // tab that was just opened, before revealPositionInCenter is
+          // called against it.
+          if (pendingRevealLineRef.current?.path === msg.path) {
+            const line = pendingRevealLineRef.current.line;
+            pendingRevealLineRef.current = null;
+            setTimeout(() => editorRef.current?.revealLineInCenter(line), 50);
+          }
           break;
         }
         case "file_written": {
@@ -429,13 +468,85 @@ export default function IdePage() {
           }
           break;
         }
+        // New File/New Folder's own real ack — the parent directory's
+        // own fresh dir_listing (handled by the "dir_listing" case
+        // above) is what actually updates the tree; there's nothing
+        // else real to do with this one beyond letting it arrive.
+        case "path_created":
+          break;
+        // Delete: close any real open tab for the deleted path, or —
+        // for a deleted folder — every real open tab nested under it.
+        case "path_deleted": {
+          const deletedPath = msg.path ?? "";
+          const isDeleted = (p: string) => p === deletedPath || p.startsWith(`${deletedPath}/`);
+          setOpenTabs((prev) => prev.filter((p) => !isDeleted(p)));
+          setOpenFiles((prev) => {
+            const next = { ...prev };
+            for (const p of Object.keys(next)) if (isDeleted(p)) delete next[p];
+            return next;
+          });
+          setActivePath((prev) => (prev && isDeleted(prev) ? null : prev));
+          break;
+        }
+        // Rename: a real open tab for the renamed path moves with it,
+        // in place — the human keeps editing the same real file under
+        // its new name rather than losing the tab.
+        case "path_renamed": {
+          const oldPath = msg.path ?? "";
+          const newPath = msg.new_path ?? "";
+          setOpenTabs((prev) => prev.map((p) => (p === oldPath ? newPath : p)));
+          setOpenFiles((prev) => {
+            const file = prev[oldPath];
+            if (!file) return prev;
+            const next = { ...prev };
+            delete next[oldPath];
+            next[newPath] = { ...file, path: newPath };
+            return next;
+          });
+          setActivePath((prev) => (prev === oldPath ? newPath : prev));
+          break;
+        }
+        case "git_status":
+          setGitStatus({
+            repo: !!msg.git_repo,
+            branch: msg.git_branch ?? "",
+            files: msg.git_files ?? [],
+          });
+          setBackgroundNotice(null);
+          break;
+        case "search_results":
+          setSearching(false);
+          setSearchResults(msg.search_results ?? []);
+          break;
         case "error": {
           const message = msg.message ?? "Unknown companion error.";
           setConnectionError(message);
-          // A companion error while a folder is open must land somewhere
-          // a human will actually see it — the empty-state screen (the
-          // only other place connectionError renders) is gone by then.
-          setTranscript((prev) => [...prev, { kind: "error", id: nextEntryId(), text: message }]);
+          // list_dir and git_status run automatically in the background
+          // (folder-open, switching to Source Control) — a failure there
+          // has nothing to do with any conversation and never belongs in
+          // the Chat transcript (found live: exactly this, interleaved
+          // with real chat messages it was never actually connected to).
+          // Every other companion error (create/rename/delete/write, a
+          // relay action, a terminal op) still belongs here — those
+          // really can be the direct result of something the human (or
+          // an agent acting through them) just did in this room.
+          const backgroundKinds = ["list dir:", "git status:"];
+          const backgroundPrefix = backgroundKinds.find((p) =>
+            message.startsWith(p),
+          );
+          if (backgroundPrefix) {
+            const detail = message.slice(backgroundPrefix.length).trim();
+            const subject =
+              backgroundPrefix === "list dir:"
+                ? "refresh the file list"
+                : "refresh git status";
+            setBackgroundNotice(`Couldn't ${subject} — ${detail}.`);
+          } else {
+            setTranscript((prev) => [
+              ...prev,
+              { kind: "error", id: nextEntryId(), text: message },
+            ]);
+          }
           const pending = pendingRelayAction.current;
           if (pending) {
             pendingRelayAction.current = null;
@@ -671,10 +782,44 @@ export default function IdePage() {
       });
   }, [roomId]);
 
+  // AddAgentMenu's own real POST already registered the agent — this
+  // just reflects that same real result into this page's own room-agent
+  // list, the exact same "trust the mutation's own response, don't
+  // re-fetch" pattern the room chat page already uses for the identical
+  // component.
+  const onAgentAdded = useCallback((agent: AddedAgent) => {
+    const asRoomAgent: RoomAgentDTO = {
+      id: agent.id,
+      name: agent.name,
+      provider: agent.provider,
+      status: "available",
+    };
+    roomAgentsRef.current = [...roomAgentsRef.current, asRoomAgent];
+    setRoomAgents((prev) => [...prev, asRoomAgent]);
+  }, []);
+
   const chatEntryFromMessage = useCallback(
     (m: ChatMessageDTO): TranscriptEntry => {
       if (m.sender_kind === "human") {
-        return { kind: "chat", id: m.id, sender: "human", content: m.content };
+        // Real gap found live: an unaddressed message in a 2+-agent room
+        // (ADR-004's implicit single-agent addressing only ever covers
+        // exactly one agent; ADR-007's autonomous pickup is opt-in and
+        // usually off) gets no reply and no error — CreateHandler simply
+        // takes neither branch. Confirmed by pulling this exact room's
+        // real message history: three consecutive human messages with
+        // zero agent replies, and no failure message either. Mirrors
+        // MessageRow.tsx's own real "unaddressed" flag from the main
+        // Rooms page rather than inventing a second convention.
+        const unaddressed =
+          roomAgents.length >= 2 &&
+          (m.mentioned_agent_ids?.length ?? 0) === 0;
+        return {
+          kind: "chat",
+          id: m.id,
+          sender: "human",
+          content: m.content,
+          unaddressed,
+        };
       }
       const agent = roomAgents.find((a) => a.id === m.agent_id);
       return {
@@ -1131,6 +1276,87 @@ export default function IdePage() {
     [send],
   );
 
+  // ---------- Explorer: New File/Folder, Rename, Delete ----------
+  // Every real mutation goes straight over the companion WebSocket;
+  // internal/companion's own real dir_listing refresh (handled by the
+  // "dir_listing" case above) is what actually updates the tree.
+
+  const createFile = useCallback(
+    (parentDir: string, name: string) => {
+      send({ type: "create_file", path: parentDir ? `${parentDir}/${name}` : name });
+    },
+    [send],
+  );
+  const createFolder = useCallback(
+    (parentDir: string, name: string) => {
+      send({ type: "create_folder", path: parentDir ? `${parentDir}/${name}` : name });
+    },
+    [send],
+  );
+  const renamePath = useCallback(
+    (oldPath: string, newName: string) => {
+      const slash = oldPath.lastIndexOf("/");
+      const parent = slash < 0 ? "" : oldPath.slice(0, slash);
+      const newPath = parent ? `${parent}/${newName}` : newName;
+      send({ type: "rename_path", path: oldPath, new_path: newPath });
+    },
+    [send],
+  );
+  const deletePath = useCallback(
+    (path: string) => {
+      send({ type: "delete_path", path });
+    },
+    [send],
+  );
+
+  // ---------- Search ----------
+
+  const runSearch = useCallback(() => {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    send({ type: "search_text", query: searchQuery });
+  }, [searchQuery, send]);
+
+  const onOpenSearchMatch = useCallback(
+    (path: string, line: number) => {
+      const existing = openFiles[path];
+      if (existing && !existing.loading) {
+        setTimeout(() => editorRef.current?.revealLineInCenter(line), 50);
+      } else {
+        pendingRevealLineRef.current = { path, line };
+      }
+      openFile(path);
+    },
+    [openFiles, openFile],
+  );
+
+  // ---------- Source Control ----------
+
+  const refreshGitStatus = useCallback(() => send({ type: "git_status" }), [send]);
+  const stageFile = useCallback((path: string) => send({ type: "git_stage", path }), [send]);
+  const unstageFile = useCallback((path: string) => send({ type: "git_unstage", path }), [send]);
+  const commitStaged = useCallback(
+    (message: string) => send({ type: "git_commit", data: message }),
+    [send],
+  );
+
+  // Real git status on open, and every time the Source Control view is
+  // actually switched to — a human expects it to reflect what's real
+  // right now, not whatever it happened to be the last time this view
+  // was open.
+  useEffect(() => {
+    if (folderPath && sidebarView === "scm") refreshGitStatus();
+  }, [folderPath, sidebarView, refreshGitStatus]);
+
+  // Real editor theme choice, persisted across reloads — see
+  // lib/editorThemes.ts's own doc comment for why "One Dark Pro" itself
+  // isn't among the real options offered.
+  const changeEditorTheme = useCallback((id: string) => {
+    setEditorTheme(id);
+    storeEditorTheme(id);
+    if (monacoNsRef.current) void registerEditorTheme(monacoNsRef.current, id);
+  }, []);
+
   // Follow mode — continuous, not a one-shot jump: this effect re-runs
   // on every real cursor update for the followed agent (agentCursors is
   // a dependency), so the viewport keeps tracking as the agent keeps
@@ -1251,21 +1477,73 @@ export default function IdePage() {
     async (content: string) => {
       if (!roomId || !content.trim()) return;
       let mentionedAgentIds: string[] = [];
-      let body = content;
-      const mentionMatch = /^@(\S+)\s+([\s\S]*)$/.exec(content);
-      if (mentionMatch) {
-        const target = roomAgents.find(
-          (a) => a.name.toLowerCase() === mentionMatch[1].toLowerCase(),
+      // Real bug found live: this composer is a plain textarea with no
+      // @-picker (unlike Composer.tsx's own structured one, ADR-006
+      // batch A — ADR-004), so addressing an agent here means matching
+      // free-typed text against this room's real agent names. A
+      // single-token regex (`@(\S+)`) can never match a real name that
+      // contains a space — and "ChatGPT 2" is exactly such a name, a
+      // real one this project's own AddAgentMenu can produce. Worse, a
+      // naive single-token match on "@ChatGPT 2 ..." would silently
+      // misaddress the message to "ChatGPT" (a genuine prefix of the
+      // name actually typed) instead of leaving it unmatched — a wrong
+      // agent replying is worse than none replying. Matching against
+      // the room's own real roster, longest name first, fixes both: a
+      // multi-word name now resolves at all, and a shorter name can
+      // never steal a match that belongs to a longer one it's a prefix
+      // of.
+      //
+      // The matched "@Name" is deliberately left in place rather than
+      // stripped out of what actually gets sent as content: the human
+      // typed it as a visible tag showing who this was addressed to,
+      // and the transcript should keep showing that, not silently swap
+      // it out for a plain-looking line with no visible connection to
+      // the reply that follows it (mentioned_agent_ids already carries
+      // the real addressing to the backend independent of this text).
+      if (content.startsWith("@")) {
+        const rest = content.slice(1);
+        const byNameLength = [...roomAgents].sort(
+          (a, b) => b.name.length - a.name.length,
         );
-        if (target) {
-          mentionedAgentIds = [target.id];
-          body = mentionMatch[2];
+        for (const a of byNameLength) {
+          if (!rest.toLowerCase().startsWith(a.name.toLowerCase())) continue;
+          const after = rest.slice(a.name.length);
+          if (after === "" || /^\s/.test(after)) {
+            mentionedAgentIds = [a.id];
+            break;
+          }
         }
+      }
+      // Real fix for a real gap found live: Chat mode was posting through
+      // this exact same room-message endpoint with nothing IDE-specific
+      // added, so an agent asked about "this open file" had genuinely no
+      // way to see it. The currently active tab's own live buffer (not a
+      // re-read off disk — what the human actually sees, dirty edits
+      // included) rides along as a real attachment, reusing ADR-008 batch
+      // A's own content-injection path exactly as Composer.tsx's file
+      // attach does — no second plumbing. Scoped to the one active tab:
+      // with several files open, only the focused one is "this open
+      // file" for an unscoped question.
+      const active = activePath ? openFiles[activePath] : null;
+      let attachment: { content: string; filename: string; mime_type: string } | undefined;
+      if (active) {
+        const contentBase64 = await readFileAsBase64(
+          new Blob([active.content], { type: "text/plain" }),
+        );
+        attachment = {
+          content: contentBase64,
+          filename: active.path,
+          mime_type: "text/plain",
+        };
       }
       try {
         await apiFetch(`/v1/rooms/${roomId}/messages`, {
           method: "POST",
-          body: { content: body, mentioned_agent_ids: mentionedAgentIds },
+          body: {
+            content,
+            mentioned_agent_ids: mentionedAgentIds,
+            ...(attachment ? { attachment } : {}),
+          },
         });
       } catch {
         // The real chat message failed to send — the transcript simply
@@ -1274,7 +1552,7 @@ export default function IdePage() {
         // this far without throwing.
       }
     },
-    [roomId, roomAgents],
+    [roomId, roomAgents, activePath, openFiles],
   );
 
   const submitChat = () => {
@@ -1415,52 +1693,7 @@ export default function IdePage() {
     return () => observer.disconnect();
   }, [activePath]);
 
-  const renderEntries = (dirPath: string, depth: number) => {
-    const entries = dirListings[dirPath];
-    if (!entries) return null;
-    return entries.map((entry) => {
-      const isLive = Object.values(agentCursors).some((c) => c.path === entry.path);
-      if (entry.is_dir) {
-        const isOpen = expanded.has(entry.path);
-        return (
-          <div key={entry.path}>
-            <button
-              type="button"
-              onClick={() => toggleDir(entry.path)}
-              style={{ paddingLeft: `${depth * 14 + 4}px` }}
-              className="flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[13px] text-[var(--ide-text-secondary)] hover:bg-[var(--ide-surface)]"
-            >
-              <span className={`flex shrink-0 transition-transform ${isOpen ? "rotate-90" : ""}`}>
-                <ChevronRightIcon />
-              </span>
-              <FileGlyph isDir name={entry.name} expanded={isOpen} />
-              <span className="truncate">{entry.name}</span>
-            </button>
-            {isOpen && renderEntries(entry.path, depth + 1)}
-          </div>
-        );
-      }
-      return (
-        <button
-          key={entry.path}
-          type="button"
-          onClick={() => openFile(entry.path)}
-          style={{ paddingLeft: `${depth * 14 + 8}px` }}
-          className={`flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[13px] ${
-            activePath === entry.path
-              ? "bg-[rgba(76,211,194,.1)] text-[var(--ide-text)]"
-              : "text-[var(--ide-text-secondary)] hover:bg-[var(--ide-surface)]"
-          }`}
-        >
-          <FileGlyph isDir={false} name={entry.name} />
-          <span className="truncate">{entry.name}</span>
-          {isLive && (
-            <span className="ml-auto h-[5px] w-[5px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_4px_rgba(76,211,194,.28)]" />
-          )}
-        </button>
-      );
-    });
-  };
+  const isPathLive = (path: string) => Object.values(agentCursors).some((c) => c.path === path);
 
   if (!COMPANION_URL) {
     return (
@@ -1569,6 +1802,8 @@ export default function IdePage() {
         canRedo={!!activePath}
         humanInitials={humanInitialsFor(humanName)}
         agents={presenceAgents}
+        roomId={roomId}
+        onAgentAdded={onAgentAdded}
         followingAgentId={effectivelyFollowing ? followingAgentId : null}
         onToggleFollow={toggleFollow}
         onStopFollowing={stopFollowing}
@@ -1598,176 +1833,249 @@ export default function IdePage() {
           <DiffView proposal={pendingFileEdit} onResolved={() => setPendingFileEdit(null)} />
         ) : (
           <>
-            {folderPath && explorerOpen && (
-              <div className="flex w-[250px] shrink-0 flex-col border-r border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)]">
-                <div className="px-4 pt-3 pb-2 font-[family-name:var(--login-font-mono)] text-[10.5px] tracking-wide text-[var(--ide-text-muted)] uppercase">
-                  {folderPath
-                    .replace(/[/\\]+$/, "")
-                    .split(/[/\\]/)
-                    .pop()}
+            <ActivityBar active={sidebarView} onChange={setSidebarView} />
+
+            {explorerOpen && (
+              <div
+                className="relative flex shrink-0 flex-col border-r border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)]"
+                style={{ width: explorerResize.size }}
+              >
+                <div className="min-h-0 flex-1">
+                  {sidebarView === "explorer" &&
+                    (folderPath ? (
+                      <ExplorerPanel
+                        folderName={
+                          folderPath
+                            .replace(/[/\\]+$/, "")
+                            .split(/[/\\]/)
+                            .pop() ?? folderPath
+                        }
+                        dirListings={dirListings}
+                        expanded={expanded}
+                        activePath={activePath}
+                        isLive={isPathLive}
+                        onToggleDir={toggleDir}
+                        onOpenFile={openFile}
+                        onCreateFile={createFile}
+                        onCreateFolder={createFolder}
+                        onRename={renamePath}
+                        onDelete={deletePath}
+                      />
+                    ) : (
+                      <p className="px-4 py-4 text-center text-[12.5px] text-[var(--ide-text-muted)]">
+                        Open a folder to see its files.
+                      </p>
+                    ))}
+                  {sidebarView === "search" &&
+                    (folderPath ? (
+                      <SearchPanel
+                        query={searchQuery}
+                        onQueryChange={setSearchQuery}
+                        onSearch={runSearch}
+                        results={searchResults}
+                        searching={searching}
+                        onOpenMatch={onOpenSearchMatch}
+                      />
+                    ) : (
+                      <p className="px-4 py-4 text-center text-[12.5px] text-[var(--ide-text-muted)]">
+                        Open a folder to search it.
+                      </p>
+                    ))}
+                  {sidebarView === "scm" &&
+                    (folderPath ? (
+                      <SourceControlPanel
+                        status={gitStatus}
+                        onStage={stageFile}
+                        onUnstage={unstageFile}
+                        onCommit={commitStaged}
+                        onRefresh={refreshGitStatus}
+                      />
+                    ) : (
+                      <p className="px-4 py-4 text-center text-[12.5px] text-[var(--ide-text-muted)]">
+                        Open a folder to see its source control status.
+                      </p>
+                    ))}
                 </div>
-                <div className="no-scrollbar flex-1 overflow-y-auto px-2 py-0.5">
-                  {renderEntries("", 0)}
-                </div>
+                <div
+                  onMouseDown={explorerResize.onHandleMouseDown}
+                  className="absolute top-0 -right-[3px] z-30 h-full w-1.5 cursor-col-resize hover:bg-[var(--login-accent)]/35"
+                />
               </div>
             )}
 
-            {folderPath ? (
-              <div className="flex min-w-0 flex-1 flex-col bg-[var(--ide-bg-panel)]">
-                <div className="flex min-h-0 flex-1 flex-col">
-                  {openTabs.length > 0 && (
-                    <div className="no-scrollbar flex shrink-0 items-stretch overflow-x-auto border-b border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] pt-1.5">
-                      {openTabs.map((path) => {
-                        const f = openFiles[path];
-                        const isLive = Object.values(agentCursors).some((c) => c.path === path);
-                        return (
-                          <button
-                            key={path}
-                            type="button"
-                            onClick={() => setActivePath(path)}
-                            className={`group flex shrink-0 items-center gap-2 rounded-t-lg px-3 py-2 text-[12.5px] ${
-                              activePath === path
-                                ? "bg-[var(--ide-bg-panel)] text-[var(--ide-text)] shadow-[inset_0_2px_0_var(--login-accent)]"
-                                : "text-[var(--ide-text-secondary)] hover:text-[var(--ide-text-secondary)]"
-                            }`}
-                          >
-                            <FileGlyph isDir={false} name={path.split("/").pop() ?? path} />
-                            <span className="max-w-[160px] truncate">
-                              {path.split("/").pop()}
-                              {f?.dirty ? " ●" : ""}
-                            </span>
-                            {isLive && (
-                              <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_5px_rgba(76,211,194,.28)]" />
-                            )}
-                            <span
-                              role="button"
-                              tabIndex={-1}
-                              onClick={(e) => closeTab(path, e)}
-                              className="rounded text-[var(--ide-text-muted)] opacity-0 hover:bg-[var(--ide-border-strong)] hover:text-[var(--ide-text)] group-hover:opacity-100"
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="flex min-h-0 flex-1 flex-col">
+                {folderPath ? (
+                  <>
+                    {openTabs.length > 0 && (
+                      <div className="no-scrollbar flex shrink-0 items-stretch overflow-x-auto border-b border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] pt-1.5">
+                        {openTabs.map((path) => {
+                          const f = openFiles[path];
+                          const isLive = isPathLive(path);
+                          return (
+                            <button
+                              key={path}
+                              type="button"
+                              onClick={() => setActivePath(path)}
+                              className={`group flex shrink-0 items-center gap-2 rounded-t-lg px-3 py-2 text-[12.5px] ${
+                                activePath === path
+                                  ? "bg-[var(--ide-bg-panel)] text-[var(--ide-text)] shadow-[inset_0_2px_0_var(--login-accent)]"
+                                  : "text-[var(--ide-text-secondary)] hover:text-[var(--ide-text-secondary)]"
+                              }`}
                             >
-                              <CloseIcon />
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div ref={editorContainerRef} className="min-h-0 flex-1">
-                    {!activePath && (
-                      <div className="flex h-full items-center justify-center text-[13px] text-[var(--ide-text-muted)]">
-                        Select a file to edit it.
+                              <FileGlyph isDir={false} name={path.split("/").pop() ?? path} />
+                              <span className="max-w-[160px] truncate">
+                                {path.split("/").pop()}
+                                {f?.dirty ? " ●" : ""}
+                              </span>
+                              {isLive && (
+                                <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_5px_rgba(76,211,194,.28)]" />
+                              )}
+                              <span
+                                role="button"
+                                tabIndex={-1}
+                                onClick={(e) => closeTab(path, e)}
+                                className="rounded text-[var(--ide-text-muted)] opacity-0 hover:bg-[var(--ide-border-strong)] hover:text-[var(--ide-text)] group-hover:opacity-100"
+                              >
+                                <CloseIcon />
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
-                    {activeFile && !activeFile.loading && (
-                      <MonacoEditor
-                        path={activeFile.path}
-                        language={languageForPath(activeFile.path)}
-                        value={activeFile.content}
-                        theme="vs-dark"
-                        onMount={(editor, monacoNs) => {
-                          editorRef.current = editor;
-                          monacoNsRef.current = monacoNs as unknown as typeof monacoEditor;
-                        }}
-                        onChange={(value) =>
-                          setOpenFiles((prev) => ({
-                            ...prev,
-                            [activeFile.path]: {
-                              ...prev[activeFile.path],
-                              content: value ?? "",
-                              dirty: true,
-                            },
-                          }))
-                        }
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 13,
-                          automaticLayout: true,
-                        }}
+                    <div ref={editorContainerRef} className="min-h-0 flex-1">
+                      {!activePath && (
+                        <div className="flex h-full items-center justify-center text-[13px] text-[var(--ide-text-muted)]">
+                          Select a file to edit it.
+                        </div>
+                      )}
+                      {activeFile && !activeFile.loading && (
+                        <MonacoEditor
+                          path={activeFile.path}
+                          language={languageForPath(activeFile.path)}
+                          value={activeFile.content}
+                          theme={
+                            EDITOR_THEMES.find((t) => t.id === editorTheme)?.monacoName ?? "vs-dark"
+                          }
+                          onMount={(editor, monacoNs) => {
+                            editorRef.current = editor;
+                            const ns = monacoNs as unknown as typeof monacoEditor;
+                            monacoNsRef.current = ns;
+                            void registerEditorTheme(ns, editorTheme);
+                          }}
+                          onChange={(value) =>
+                            setOpenFiles((prev) => ({
+                              ...prev,
+                              [activeFile.path]: {
+                                ...prev[activeFile.path],
+                                content: value ?? "",
+                                dirty: true,
+                              },
+                            }))
+                          }
+                          options={{
+                            minimap: { enabled: false },
+                            fontSize: 13,
+                            automaticLayout: true,
+                          }}
+                        />
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-1 flex-col items-center justify-center gap-7">
+                    <OrbMark size={120} dotCount={11} radius={42} dotSize={3.2} />
+                    <div className="flex min-w-[280px] flex-col gap-0.5">
+                      <EmptyStateAction
+                        label="Open Folder"
+                        keys={["Ctrl", "O"]}
+                        onRun={() => send({ type: "pick_folder" })}
                       />
+                      <EmptyStateAction
+                        label="Open Recent"
+                        keys={["Ctrl", "R"]}
+                        onRun={() => setRecentOpen(true)}
+                      />
+                      <EmptyStateAction
+                        label="Command Palette"
+                        keys={["Ctrl", "K"]}
+                        onRun={() => setCmdkOpen(true)}
+                      />
+                      <EmptyStateAction
+                        label="Switch to Rooms"
+                        keys={["Ctrl", "1"]}
+                        onRun={() => router.push("/dashboard")}
+                      />
+                    </div>
+                    {(connectionError || connectionState === "error") && (
+                      <p className="max-w-[360px] text-center text-[13px] text-[var(--room-warn)]">
+                        {connectionError ?? "Couldn't reach the companion process — is it running?"}
+                      </p>
                     )}
                   </div>
-                </div>
+                )}
+              </div>
 
+              {/* The terminal is structurally independent of whether a
+                  folder is open — a real terminal is useful before any
+                  project exists, and internal/companion's own
+                  createTerminal now falls back to the real user home
+                  directory when no folder is open. */}
+              {panelOpen && (
                 <div
-                  style={{ height: panelOpen ? 320 : 0 }}
-                  className="shrink-0 overflow-hidden border-t border-[var(--ide-border)] bg-[var(--ide-bg-panel)] transition-[height] duration-[180ms] ease-[cubic-bezier(.4,0,.2,1)]"
+                  onMouseDown={terminalResize.onHandleMouseDown}
+                  className="h-1 shrink-0 cursor-row-resize hover:bg-[var(--login-accent)]/35"
+                />
+              )}
+              <div
+                style={{ height: panelOpen ? terminalResize.size : 0 }}
+                className="shrink-0 overflow-hidden border-t border-[var(--ide-border)] bg-[var(--ide-bg-panel)] transition-[height] duration-[180ms] ease-[cubic-bezier(.4,0,.2,1)]"
+              >
+                <TerminalPanel
+                  ref={terminalPanelRef}
+                  bottomTab={bottomTab}
+                  onBottomTabChange={setBottomTab}
+                  onClose={() => setPanelOpen(false)}
+                  transcript={transcript}
+                  mode={terminalMode}
+                  onModeChange={setTerminalMode}
+                  chatValue={chatValue}
+                  onChatChange={setChatValue}
+                  onChatSubmit={submitChat}
+                  send={send}
+                  folderOpen={!!folderPath}
+                  agentAgents={roomAgents.map((a) => ({
+                    id: a.id,
+                    name: a.name,
+                    provider: a.provider,
+                  }))}
+                  agentSession={agentSession}
+                  agentStartError={agentStartError}
+                  onStartAgentSession={startAgentSession}
+                  onStopAgentSession={stopAgentSession}
+                />
+              </div>
+              {!panelOpen && (
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen(true)}
+                  className="flex h-6 shrink-0 items-center gap-1.5 border-t border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] px-3 text-[11px] text-[var(--ide-text-muted)] hover:text-[var(--ide-text-secondary)]"
                 >
-                  <TerminalPanel
-                    ref={terminalPanelRef}
-                    bottomTab={bottomTab}
-                    onBottomTabChange={setBottomTab}
-                    onClose={() => setPanelOpen(false)}
-                    transcript={transcript}
-                    mode={terminalMode}
-                    onModeChange={setTerminalMode}
-                    chatValue={chatValue}
-                    onChatChange={setChatValue}
-                    onChatSubmit={submitChat}
-                    send={send}
-                    folderOpen={!!folderPath}
-                    agentAgents={roomAgents.map((a) => ({
-                      id: a.id,
-                      name: a.name,
-                      provider: a.provider,
-                    }))}
-                    agentSession={agentSession}
-                    agentStartError={agentStartError}
-                    onStartAgentSession={startAgentSession}
-                    onStopAgentSession={stopAgentSession}
-                  />
-                </div>
-                {!panelOpen && (
-                  <button
-                    type="button"
-                    onClick={() => setPanelOpen(true)}
-                    className="flex h-6 shrink-0 items-center gap-1.5 border-t border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] px-3 text-[11px] text-[var(--ide-text-muted)] hover:text-[var(--ide-text-secondary)]"
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.4"
                   >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.4"
-                    >
-                      <path d="M4 6l4 4 4-4" />
-                    </svg>
-                    Terminal (closed) — click or Ctrl+` to reopen
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="flex flex-1 flex-col items-center justify-center gap-7">
-                <OrbMark size={120} dotCount={11} radius={42} dotSize={3.2} />
-                <div className="flex min-w-[280px] flex-col gap-0.5">
-                  <EmptyStateAction
-                    label="Open Folder"
-                    keys={["Ctrl", "O"]}
-                    onRun={() => send({ type: "pick_folder" })}
-                  />
-                  <EmptyStateAction
-                    label="Open Recent"
-                    keys={["Ctrl", "R"]}
-                    onRun={() => setRecentOpen(true)}
-                  />
-                  <EmptyStateAction
-                    label="Command Palette"
-                    keys={["Ctrl", "K"]}
-                    onRun={() => setCmdkOpen(true)}
-                  />
-                  <EmptyStateAction
-                    label="Switch to Rooms"
-                    keys={["Ctrl", "1"]}
-                    onRun={() => router.push("/dashboard")}
-                  />
-                </div>
-                {(connectionError || connectionState === "error") && (
-                  <p className="max-w-[360px] text-center text-[13px] text-[var(--room-warn)]">
-                    {connectionError ?? "Couldn't reach the companion process — is it running?"}
-                  </p>
-                )}
-              </div>
-            )}
+                    <path d="M4 6l4 4 4-4" />
+                  </svg>
+                  Terminal (closed) — click or Ctrl+` to reopen
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -1786,10 +2094,22 @@ export default function IdePage() {
                   : "disconnected"}
             {folderPath ? ` — ${folderPath}` : ""}
           </span>
+          {backgroundNotice && (
+            <Tooltip label={backgroundNotice} side="top" wrap>
+              <span className="flex max-w-[280px] items-center gap-1 truncate font-semibold text-[#5c1a1a]">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#5c1a1a]" />
+                {backgroundNotice}
+              </span>
+            </Tooltip>
+          )}
         </div>
         <div className="flex items-center gap-3.5">
           <span>UTF-8</span>
           {activeFileName && <span>{languageForPath(activeFileName).toUpperCase()}</span>}
+          {/* A real, changeable editor theme — every real IDE has one;
+              see lib/editorThemes.ts's own doc comment for what's real
+              and licensed here. */}
+          <ThemePicker value={editorTheme} onChange={changeEditorTheme} />
         </div>
       </div>
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { OrbMark } from "@/components/OrbMark";
-import { FileIcon } from "@/components/icons";
+import { FileGlyph } from "./ExplorerPanel";
 
 export interface CommandPaletteFile {
   path: string;
@@ -63,7 +63,7 @@ export function CommandPalette({
 
   type Row =
     | { kind: "ask"; label: string; run: () => void }
-    | { kind: "file"; label: string; run: () => void }
+    | { kind: "file"; label: string; name: string; run: () => void }
     | { kind: "action"; label: string; shortcut?: string; run: () => void };
 
   const rows = useMemo<{ section: string; items: Row[] }[]>(() => {
@@ -95,6 +95,7 @@ export function CommandPalette({
         items: matchingFiles.slice(0, 8).map((f) => ({
           kind: "file",
           label: f.name,
+          name: f.name,
           run: () => onOpenFile(f.path),
         })),
       });
@@ -205,7 +206,7 @@ export function CommandPalette({
                     }`}
                   >
                     {item.kind === "file" ? (
-                      <FileIcon />
+                      <FileGlyph isDir={false} name={item.name} />
                     ) : (
                       <span className="inline-block w-[15px]" />
                     )}

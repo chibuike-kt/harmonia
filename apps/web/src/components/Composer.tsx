@@ -54,7 +54,7 @@ const MAX_HEIGHT = 160;
 // String.fromCharCode can throw "Maximum call stack size exceeded" well
 // under this composer's own 1 MB cap on some engines, a real footgun
 // for exactly the file sizes this feature targets.
-function readFileAsBase64(file: File): Promise<string> {
+export function readFileAsBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {

@@ -180,7 +180,7 @@ body {
 
 /*
  * IDE live agent presence (docs/design/harmonia-ide-mockup.html,
- * app/(shell)/ide/page.tsx) — a line an agent just wrote gets a brief
+ * app/ide/page.tsx) — a line an agent just wrote gets a brief
  * fading highlight so a recent real edit is visible without staying
  * permanently marked up, and a live cursor tag blinks the same way a
  * real text-cursor does. Both plain CSS animations for the same reason

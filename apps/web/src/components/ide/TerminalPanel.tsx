@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { OrbMark } from "@/components/OrbMark";
+import { Tooltip } from "@/components/Tooltip";
 import { PROVIDER_TAG_COLORS, DEFAULT_TAG_COLOR } from "@/components/providerLogos";
 import { Terminal, type TerminalHandle } from "@/components/ide/Terminal";
 
@@ -20,6 +21,13 @@ export type TranscriptEntry =
       agentName?: string;
       provider?: string;
       content: string;
+      /** True only for a human message sent into a 2+-agent room that
+       *  addressed no one — mirrors MessageRow.tsx's own real "Addressed
+       *  no one" convention from the main Rooms page (same reasoning:
+       *  correct, intentional silence per ADR-004/ADR-007, but silence
+       *  alone reads as broken rather than as a rule if nothing here
+       *  ever says so). */
+      unaddressed?: boolean;
     }
   | { kind: "error"; id: string; text: string };
 
@@ -130,15 +138,16 @@ function ToolbarIconButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      title={title}
-      onClick={onClick}
-      disabled={disabled}
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface-2)] hover:text-[var(--ide-text)] disabled:opacity-30 disabled:hover:bg-transparent"
-    >
-      {children}
-    </button>
+    <Tooltip label={title} side="top" align="end">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface-2)] hover:text-[var(--ide-text)] disabled:opacity-30 disabled:hover:bg-transparent"
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -686,13 +695,12 @@ export const TerminalPanel = forwardRef<
           </div>
 
           {mode === "shell" ? (
-            !folderOpen ? (
-              <div className="flex flex-1 items-center justify-center">
-                <p className="text-[12.5px] text-[var(--ide-text-muted)]">
-                  Open a folder to start a real terminal.
-                </p>
-              </div>
-            ) : terminals.length === 0 ? (
+            // Deliberately not gated on folderOpen — a real terminal is
+            // useful before any project is open (clone something, look
+            // around), and internal/companion's own createTerminal now
+            // falls back to the real user home directory when no folder
+            // is open rather than refusing outright.
+            terminals.length === 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center gap-2">
                 <p className="text-[12.5px] text-[var(--ide-text-muted)]">No terminal running.</p>
                 <button
@@ -772,21 +780,36 @@ export const TerminalPanel = forwardRef<
                 )}
                 {transcript.map((entry) =>
                   entry.kind === "chat" ? (
-                    <div key={entry.id} className="mb-[5px] flex items-start gap-2">
-                      {entry.sender === "human" ? (
-                        <HumanTag />
-                      ) : (
-                        <AgentTag name={entry.agentName ?? "agent"} provider={entry.provider} />
+                    <div key={entry.id} className="mb-[5px]">
+                      <div className="flex items-start gap-2">
+                        {entry.sender === "human" ? (
+                          <HumanTag />
+                        ) : (
+                          <AgentTag name={entry.agentName ?? "agent"} provider={entry.provider} />
+                        )}
+                        <span
+                          className={
+                            entry.sender === "human"
+                              ? "text-[var(--ide-text)]"
+                              : "leading-relaxed text-[var(--ide-text-secondary)]"
+                          }
+                        >
+                          {entry.content}
+                        </span>
+                      </div>
+                      {entry.unaddressed && (
+                        <div className="mt-0.5 pl-[42px]">
+                          <Tooltip
+                            label="This room has more than one agent — @mention one to have it reply"
+                            side="top"
+                            wrap
+                          >
+                            <span className="text-[11px] text-[var(--ide-text-muted)]">
+                              Addressed no one
+                            </span>
+                          </Tooltip>
+                        </div>
                       )}
-                      <span
-                        className={
-                          entry.sender === "human"
-                            ? "text-[var(--ide-text)]"
-                            : "leading-relaxed text-[var(--ide-text-secondary)]"
-                        }
-                      >
-                        {entry.content}
-                      </span>
                     </div>
                   ) : (
                     <div key={entry.id} className="mb-[5px] pl-5 whitespace-pre-wrap text-[var(--room-warn)]">

@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { OrbMark } from "@/components/OrbMark";
+import { Tooltip } from "@/components/Tooltip";
 import { AgentAvatarGlyph } from "@/components/providerLogos";
+import { AddAgentMenu, type AddedAgent } from "@/components/AddAgentMenu";
 
 export interface PresenceAgent {
   id: string;
@@ -75,6 +77,8 @@ export function MenuBar({
   canRedo,
   humanInitials,
   agents,
+  roomId,
+  onAgentAdded,
   onOpenFolder,
   onCloseFolder,
   onSave,
@@ -101,6 +105,11 @@ export function MenuBar({
   canRedo: boolean;
   humanInitials: string;
   agents: PresenceAgent[];
+  /** The IDE's own paired room (ADR-010) — null until it resolves, in
+   *  which case Add Agent simply doesn't render yet rather than pointing
+   *  at a room that doesn't exist. */
+  roomId: string | null;
+  onAgentAdded: (agent: AddedAgent) => void;
   followingAgentId: string | null;
   onToggleFollow: (agentId: string) => void;
   onStopFollowing: () => void;
@@ -335,37 +344,51 @@ export function MenuBar({
             the only signal for "currently active," so the two never
             collide (design overhaul point 7). */}
         <div className="flex items-center">
-          <div
-            title={humanInitials}
-            className="relative z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--ide-bg-menu)] bg-[var(--ide-surface-2)] text-[9.5px] font-semibold text-[var(--ide-text-secondary)] outline outline-1 outline-[var(--ide-border-strong)]"
-          >
-            {humanInitials}
-          </div>
+          <Tooltip label={humanInitials} side="bottom" align="end">
+            <div className="relative z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--ide-bg-menu)] bg-[var(--ide-surface-2)] text-[9.5px] font-semibold text-[var(--ide-text-secondary)] outline outline-1 outline-[var(--ide-border-strong)]">
+              {humanInitials}
+            </div>
+          </Tooltip>
           {agents.map((agent, i) => (
-            <button
+            <Tooltip
               key={agent.id}
-              type="button"
-              disabled={!agent.active}
-              title={
+              label={
                 agent.active
                   ? `${agent.name} — active, click to follow`
                   : agent.name
               }
-              onClick={() => agent.active && onToggleFollow(agent.id)}
-              style={{ marginLeft: -7, zIndex: 10 - (i + 1) }}
-              className={`relative flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--ide-bg-menu)] bg-[var(--ide-surface-2)] outline outline-1 ${
-                agent.active
-                  ? "cursor-pointer outline-[var(--login-accent)] shadow-[0_0_8px_rgba(76,211,194,.28)]"
-                  : "cursor-default outline-[var(--ide-border-strong)]"
-              } ${followingAgentId === agent.id ? "ring-2 ring-[var(--login-accent)] ring-offset-1 ring-offset-[var(--ide-bg-menu)]" : ""}`}
+              side="bottom"
+              align="end"
             >
-              <AgentAvatarGlyph
-                provider={agent.provider}
-                name={agent.name}
-                size={13}
-              />
-            </button>
+              <button
+                type="button"
+                disabled={!agent.active}
+                onClick={() => agent.active && onToggleFollow(agent.id)}
+                style={{ marginLeft: -7, zIndex: 10 - (i + 1) }}
+                className={`relative flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--ide-bg-menu)] bg-[var(--ide-surface-2)] outline outline-1 ${
+                  agent.active
+                    ? "cursor-pointer outline-[var(--login-accent)] shadow-[0_0_8px_rgba(76,211,194,.28)]"
+                    : "cursor-default outline-[var(--ide-border-strong)]"
+                } ${followingAgentId === agent.id ? "ring-2 ring-[var(--login-accent)] ring-offset-1 ring-offset-[var(--ide-bg-menu)]" : ""}`}
+              >
+                <AgentAvatarGlyph
+                  provider={agent.provider}
+                  name={agent.name}
+                  size={13}
+                />
+              </button>
+            </Tooltip>
           ))}
+          {roomId && (
+            // Real fix for a real gap: with the app's own Rooms sidebar
+            // gone from this page (point 1), the room header's own "+
+            // Add agent" — previously the only place to do this — isn't
+            // reachable from the IDE at all anymore. Same real component,
+            // same real POST, not a second mechanism.
+            <div style={{ marginLeft: -7, zIndex: 0 }}>
+              <AddAgentMenu roomId={roomId} onAdded={onAgentAdded} />
+            </div>
+          )}
         </div>
 
         {/* Follow mode's own visible indicator — never silent state; a
@@ -386,23 +409,24 @@ export function MenuBar({
             </svg>
             Following{" "}
             {agents.find((a) => a.id === followingAgentId)?.name ?? "agent"}
-            <button
-              type="button"
-              title="Stop following"
-              onClick={onStopFollowing}
-              className="flex items-center opacity-70 hover:opacity-100"
-            >
-              <svg
-                width="10"
-                height="10"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.6"
+            <Tooltip label="Stop following" side="bottom" align="end">
+              <button
+                type="button"
+                onClick={onStopFollowing}
+                className="flex items-center opacity-70 hover:opacity-100"
               >
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
-            </button>
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                >
+                  <path d="M4 4l8 8M12 4l-8 8" />
+                </svg>
+              </button>
+            </Tooltip>
           </div>
         )}
       </div>

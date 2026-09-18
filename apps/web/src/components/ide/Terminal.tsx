@@ -11,6 +11,7 @@ import {
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { Tooltip } from "@/components/Tooltip";
 import "@xterm/xterm/css/xterm.css";
 
 export interface TerminalHandle {
@@ -69,6 +70,7 @@ export const Terminal = forwardRef<
   }
 >(function Terminal({ onData, onResize }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -106,7 +108,17 @@ export const Terminal = forwardRef<
       cursorBlink: true,
       fontFamily:
         'var(--login-font-mono), ui-monospace, "SF Mono", Menlo, monospace',
-      fontSize: 13,
+      // 13.5/1.5/0.2 — a real readability fix, not a small tweak: xterm's
+      // own default lineHeight (1) packs every row edge-to-edge, which
+      // reads fine for a few lines of shell output but genuinely hurts
+      // once narration and command blocks start interleaving (this
+      // panel's own real, frequent case) — nothing to visually latch
+      // onto between entries except ANSI color, which most humans don't
+      // reliably parse as "new block starts here." The real fix is
+      // vertical breathing room on every line, not a color change.
+      fontSize: 13.5,
+      lineHeight: 1.5,
+      letterSpacing: 0.2,
       // Real, generous scrollback — "real scrollback" per this feature's
       // own requirement, not a small fixed buffer that drops old output.
       scrollback: 10000,
@@ -228,7 +240,17 @@ export const Terminal = forwardRef<
 
   useEffect(() => {
     if (!contextMenu) return;
-    const close = () => setContextMenu(null);
+    // A mousedown *inside* the menu (its own real Copy/Paste/Clear/
+    // Select All buttons) must not close it before the matching click
+    // fires — mousedown always fires before click, so closing
+    // unconditionally here removes the button from the DOM in between
+    // and the click that was supposed to run the action never lands.
+    // Found live while building the Explorer's own real context menu,
+    // which copied this exact pattern — same bug here, same fix.
+    const close = (e: Event) => {
+      if (contextMenuRef.current?.contains(e.target as Node)) return;
+      setContextMenu(null);
+    };
     window.addEventListener("mousedown", close);
     window.addEventListener("blur", close);
     return () => {
@@ -277,38 +299,42 @@ export const Terminal = forwardRef<
             placeholder="Find in scrollback…"
             className="w-40 bg-transparent font-[family-name:var(--login-font-mono)] text-[11.5px] text-[var(--ide-text)] outline-none placeholder:text-[var(--ide-text-muted)]"
           />
-          <button
-            type="button"
-            title="Previous match (Shift+Enter)"
-            onClick={() => runSearch("previous")}
-            className="flex h-5 w-5 items-center justify-center rounded text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface)] hover:text-[var(--ide-text)]"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            title="Next match (Enter)"
-            onClick={() => runSearch("next")}
-            className="flex h-5 w-5 items-center justify-center rounded text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface)] hover:text-[var(--ide-text)]"
-          >
-            ↓
-          </button>
-          <button
-            type="button"
-            title="Close (Esc)"
-            onClick={() => {
-              setSearchOpen(false);
-              termRef.current?.focus();
-            }}
-            className="flex h-5 w-5 items-center justify-center rounded text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface)] hover:text-[var(--ide-text)]"
-          >
-            ✕
-          </button>
+          <Tooltip label="Previous match (Shift+Enter)" side="top" align="end">
+            <button
+              type="button"
+              onClick={() => runSearch("previous")}
+              className="flex h-5 w-5 items-center justify-center rounded text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface)] hover:text-[var(--ide-text)]"
+            >
+              ↑
+            </button>
+          </Tooltip>
+          <Tooltip label="Next match (Enter)" side="top" align="end">
+            <button
+              type="button"
+              onClick={() => runSearch("next")}
+              className="flex h-5 w-5 items-center justify-center rounded text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface)] hover:text-[var(--ide-text)]"
+            >
+              ↓
+            </button>
+          </Tooltip>
+          <Tooltip label="Close (Esc)" side="top" align="end">
+            <button
+              type="button"
+              onClick={() => {
+                setSearchOpen(false);
+                termRef.current?.focus();
+              }}
+              className="flex h-5 w-5 items-center justify-center rounded text-[var(--ide-text-muted)] hover:bg-[var(--ide-surface)] hover:text-[var(--ide-text)]"
+            >
+              ✕
+            </button>
+          </Tooltip>
         </div>
       )}
 
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           style={{ left: contextMenu.x, top: contextMenu.y }}
           className="fixed z-50 min-w-[140px] rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface-2)] p-1 text-[12.5px] shadow-xl"
         >
