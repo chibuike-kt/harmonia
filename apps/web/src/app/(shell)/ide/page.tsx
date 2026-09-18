@@ -17,6 +17,8 @@ import { CommandPalette } from "@/components/ide/CommandPalette";
 import { DiffView, type FileEditProposal } from "@/components/ide/DiffView";
 import {
   TerminalPanel,
+  type AgentSessionState,
+  type AgentStartForm,
   type BottomTab,
   type TerminalMode,
   type TerminalPanelHandle,
@@ -104,6 +106,15 @@ interface RealtimeMessage {
     type: string;
     payload: Record<string, unknown>;
     sender: { agent_id?: string };
+  };
+  agent_loop_status?: {
+    session_id: string;
+    cycle: number;
+    max_cycles: number;
+    spend_usd: number;
+    dollar_cap_usd: number;
+    state: string;
+    message?: string;
   };
 }
 
@@ -282,6 +293,24 @@ export default function IdePage() {
     path?: string;
   } | null>(null);
 
+  // The one run_command companion action currently awaiting its real
+  // captured output (ADR-011's agent loop) — buffered separately from
+  // pendingRelayAction since its resolution comes from accumulating real
+  // terminal_output for its terminal, not from a single companion
+  // response message. terminalId is the loop's own dedicated terminal;
+  // marker is the unique echo this exact command's real output is
+  // captured up to.
+  const pendingRunCommand = useRef<{
+    roomId: string;
+    actionId: string;
+    terminalId: string;
+    marker: string;
+    buffer: string;
+  } | null>(null);
+
+  const [agentSession, setAgentSession] = useState<AgentSessionState | null>(null);
+  const [agentStartError, setAgentStartError] = useState<string | null>(null);
+
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [recentOpen, setRecentOpen] = useState(false);
   const [recents, setRecents] = useState<RecentFolder[]>([]);
@@ -350,8 +379,18 @@ export default function IdePage() {
       case "dir_listing":
         setDirListings((prev) => ({ ...prev, [msg.path ?? ""]: msg.entries ?? [] }));
         break;
-      case "file_content":
+      case "file_content": {
         if (!msg.path) break;
+        // ADR-011's read_file relay tool answers here too — a companion
+        // read triggered by the agent loop, not a human opening a tab, so
+        // it resolves the pending relay action instead of opening an
+        // editor tab for a file the human never asked to see.
+        const pendingRead = pendingRelayAction.current;
+        if (pendingRead && pendingRead.type === "read_file" && pendingRead.path === msg.path) {
+          pendingRelayAction.current = null;
+          postRelayResult(pendingRead.roomId, pendingRead.id, { output: base64ToText(msg.content_base64 ?? "") });
+          break;
+        }
         setOpenFiles((prev) => ({
           ...prev,
           [msg.path as string]: {
@@ -362,6 +401,7 @@ export default function IdePage() {
           },
         }));
         break;
+      }
       case "file_written": {
         if (!msg.path) break;
         setOpenFiles((prev) => {
@@ -390,13 +430,42 @@ export default function IdePage() {
         }
         break;
       }
-      default:
+      default: {
+        // ADR-011's create_terminal relay tool answers here — the loop's
+        // own dedicated terminal, adopted into TerminalPanel's own agent
+        // slot (never dispatch()'d as an ordinary terminal_created, which
+        // would otherwise hijack the human's own main/split shell pane).
+        if (msg.type === "terminal_created" && msg.terminal_id) {
+          const pendingCreate = pendingRelayAction.current;
+          if (pendingCreate && pendingCreate.type === "create_terminal") {
+            pendingRelayAction.current = null;
+            terminalPanelRef.current?.adoptAgentTerminal(msg.terminal_id);
+            postRelayResult(pendingCreate.roomId, pendingCreate.id, { output: msg.terminal_id });
+            break;
+          }
+        }
+        // ADR-011's run_command relay tool captures its real output here
+        // — every terminal_output chunk for the pending command's own
+        // terminal is buffered until its unique marker echo appears, the
+        // same real output a human watching the terminal sees live.
+        if (msg.type === "terminal_output" && msg.terminal_id) {
+          const pendingRun = pendingRunCommand.current;
+          if (pendingRun && pendingRun.terminalId === msg.terminal_id) {
+            pendingRun.buffer += msg.data ?? "";
+            const markerIdx = pendingRun.buffer.indexOf(pendingRun.marker);
+            if (markerIdx !== -1) {
+              pendingRunCommand.current = null;
+              postRelayResult(pendingRun.roomId, pendingRun.actionId, { output: pendingRun.buffer.slice(0, markerIdx) });
+            }
+          }
+        }
         // Every real terminal_* message (terminal_created, terminal_output,
         // terminal_cwd, terminal_exited) — TerminalPanel owns every real
         // terminal instance's own lifecycle; this page only owns the wire.
         if (msg.type.startsWith("terminal_")) {
           terminalPanelRef.current?.dispatch(msg);
         }
+      }
     }
   }, [send, postRelayResult]);
 
@@ -532,6 +601,8 @@ export default function IdePage() {
       setRoomAgents([]);
       setTranscript([]);
       setAgentCursors({});
+      setAgentSession(null);
+      setAgentStartError(null);
       return;
     }
     let cancelled = false;
@@ -704,6 +775,33 @@ export default function IdePage() {
       };
       if (action.type === "write_file" && action.path) {
         send({ type: "write_file", path: action.path, content_base64: action.data });
+      } else if (action.type === "read_file" && action.path) {
+        // ADR-011's agent loop reading a real project file — resolved in
+        // handleServerMessage's own "file_content" case above.
+        send({ type: "read_file", path: action.path });
+      } else if (action.type === "create_terminal") {
+        // ADR-011's agent loop opening its own dedicated real terminal —
+        // resolved in handleServerMessage's own terminal_created handling.
+        send({ type: "create_terminal" });
+      } else if (action.type === "terminal_narrate" && action.path) {
+        // Fire-and-forget: narrateTerminal (internal/companion) sends no
+        // real acknowledgment back, so this relay action resolves the
+        // instant the real narration line is sent, not on any later
+        // companion response.
+        send({ type: "terminal_narrate", terminal_id: action.path, data: action.data });
+        pendingRelayAction.current = null;
+        postRelayResult(roomId, action.id, { output: "narrated" });
+      } else if (action.type === "run_command" && action.path) {
+        // ADR-011's agent loop running a real shell command in its own
+        // dedicated terminal. There's no dedicated "command finished"
+        // companion message, so a unique marker is echoed right after the
+        // real command and handleServerMessage's own terminal_output
+        // handling above captures everything up to it as the real result
+        // — the same real output a human watching this terminal sees live.
+        const marker = `HARMONIA_CMD_DONE_${action.id}`;
+        pendingRunCommand.current = { roomId, actionId: action.id, terminalId: action.path, marker, buffer: "" };
+        pendingRelayAction.current = null;
+        send({ type: "terminal_input", terminal_id: action.path, data: `${action.data}\r\necho ${marker}\r\n` });
       } else {
         // A real, honest failure for any action type this relay doesn't
         // implement yet, rather than leaving the backend's Dispatch call
@@ -713,6 +811,30 @@ export default function IdePage() {
           err: `companion action type ${action.type} not implemented in this browser session`,
         });
       }
+    });
+
+    // ADR-011's sustained agent loop: a live status snapshot after every
+    // real cycle, published over this same room's existing live channel —
+    // Task is carried over from the session this tab itself started
+    // (POST .../agent_loop/start's own response), since the live payload
+    // itself only carries what changes cycle to cycle.
+    source.addEventListener("agent_loop_status", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+      const status = msg.agent_loop_status;
+      if (!status) return;
+      setAgentSession((prev) =>
+        prev && prev.sessionId === status.session_id
+          ? {
+              ...prev,
+              cycle: status.cycle,
+              maxCycles: status.max_cycles,
+              spendUsd: status.spend_usd,
+              dollarCapUsd: status.dollar_cap_usd,
+              state: status.state,
+              message: status.message,
+            }
+          : prev,
+      );
     });
 
     // The pending-approval diff view's own real trigger: an
@@ -1080,6 +1202,54 @@ export default function IdePage() {
     setChatValue("");
   };
 
+  // ---------- ADR-011: sustained agent-loop session ----------
+
+  const startAgentSession = useCallback(
+    async (form: AgentStartForm) => {
+      if (!roomId) return;
+      setAgentStartError(null);
+      try {
+        const res = await apiFetch<{
+          session_id: string;
+          task: string;
+          cycle: number;
+          max_cycles: number;
+          spend_usd: number;
+          dollar_cap_usd: number;
+          state: string;
+          message?: string;
+        }>(`/v1/rooms/${roomId}/agent_loop/start`, {
+          method: "POST",
+          body: {
+            agent_id: form.agentId,
+            task: form.task,
+            max_cycles: form.maxCycles,
+            dollar_cap_usd: form.dollarCapUsd,
+            wall_clock_seconds: form.wallClockSeconds,
+          },
+        });
+        setAgentSession({
+          sessionId: res.session_id,
+          task: res.task,
+          cycle: res.cycle,
+          maxCycles: res.max_cycles,
+          spendUsd: res.spend_usd,
+          dollarCapUsd: res.dollar_cap_usd,
+          state: res.state,
+          message: res.message,
+        });
+      } catch (err) {
+        setAgentStartError(err instanceof Error ? err.message : "Failed to start session.");
+      }
+    },
+    [roomId],
+  );
+
+  const stopAgentSession = useCallback(() => {
+    if (!roomId || !agentSession) return;
+    void apiFetch(`/v1/rooms/${roomId}/agent_loop/${agentSession.sessionId}/stop`, { method: "POST" }).catch(() => {});
+  }, [roomId, agentSession]);
+
   const openTerminalTab = useCallback(() => {
     setPanelOpen(true);
     setBottomTab("terminal");
@@ -1442,6 +1612,11 @@ export default function IdePage() {
                 onChatSubmit={submitChat}
                 send={send}
                 folderOpen={!!folderPath}
+                agentAgents={roomAgents.map((a) => ({ id: a.id, name: a.name, provider: a.provider }))}
+                agentSession={agentSession}
+                agentStartError={agentStartError}
+                onStartAgentSession={startAgentSession}
+                onStopAgentSession={stopAgentSession}
               />
             </div>
             {!panelOpen && (

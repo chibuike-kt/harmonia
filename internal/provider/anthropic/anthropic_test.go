@@ -85,6 +85,101 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 	}
 }
 
+// TestGenerate_ToolUseResponse_CapturesRealID proves a tool_use block's
+// own real id survives into provider.ToolCall.ID — the multi-turn
+// building block ADR-011's agent loop echoes back on a later assistant
+// message so a matching tool_result resolves against something the API
+// actually issued, not a client-invented value.
+func TestGenerate_ToolUseResponse_CapturesRealID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(messagesResponse{
+			Content: []contentBlock{
+				{Type: "tool_use", ID: "toolu_01ABC", Name: "read_file", Input: map[string]any{"path": "main.go"}},
+			},
+			Usage: usage{InputTokens: 5, OutputTokens: 2},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{apiKey: "test-key", model: defaultModel, baseURL: srv.URL, httpClient: srv.Client()}
+	resp, err := c.Generate(context.Background(), provider.GenerateRequest{
+		Messages: []provider.Message{{Role: "user", Content: "read main.go"}},
+		Tools:    []provider.ToolDef{{Name: "read_file", InputSchema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "toolu_01ABC" || resp.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("ToolCalls = %+v, want one call with ID toolu_01ABC", resp.ToolCalls)
+	}
+}
+
+// TestGenerate_MultiTurnToolRoundTrip proves the real second-turn wire
+// shape: an assistant message carrying ToolCalls becomes a real tool_use
+// content block, and a message with ToolCallID set becomes a real
+// tool_result block on a user-role message keyed by the same id — the
+// exact round trip ADR-011's sustained loop depends on to feed a tool's
+// result back to the model.
+func TestGenerate_MultiTurnToolRoundTrip(t *testing.T) {
+	var gotBody messagesRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(messagesResponse{
+			Content: []contentBlock{{Type: "text", Text: "done"}},
+			Usage:   usage{InputTokens: 1, OutputTokens: 1},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{apiKey: "test-key", model: defaultModel, baseURL: srv.URL, httpClient: srv.Client()}
+	_, err := c.Generate(context.Background(), provider.GenerateRequest{
+		Messages: []provider.Message{
+			{Role: "user", Content: "read main.go"},
+			{Role: "assistant", ToolCalls: []provider.ToolCall{
+				{ID: "toolu_01ABC", Name: "read_file", Input: map[string]any{"path": "main.go"}},
+			}},
+			{Role: "tool", ToolCallID: "toolu_01ABC", Content: "package main"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if len(gotBody.Messages) != 3 {
+		t.Fatalf("got %d messages, want 3", len(gotBody.Messages))
+	}
+
+	assistantMsg := gotBody.Messages[1]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("messages[1].Role = %q, want assistant", assistantMsg.Role)
+	}
+	assistantParts, ok := assistantMsg.Content.([]any)
+	if !ok || len(assistantParts) != 1 {
+		t.Fatalf("messages[1].Content = %#v, want one tool_use block", assistantMsg.Content)
+	}
+	toolUse, _ := assistantParts[0].(map[string]any)
+	if toolUse["type"] != "tool_use" || toolUse["id"] != "toolu_01ABC" || toolUse["name"] != "read_file" {
+		t.Fatalf("tool_use block = %+v, want type/id/name for toolu_01ABC/read_file", toolUse)
+	}
+
+	resultMsg := gotBody.Messages[2]
+	if resultMsg.Role != "user" {
+		t.Fatalf("messages[2].Role = %q, want user (Anthropic has no native tool role)", resultMsg.Role)
+	}
+	resultParts, ok := resultMsg.Content.([]any)
+	if !ok || len(resultParts) != 1 {
+		t.Fatalf("messages[2].Content = %#v, want one tool_result block", resultMsg.Content)
+	}
+	toolResult, _ := resultParts[0].(map[string]any)
+	if toolResult["type"] != "tool_result" || toolResult["tool_use_id"] != "toolu_01ABC" || toolResult["content"] != "package main" {
+		t.Fatalf("tool_result block = %+v, want type/tool_use_id/content for toolu_01ABC", toolResult)
+	}
+}
+
 // TestGenerate_WebSearchDisabled_ToolsUntouched proves that a call with
 // WebSearchEnabled false — every call before ADR-008 batch B, and the
 // overwhelming majority after it — sends exactly the tools array it

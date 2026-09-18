@@ -64,9 +64,18 @@ type message struct {
 // real image_url/file part alongside the message's own text. buildContent
 // below is the only place that decides which shape a given message
 // actually needs.
+//
+// ToolCalls/ToolCallID are ADR-011's multi-turn addition: an assistant
+// message that made tool calls carries them here (Chat Completions' own
+// real "assistant turn that called a tool" shape), and a "tool" role
+// message carries the id of the call it answers — both omitempty, so
+// every request built before this feature existed is byte-for-byte
+// unchanged.
 type requestMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role       string     `json:"role"`
+	Content    any        `json:"content"`
+	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // contentPart is one part in a Chat Completions content array — covers
@@ -146,11 +155,16 @@ type functionDef struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-// toolCall mirrors Chat Completions' function-calling response shape:
-// arguments come back as a JSON-encoded string, not a nested object, so
-// Generate decodes it separately rather than unmarshaling straight into
-// provider.ToolCall.Input.
+// toolCall mirrors Chat Completions' function-calling shape on both
+// sides: arguments travel as a JSON-encoded string, not a nested object,
+// so Generate decodes/encodes it separately rather than unmarshaling (or
+// marshaling) straight into provider.ToolCall.Input. ID is the real
+// wire-level call id — present on every response, and required back on
+// an outbound request that echoes an assistant's tool call (ADR-011
+// multi-turn), so a later "tool" message's own tool_call_id resolves to
+// something the API actually issued.
 type toolCall struct {
+	ID       string       `json:"id,omitempty"`
 	Type     string       `json:"type"`
 	Function functionCall `json:"function"`
 }
@@ -201,7 +215,31 @@ func (c *Client) generateViaChatCompletions(ctx context.Context, req provider.Ge
 		messages = append(messages, requestMessage{Role: "system", Content: req.SystemPrompt})
 	}
 	for _, m := range req.Messages {
-		messages = append(messages, requestMessage{Role: m.Role, Content: buildContent(m.Content, m.Attachment)})
+		switch {
+		// ADR-011 multi-turn: an assistant turn that called a tool is
+		// echoed back with its own real tool_calls array — Chat
+		// Completions rejects a later "tool" message whose tool_call_id
+		// doesn't match one of these.
+		case len(m.ToolCalls) > 0:
+			calls := make([]toolCall, len(m.ToolCalls))
+			for i, tc := range m.ToolCalls {
+				args, err := json.Marshal(tc.Input)
+				if err != nil {
+					return provider.GenerateResponse{}, fmt.Errorf("openai: encode tool call arguments for %q: %w", tc.Name, err)
+				}
+				calls[i] = toolCall{ID: tc.ID, Type: "function", Function: functionCall{Name: tc.Name, Arguments: string(args)}}
+			}
+			var content any
+			if m.Content != "" {
+				content = m.Content
+			}
+			messages = append(messages, requestMessage{Role: "assistant", Content: content, ToolCalls: calls})
+		// Chat Completions has a real native "tool" role for exactly this.
+		case m.ToolCallID != "":
+			messages = append(messages, requestMessage{Role: "tool", Content: m.Content, ToolCallID: m.ToolCallID})
+		default:
+			messages = append(messages, requestMessage{Role: m.Role, Content: buildContent(m.Content, m.Attachment)})
+		}
 	}
 
 	var tools []toolDef
@@ -276,7 +314,7 @@ func (c *Client) generateViaChatCompletions(ctx context.Context, req provider.Ge
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
 			return provider.GenerateResponse{}, fmt.Errorf("openai: decode tool call arguments for %q: %w", tc.Function.Name, err)
 		}
-		toolCalls = append(toolCalls, provider.ToolCall{Name: tc.Function.Name, Input: input})
+		toolCalls = append(toolCalls, provider.ToolCall{ID: tc.ID, Name: tc.Function.Name, Input: input})
 	}
 
 	return provider.GenerateResponse{

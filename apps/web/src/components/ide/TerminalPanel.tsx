@@ -24,7 +24,39 @@ export type TranscriptEntry =
   | { kind: "error"; id: string; text: string };
 
 export type BottomTab = "problems" | "output" | "terminal";
-export type TerminalMode = "shell" | "chat";
+export type TerminalMode = "shell" | "chat" | "agent";
+
+// AgentAvailable is the minimal shape the agent-session start form needs
+// from this room's real roster — id/name/provider only, not the full
+// RoomAgentDTO the parent page keeps for other purposes.
+export interface AgentAvailable {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+// AgentSessionState mirrors internal/agentloop's own real wire shape
+// (both its POST .../agent_loop/start response and its live
+// agent_loop_status SSE payload) — the parent page owns fetching/updating
+// this; this component only ever renders it.
+export interface AgentSessionState {
+  sessionId: string;
+  task: string;
+  cycle: number;
+  maxCycles: number;
+  spendUsd: number;
+  dollarCapUsd: number;
+  state: string;
+  message?: string;
+}
+
+export interface AgentStartForm {
+  agentId: string;
+  task: string;
+  maxCycles: number;
+  dollarCapUsd: number;
+  wallClockSeconds: number;
+}
 
 interface TermServerMessage {
   type: string;
@@ -196,6 +228,200 @@ export interface TerminalPanelHandle {
   dispatch: (msg: TermServerMessage) => void;
   createTerminal: () => void;
   reset: () => void;
+  // adoptAgentTerminal registers a terminal the backend created for a
+  // sustained agent-loop session (ADR-011) as this panel's own agent
+  // terminal — deliberately never assigned as the shell mode's main/split
+  // pane, so a running session's own terminal can never hijack whatever
+  // real shell a human already has open.
+  adoptAgentTerminal: (id: string) => void;
+}
+
+const AGENT_STATE_LABEL: Record<string, string> = {
+  running: "Running",
+  completed: "Completed",
+  stopped_bound: "Stopped",
+  stopped_presence: "Stopped — presence lost",
+  stopped_manual: "Stopped by you",
+  failed: "Failed",
+};
+
+function formatUSD(n: number): string {
+  if (n === 0) return "$0.00";
+  if (n < 0.01) return `$${n.toFixed(5)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+/** The real, always-visible status bar for a running (or just-finished)
+ *  agent-loop session — cycle count against its real cap, real running
+ *  spend against its real dollar cap, current state, and a real Stop
+ *  control distinct from presence loss (ADR-011 batch A items 2/3). */
+function AgentStatusBar({
+  session,
+  onStop,
+}: {
+  session: AgentSessionState;
+  onStop: () => void;
+}) {
+  const running = session.state === "running";
+  return (
+    <div className="flex shrink-0 flex-col gap-1 border-b border-[var(--ide-border)] px-3 py-2 text-[11.5px]">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-[var(--ide-text-secondary)]">{session.task}</span>
+        {running && (
+          <button
+            type="button"
+            onClick={onStop}
+            className="shrink-0 rounded-md border border-[var(--room-warn)] px-2 py-0.5 text-[11px] font-semibold text-[var(--room-warn)] hover:bg-[var(--room-warn)] hover:text-[var(--ide-surface)]"
+          >
+            Stop
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-3 font-[family-name:var(--login-font-mono)] text-[var(--ide-text-muted)]">
+        <span>
+          cycle {session.cycle}/{session.maxCycles}
+        </span>
+        <span>
+          {formatUSD(session.spendUsd)} / {formatUSD(session.dollarCapUsd)}
+        </span>
+        <span className={running ? "text-[var(--login-accent)]" : "text-[var(--ide-text-secondary)]"}>
+          {AGENT_STATE_LABEL[session.state] ?? session.state}
+        </span>
+      </div>
+      {!running && session.message && (
+        <div className="text-[var(--ide-text-secondary)]">{session.message}</div>
+      )}
+    </div>
+  );
+}
+
+/** The real form ADR-011 requires before any sustained session starts —
+ *  three real numbers (max cycles, dollar cap, wall-clock limit) plus a
+ *  task and a target agent, none defaulted: Start is disabled until every
+ *  field is genuinely filled in. */
+function AgentStartFormPanel({
+  agents,
+  onStart,
+  error,
+  disabled,
+}: {
+  agents: AgentAvailable[];
+  onStart: (form: AgentStartForm) => void;
+  error: string | null;
+  disabled: boolean;
+}) {
+  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [task, setTask] = useState("");
+  const [maxCycles, setMaxCycles] = useState("");
+  const [dollarCap, setDollarCap] = useState("");
+  const [wallClockMinutes, setWallClockMinutes] = useState("");
+
+  const maxCyclesN = Number(maxCycles);
+  const dollarCapN = Number(dollarCap);
+  const wallClockN = Number(wallClockMinutes);
+  const canStart =
+    !disabled &&
+    agentId !== "" &&
+    task.trim() !== "" &&
+    Number.isFinite(maxCyclesN) &&
+    maxCyclesN > 0 &&
+    Number.isFinite(dollarCapN) &&
+    dollarCapN > 0 &&
+    Number.isFinite(wallClockN) &&
+    wallClockN > 0;
+
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 overflow-y-auto px-6 py-6">
+      <div className="w-full max-w-[360px] rounded-lg border border-[var(--ide-border-strong)] bg-[var(--ide-surface-2)] p-4">
+        <p className="mb-3 text-[12.5px] font-semibold text-[var(--ide-text)]">Start a sustained agent session</p>
+        {disabled ? (
+          <p className="text-[12px] text-[var(--ide-text-muted)]">Open a folder to start a sustained agent session.</p>
+        ) : agents.length === 0 ? (
+          <p className="text-[12px] text-[var(--ide-text-muted)]">No agents in this room yet.</p>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            <label className="flex flex-col gap-1 text-[11px] text-[var(--ide-text-muted)]">
+              Agent
+              <select
+                value={agentId}
+                onChange={(e) => setAgentId(e.target.value)}
+                className="rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface)] px-2 py-1 text-[12px] text-[var(--ide-text)]"
+              >
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] text-[var(--ide-text-muted)]">
+              Task
+              <textarea
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                rows={3}
+                placeholder="What should this session accomplish?"
+                className="resize-none rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface)] px-2 py-1 text-[12px] text-[var(--ide-text)] placeholder:text-[var(--ide-text-muted)]"
+              />
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <label className="flex flex-col gap-1 text-[11px] text-[var(--ide-text-muted)]">
+                Max cycles
+                <input
+                  type="number"
+                  min={1}
+                  value={maxCycles}
+                  onChange={(e) => setMaxCycles(e.target.value)}
+                  placeholder="20"
+                  className="rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface)] px-2 py-1 text-[12px] text-[var(--ide-text)] placeholder:text-[var(--ide-text-muted)]"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-[var(--ide-text-muted)]">
+                Cost cap ($)
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={dollarCap}
+                  onChange={(e) => setDollarCap(e.target.value)}
+                  placeholder="2.00"
+                  className="rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface)] px-2 py-1 text-[12px] text-[var(--ide-text)] placeholder:text-[var(--ide-text-muted)]"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-[var(--ide-text-muted)]">
+                Minutes
+                <input
+                  type="number"
+                  min={1}
+                  value={wallClockMinutes}
+                  onChange={(e) => setWallClockMinutes(e.target.value)}
+                  placeholder="15"
+                  className="rounded-md border border-[var(--ide-border-strong)] bg-[var(--ide-surface)] px-2 py-1 text-[12px] text-[var(--ide-text)] placeholder:text-[var(--ide-text-muted)]"
+                />
+              </label>
+            </div>
+            {error && <p className="text-[11.5px] text-[var(--room-warn)]">{error}</p>}
+            <button
+              type="button"
+              disabled={!canStart}
+              onClick={() =>
+                onStart({
+                  agentId,
+                  task: task.trim(),
+                  maxCycles: Math.floor(maxCyclesN),
+                  dollarCapUsd: dollarCapN,
+                  wallClockSeconds: Math.floor(wallClockN * 60),
+                })
+              }
+              className="mt-1 rounded-md bg-[var(--login-accent)] px-2.5 py-1.5 text-[12px] font-semibold text-[var(--ide-surface)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Start session
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -228,6 +454,11 @@ export const TerminalPanel = forwardRef<
     onChatSubmit: () => void;
     send: (msg: Record<string, unknown>) => void;
     folderOpen: boolean;
+    agentAgents: AgentAvailable[];
+    agentSession: AgentSessionState | null;
+    agentStartError: string | null;
+    onStartAgentSession: (form: AgentStartForm) => void;
+    onStopAgentSession: () => void;
   }
 >(function TerminalPanel(
   {
@@ -242,6 +473,11 @@ export const TerminalPanel = forwardRef<
     onChatSubmit,
     send,
     folderOpen,
+    agentAgents,
+    agentSession,
+    agentStartError,
+    onStartAgentSession,
+    onStopAgentSession,
   },
   ref,
 ) {
@@ -251,8 +487,13 @@ export const TerminalPanel = forwardRef<
   const [terminals, setTerminals] = useState<TermState[]>([]);
   const [mainId, setMainId] = useState<string | null>(null);
   const [splitId, setSplitId] = useState<string | null>(null);
+  const [agentTerminalId, setAgentTerminalId] = useState<string | null>(null);
   const handlesRef = useRef<Map<string, TerminalHandle>>(new Map());
   const pendingCreateRef = useRef<PaneKey>("main");
+
+  const adoptAgentTerminal = useCallback((id: string) => {
+    setAgentTerminalId(id);
+  }, []);
 
   const requestNewTerminal = useCallback(
     (pane: PaneKey) => {
@@ -305,6 +546,7 @@ export const TerminalPanel = forwardRef<
     setTerminals([]);
     setMainId(null);
     setSplitId(null);
+    setAgentTerminalId(null);
     handlesRef.current.clear();
   }, []);
 
@@ -314,8 +556,9 @@ export const TerminalPanel = forwardRef<
       dispatch,
       createTerminal: () => requestNewTerminal("main"),
       reset,
+      adoptAgentTerminal,
     }),
-    [dispatch, requestNewTerminal, reset],
+    [dispatch, requestNewTerminal, reset, adoptAgentTerminal],
   );
 
   useEffect(() => {
@@ -425,7 +668,7 @@ export const TerminalPanel = forwardRef<
         <div hidden={bottomTab !== "terminal"} className="flex h-full flex-col">
           <div className="flex shrink-0 items-center gap-1 border-b border-[var(--ide-border)] px-2">
             <div className="flex rounded-md p-0.5">
-              {(["shell", "chat"] as const).map((m) => (
+              {(["shell", "chat", "agent"] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -518,7 +761,7 @@ export const TerminalPanel = forwardRef<
                 })}
               </div>
             )
-          ) : (
+          ) : mode === "chat" ? (
             <>
               <div
                 ref={bodyRef}
@@ -567,6 +810,35 @@ export const TerminalPanel = forwardRef<
                 />
               </div>
             </>
+          ) : !agentSession ? (
+            <AgentStartFormPanel
+              agents={agentAgents}
+              onStart={onStartAgentSession}
+              error={agentStartError}
+              disabled={!folderOpen}
+            />
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <AgentStatusBar session={agentSession} onStop={onStopAgentSession} />
+              <div className="min-h-0 flex-1">
+                {agentTerminalId ? (
+                  <Terminal
+                    ref={(handle) => {
+                      if (handle) handlesRef.current.set(agentTerminalId, handle);
+                      else handlesRef.current.delete(agentTerminalId);
+                    }}
+                    onData={(data) => send({ type: "terminal_input", terminal_id: agentTerminalId, data })}
+                    onResize={(cols, rows) =>
+                      send({ type: "terminal_resize", terminal_id: agentTerminalId, cols, rows })
+                    }
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center">
+                    <p className="text-[12.5px] text-[var(--ide-text-muted)]">Opening this session&apos;s terminal…</p>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>

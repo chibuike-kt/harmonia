@@ -63,8 +63,11 @@ type message struct {
 }
 
 // contentPart is one block in a Messages API content array — covers
-// both shapes this client ever sends: a plain text block, and an
-// attachment block (image or document, chosen by attachmentPart below).
+// every shape this client ever sends: a plain text block, an attachment
+// block (image or document, chosen by attachmentPart below), and, since
+// ADR-011's multi-turn tool-calling, a tool_use block (echoing an
+// assistant's own earlier call back to the model — ID/Name/Input) and a
+// tool_result block (that call's real result — ToolUseID/Content).
 type contentPart struct {
 	Type   string          `json:"type"`
 	Text   string          `json:"text,omitempty"`
@@ -74,6 +77,18 @@ type contentPart struct {
 	// the kind of detail that lets a reply plausibly reference "the
 	// file you attached" by name instead of a generic "the document."
 	Title string `json:"title,omitempty"`
+	// ID/Name/Input build a tool_use block — Anthropic's own real
+	// identifier for one assistant tool call, echoed back exactly as the
+	// API returned it (see Generate's response parsing) so a later
+	// tool_result can reference it.
+	ID    string         `json:"id,omitempty"`
+	Name  string         `json:"name,omitempty"`
+	Input map[string]any `json:"input,omitempty"`
+	// ToolUseID/Content build a tool_result block — Content here is a
+	// plain string (the API also accepts a content-block array; nothing
+	// this client's tools produce needs anything richer than text).
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   string `json:"content,omitempty"`
 }
 
 // documentSource covers the two source shapes this client sends: "text"
@@ -177,8 +192,13 @@ type toolChoice struct {
 // loop): their content is Anthropic's own search bookkeeping, already
 // surfaced to us pre-digested as each text block's Citations.
 type contentBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text"`
+	Type string `json:"type"`
+	Text string `json:"text"`
+	// ID is a tool_use block's own real identifier — captured so a
+	// multi-turn caller (internal/agentloop) can echo this exact call back
+	// on a later Message.ToolCalls and key its result on Message.ToolCallID
+	// (ADR-011). Empty on every other block type.
+	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Input     map[string]any  `json:"input"`
 	Citations []citationBlock `json:"citations"`
@@ -212,13 +232,35 @@ type errorEnvelope struct {
 	} `json:"error"`
 }
 
-// Generate calls the Messages API, non-streaming. Single-turn tool use
-// only (see package provider's own doc comment) — no retries beyond what
+// Generate calls the Messages API, non-streaming. No retries beyond what
 // net/http gives for free.
 func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (provider.GenerateResponse, error) {
 	messages := make([]message, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		messages = append(messages, message{Role: m.Role, Content: buildContent(m.Content, m.Attachment)})
+		switch {
+		// ADR-011 multi-turn: an assistant turn that called a tool is
+		// echoed back as its own real tool_use block(s), never collapsed
+		// into plain text — the Messages API rejects a later tool_result
+		// whose tool_use_id doesn't match a tool_use block it can see
+		// earlier in the same request.
+		case len(m.ToolCalls) > 0:
+			var parts []contentPart
+			if m.Content != "" {
+				parts = append(parts, contentPart{Type: "text", Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				parts = append(parts, contentPart{Type: "tool_use", ID: tc.ID, Name: tc.Name, Input: tc.Input})
+			}
+			messages = append(messages, message{Role: "assistant", Content: parts})
+		// Anthropic has no native "tool" role — a tool's result is a
+		// tool_result block on a user-role message instead.
+		case m.ToolCallID != "":
+			messages = append(messages, message{Role: "user", Content: []contentPart{
+				{Type: "tool_result", ToolUseID: m.ToolCallID, Content: m.Content},
+			}})
+		default:
+			messages = append(messages, message{Role: m.Role, Content: buildContent(m.Content, m.Attachment)})
+		}
 	}
 
 	var tools []tool
@@ -298,7 +340,7 @@ func (c *Client) Generate(ctx context.Context, req provider.GenerateRequest) (pr
 				citations = append(citations, provider.Citation{Title: c.Title, URL: c.URL, AfterText: c.CitedText})
 			}
 		case "tool_use":
-			toolCalls = append(toolCalls, provider.ToolCall{Name: block.Name, Input: block.Input})
+			toolCalls = append(toolCalls, provider.ToolCall{ID: block.ID, Name: block.Name, Input: block.Input})
 		// server_tool_use / web_search_tool_result blocks (only present
 		// when WebSearchEnabled) fall through with no case and are
 		// silently skipped — that's Anthropic's own search bookkeeping,

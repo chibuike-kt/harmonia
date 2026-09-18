@@ -25,6 +25,7 @@ const (
 	KindObjective       Kind = "objective"
 	KindCompanionAction Kind = "companion_action"
 	KindAgentCursor     Kind = "agent_cursor"
+	KindAgentLoopStatus Kind = "agent_loop_status"
 )
 
 // Message is what flows through the Hub — a tagged union of the distinct
@@ -46,6 +47,7 @@ type Message struct {
 	Objective       *RoomObjectiveUpdate `json:"objective,omitempty"`
 	CompanionAction *CompanionAction     `json:"companion_action,omitempty"`
 	AgentCursor     *AgentCursor         `json:"agent_cursor,omitempty"`
+	AgentLoopStatus *AgentLoopStatus     `json:"agent_loop_status,omitempty"`
 }
 
 // ChatMessage mirrors internal/message.Message's wire shape. Defined
@@ -229,6 +231,32 @@ type AgentCursor struct {
 // publishing over the room's existing live channel.
 func NewAgentCursorMessage(cursor AgentCursor) Message {
 	return Message{Kind: KindAgentCursor, AgentCursor: &cursor}
+}
+
+// AgentLoopStatus is one live snapshot of a sustained agent-loop session
+// (ADR-011) — published after every real cycle, and once more on the
+// session's own terminal transition, so every browser tab watching this
+// room can render the same real bounded-session state (cycle count
+// against its cap, real running spend against its dollar cap, and the
+// current State) without polling. Message carries the human-readable
+// reason for a State transition — empty while Running, the configured
+// bound's own real text when a bound stopped it, or the model's own
+// mark_done summary on Completed.
+type AgentLoopStatus struct {
+	SessionID    uuid.UUID `json:"session_id"`
+	RoomID       uuid.UUID `json:"room_id"`
+	Cycle        int       `json:"cycle"`
+	MaxCycles    int       `json:"max_cycles"`
+	SpendUSD     float64   `json:"spend_usd"`
+	DollarCapUSD float64   `json:"dollar_cap_usd"`
+	State        string    `json:"state"`
+	Message      string    `json:"message,omitempty"`
+}
+
+// NewAgentLoopStatusMessage wraps one agent-loop session status snapshot
+// for publishing over the room's existing live channel.
+func NewAgentLoopStatusMessage(status AgentLoopStatus) Message {
+	return Message{Kind: KindAgentLoopStatus, AgentLoopStatus: &status}
 }
 
 // NewPickupUsageMessage wraps one phase-1 classification call's real

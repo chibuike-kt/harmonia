@@ -151,6 +151,25 @@ func requestHandoffTool(activeTasks []task.Task, otherAgents []agent.Agent) prov
 	}
 }
 
+// CreateTaskTool exposes create_task's tool definition for reuse outside
+// this package's own Orchestrator — ADR-011's sustained agent loop offers
+// agents the exact same tool, unchanged, rather than a second definition
+// that could drift from this one.
+func CreateTaskTool(activeTasks []task.Task) provider.ToolDef {
+	return createTaskTool(activeTasks)
+}
+
+// ExecuteCreateTask runs create_task's tool call to completion outside
+// the Orchestrator's own per-message-turn flow — ADR-011's sustained
+// agent loop reuses this exact effect (a real task row, a real
+// TASK_CREATED event, published over hub) unchanged, the same "still
+// immediate, still low-stakes" call the ADR itself calls out as reused
+// rather than genuinely new.
+func ExecuteCreateTask(ctx context.Context, beginner store.Beginner, hub realtime.Publisher, roomID, agentID uuid.UUID, input map[string]any) {
+	o := &Orchestrator{beginner: beginner, hub: hub}
+	o.executeCreateTask(ctx, roomID, agentID, input)
+}
+
 // executeCreateTask runs create_task's tool call to completion: a real
 // task row and its TASK_CREATED event, in one transaction, published
 // over hub exactly like task.Store.CreateHandler's own request/response

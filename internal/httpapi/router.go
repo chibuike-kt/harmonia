@@ -17,6 +17,7 @@ import (
 
 	"github.com/chibuike-kt/harmonia/internal/actionproposal"
 	"github.com/chibuike-kt/harmonia/internal/agent"
+	"github.com/chibuike-kt/harmonia/internal/agentloop"
 	"github.com/chibuike-kt/harmonia/internal/companionrelay"
 	"github.com/chibuike-kt/harmonia/internal/contextengine"
 	"github.com/chibuike-kt/harmonia/internal/credentials"
@@ -187,6 +188,18 @@ func NewRouter(st *store.Store) http.Handler {
 	r.Group(func(pr chi.Router) {
 		pr.Use(user.Authenticate(users))
 		pr.Post("/v1/rooms/{room_id}/companion_actions/{action_id}/result", companionrelay.ResultHandler(rooms, relay))
+	})
+
+	// loops is ADR-011's sustained agentic loop, Batch A — reuses this
+	// same relay for its own file/shell tool calls (read_file, write_file,
+	// run_command, create_terminal, terminal_narrate), so it's built here,
+	// after relay, agents/tasks/creds/events/hub are all already in scope.
+	loops := agentloop.NewManager(rooms, agents, tasks, creds, beginner, events, hub, relay, st.Redis)
+	r.Group(func(pr chi.Router) {
+		pr.Use(user.Authenticate(users))
+		pr.Post("/v1/rooms/{room_id}/agent_loop/start", loops.StartHandler())
+		pr.Post("/v1/rooms/{room_id}/agent_loop/{session_id}/stop", loops.StopHandler())
+		pr.Get("/v1/rooms/{room_id}/agent_loop", loops.StatusHandler())
 	})
 
 	githubCfg := user.NewGitHubConfig(

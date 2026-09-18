@@ -77,6 +77,99 @@ func TestGenerate_RequestShapeAndResponseParsing(t *testing.T) {
 	}
 }
 
+// TestGenerate_ToolCallResponse_CapturesRealID proves a Chat Completions
+// tool call's own real id survives into provider.ToolCall.ID — ADR-011's
+// agent loop needs this exact id back to key a later tool result.
+func TestGenerate_ToolCallResponse_CapturesRealID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []choice{{Message: message{
+				Role: "assistant",
+				ToolCalls: []toolCall{
+					{ID: "call_abc123", Type: "function", Function: functionCall{Name: "read_file", Arguments: `{"path":"main.go"}`}},
+				},
+			}}},
+			Usage: usage{PromptTokens: 5, CompletionTokens: 2},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{apiKey: "test-key", model: defaultModel, baseURL: srv.URL, httpClient: srv.Client()}
+	resp, err := c.Generate(context.Background(), provider.GenerateRequest{
+		Messages: []provider.Message{{Role: "user", Content: "read main.go"}},
+		Tools:    []provider.ToolDef{{Name: "read_file", InputSchema: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "call_abc123" || resp.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("ToolCalls = %+v, want one call with ID call_abc123", resp.ToolCalls)
+	}
+}
+
+// TestGenerate_MultiTurnToolRoundTrip proves the real second-turn wire
+// shape: an assistant message carrying ToolCalls becomes a real
+// tool_calls array on that assistant message, and a message with
+// ToolCallID set becomes Chat Completions' own native "tool" role message
+// keyed by tool_call_id — the exact round trip ADR-011's sustained loop
+// depends on to feed a tool's result back to the model.
+func TestGenerate_MultiTurnToolRoundTrip(t *testing.T) {
+	var gotBody chatCompletionsRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []choice{{Message: message{Role: "assistant", Content: "done"}}},
+			Usage:   usage{PromptTokens: 1, CompletionTokens: 1},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{apiKey: "test-key", model: defaultModel, baseURL: srv.URL, httpClient: srv.Client()}
+	_, err := c.Generate(context.Background(), provider.GenerateRequest{
+		Messages: []provider.Message{
+			{Role: "user", Content: "read main.go"},
+			{Role: "assistant", ToolCalls: []provider.ToolCall{
+				{ID: "call_abc123", Name: "read_file", Input: map[string]any{"path": "main.go"}},
+			}},
+			{Role: "tool", ToolCallID: "call_abc123", Content: "package main"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if len(gotBody.Messages) != 3 {
+		t.Fatalf("got %d messages, want 3", len(gotBody.Messages))
+	}
+
+	assistantMsg := gotBody.Messages[1]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("messages[1].Role = %q, want assistant", assistantMsg.Role)
+	}
+	if len(assistantMsg.ToolCalls) != 1 || assistantMsg.ToolCalls[0].ID != "call_abc123" {
+		t.Fatalf("messages[1].ToolCalls = %+v, want one call with ID call_abc123", assistantMsg.ToolCalls)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(assistantMsg.ToolCalls[0].Function.Arguments), &args); err != nil || args["path"] != "main.go" {
+		t.Fatalf("assistant tool call arguments = %q, want path=main.go", assistantMsg.ToolCalls[0].Function.Arguments)
+	}
+
+	resultMsg := gotBody.Messages[2]
+	if resultMsg.Role != "tool" {
+		t.Fatalf("messages[2].Role = %q, want tool", resultMsg.Role)
+	}
+	if resultMsg.ToolCallID != "call_abc123" {
+		t.Fatalf("messages[2].ToolCallID = %q, want call_abc123", resultMsg.ToolCallID)
+	}
+	if resultMsg.Content != "package main" {
+		t.Fatalf("messages[2].Content = %v, want %q", resultMsg.Content, "package main")
+	}
+}
+
 func TestGenerate_NoSystemPrompt(t *testing.T) {
 	var gotBody chatCompletionsRequest
 

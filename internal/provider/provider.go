@@ -5,11 +5,12 @@
 // native tool-use (ADR-006 batches B and C: agent-to-agent mentions and
 // the create_task/request_handoff tools all go through this one
 // mechanism, Anthropic's tool_use and OpenAI's function calling
-// underneath) — a single-turn capability, not a multi-turn agentic loop:
-// a caller passes Tools the model may call, and reads any calls back off
-// the response alongside whatever text content came with them. Nothing
-// here feeds a tool's result back to the model for a second turn, since
-// none of this milestone's tools need the model to see one.
+// underneath), and, since ADR-011's sustained agentic loop, genuine
+// multi-turn tool-calling: a Message can now carry the ToolCalls an
+// assistant turn made (echoed back so the model sees its own prior
+// call) or a ToolCallID pairing it with that call's real result — see
+// each field's own doc comment, and each provider client's own request-
+// building code, for the real wire shape this round-trips into.
 package provider
 
 import (
@@ -97,7 +98,7 @@ type GenerateRequest struct {
 }
 
 type Message struct {
-	Role    string // "user" | "assistant"
+	Role    string // "user" | "assistant" | "tool"
 	Content string
 	// Attachment is the file a human attached to this message, if any
 	// (ADR-008 batch A) — nil for the overwhelming majority of messages.
@@ -110,6 +111,23 @@ type Message struct {
 	// sent in the conversation stays in context on each subsequent call,
 	// not just the turn it arrived on.
 	Attachment *Attachment
+	// ToolCalls is set on an "assistant" message to echo back the real
+	// tool call(s) that assistant turn made (ADR-011) — a caller building
+	// multi-turn history from a prior GenerateResponse.ToolCalls, never
+	// something a caller invents. Each client translates this into that
+	// provider's own real "assistant turn that called a tool" wire shape
+	// (Anthropic: tool_use content blocks on an assistant message; OpenAI
+	// Chat Completions: the message's own tool_calls array) — the model
+	// only accepts a later ToolCallID-keyed result if it can first see the
+	// call it answers.
+	ToolCalls []ToolCall
+	// ToolCallID marks a "tool" role message as the real result of one
+	// earlier ToolCall (matched by ToolCall.ID) — Content is that result,
+	// as plain text. Anthropic has no native "tool" role: its client
+	// translates this into a user-role message carrying a tool_result
+	// content block keyed by tool_use_id instead. OpenAI Chat Completions
+	// has a real "tool" role that takes this shape natively.
+	ToolCallID string
 }
 
 // Attachment is a small file attached directly to one message — a
@@ -175,7 +193,16 @@ type ToolDef struct {
 // a JSON object directly; OpenAI returns a JSON-encoded string that the
 // client decodes here) — a caller never touches either provider's raw
 // tool-call encoding.
+//
+// ID is that provider's own real identifier for this specific call
+// (Anthropic's tool_use block id, OpenAI's tool_calls[].id) — empty for
+// every caller before ADR-011, since nothing needed to refer back to a
+// call once made. A multi-turn caller (internal/agentloop) needs it to
+// echo the call back on Message.ToolCalls and key its real result on
+// Message.ToolCallID; each provider requires exactly its own real id
+// here; a mismatched or invented one is rejected by the provider itself.
 type ToolCall struct {
+	ID    string
 	Name  string
 	Input map[string]any
 }
