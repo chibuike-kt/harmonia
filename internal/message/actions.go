@@ -159,6 +159,25 @@ func CreateTaskTool(activeTasks []task.Task) provider.ToolDef {
 	return createTaskTool(activeTasks)
 }
 
+// RequestHandoffTool exposes request_handoff's tool definition for reuse
+// outside this package's own Orchestrator — ADR-011 batch B's in-loop
+// delegation exception offers agents the exact same tool description
+// (same real open tasks, same real other-agent roster), unchanged; only
+// what happens when it's called differs by context (see
+// actionproposal.ExecuteHandoffDirect's own doc comment).
+func RequestHandoffTool(activeTasks []task.Task, otherAgents []agent.Agent) provider.ToolDef {
+	return requestHandoffTool(activeTasks, otherAgents)
+}
+
+// ResolveAgentName exposes resolveAgentName's real, non-leaking name
+// resolution outside this package — ADR-011 batch B's agent loop needs
+// the exact same "only ever resolve against real room data, never trust
+// a model-invented id" discipline this package's own mention/handoff
+// resolution already applies.
+func ResolveAgentName(name string, roomAgents []agent.Agent) (uuid.UUID, bool) {
+	return resolveAgentName(name, roomAgents)
+}
+
 // ExecuteCreateTask runs create_task's tool call to completion outside
 // the Orchestrator's own per-message-turn flow — ADR-011's sustained
 // agent loop reuses this exact effect (a real task row, a real

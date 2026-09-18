@@ -190,7 +190,10 @@ export default function ArtifactsPage() {
   }, [artifacts, tab]);
 
   return (
-    <div className="flex h-full min-w-0 flex-1">
+    // min-h-0, same reasoning as rooms/[id] and the IDE's own root: fills
+    // the shell outlet's exact height instead of growing past it now
+    // that the outlet itself no longer scrolls.
+    <div className="flex h-full min-h-0 min-w-0 flex-1">
       <main className="flex min-w-0 flex-1 flex-col">
         <div className="shrink-0 border-b border-[var(--login-border)] px-8 py-6">
           <h1 className="flex items-center gap-2.5 text-[20px] font-semibold text-[var(--login-text)]">

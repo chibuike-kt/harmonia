@@ -19,9 +19,19 @@ export default function ShellLayout({ children }: { children: ReactNode }) {
     <div className="flex h-screen w-full overflow-hidden bg-[var(--login-bg)] text-[var(--login-text)] font-[family-name:var(--login-font-sans)]">
       <Sidebar />
       {/* A plain div, not <main>: each page under this layout (dashboard,
-          room view) already renders its own single <main> landmark —
-          this is just the scrollable outlet around it. */}
-      <div className="min-w-0 flex-1 overflow-y-auto">{children}</div>
+          room view, the IDE) already renders its own single <main>
+          landmark. This outlet is deliberately not a scroll container
+          itself (overflow-hidden, not overflow-y-auto) — the outer shell
+          never scrolls as a whole; every page under it owns its own
+          internal scroll regions instead. min-h-0 is what actually makes
+          that real: a flex child defaults to min-height/min-width auto
+          (never smaller than its content), so without it a page whose
+          content ran even slightly tall would silently push this outlet
+          past 100% height instead of clipping — the exact bug this
+          fixes: a real, visible whole-page scrollbar stacked on top of
+          whatever internal panel (a room's transcript, the IDE's
+          terminal) already scrolls on its own. */}
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</div>
     </div>
   );
 }

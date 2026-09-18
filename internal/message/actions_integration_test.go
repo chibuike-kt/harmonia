@@ -488,6 +488,144 @@ func TestIntegration_Orchestrator_RequestHandoffCreatesPendingProposalOnly(t *te
 	}
 }
 
+// TestIntegration_RequestHandoff_AsyncPathVsInLoopPath_AreGenuinelyDistinct
+// is ADR-011 batch B's own required proof, in the shape the build brief
+// asks for explicitly: "a test proving both paths are genuinely
+// distinct, not that one quietly swallowed the other" — both exercised
+// in this one room, in this one test, so the boundary between them is
+// demonstrably real rather than asserted separately in two reports that
+// never actually compare.
+//
+// The async leg here is the exact same real call
+// TestIntegration_Orchestrator_RequestHandoffCreatesPendingProposalOnly
+// above already proves in isolation — the ordinary chat orchestrator's
+// own executeRequestHandoff, real and completely untouched by ADR-011.
+// The in-loop leg calls actionproposal.ExecuteHandoffDirect directly —
+// the exact same call internal/agentloop's own dispatchRequestHandoff
+// makes from inside a live, presence-gated session (see
+// internal/agentloop's own TestIntegration_InLoopHandoff_
+// ExecutesImmediatelyWithNoProposal for that real call happening through
+// a genuine running session rather than called directly, as it is here).
+func TestIntegration_RequestHandoff_AsyncPathVsInLoopPath_AreGenuinelyDistinct(t *testing.T) {
+	pool, rdb := connectMessageTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	creds := credentials.NewStore(pool, nil)
+	beginner := store.PoolBeginner{Pool: pool}
+	tasks := task.NewStore(pool)
+
+	owner := seedMessageTestUser(t, ctx, users, "msg-handoff-distinct-")
+	rm, err := rooms.Create(ctx, &owner.ID, "handoff-distinct-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	from, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-handoff-distinct-from")
+	if err != nil {
+		t.Fatalf("register from-agent: %v", err)
+	}
+	to, err := agents.Register(ctx, rm.ID, "GPT", agent.ProviderOpenAI, nil, "hash-handoff-distinct-to")
+	if err != nil {
+		t.Fatalf("register to-agent: %v", err)
+	}
+	asyncTask, err := tasks.Create(ctx, rm.ID, "async task — should only ever get a proposal", nil)
+	if err != nil {
+		t.Fatalf("seed async task: %v", err)
+	}
+	directTask, err := tasks.Create(ctx, rm.ID, "in-loop task — should execute immediately", nil)
+	if err != nil {
+		t.Fatalf("seed direct task: %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "test-key-unused-by-fake-client")
+
+	// --- Leg 1: the existing async path, real and unchanged. ---
+
+	s := NewStore(pool)
+	rec := newRecordingHub(rm.ID)
+	orch := NewOrchestrator(s, agents, creds, users, rooms, tasks, beginner, rec, rdb)
+	orch.newProviderClient = func(agent.Provider, string) (provider.Agent, error) {
+		return &fakeProviderAgent{
+			content: "I'll hand this off to GPT.",
+			toolCalls: []provider.ToolCall{{
+				Name: requestHandoffToolName,
+				Input: map[string]any{
+					"task_id":       asyncTask.ID.String(),
+					"to_agent_name": "GPT",
+					"summary":       "async leg — must stay a pending proposal",
+				},
+			}},
+		}, nil
+	}
+	triggering, err := s.CreateHuman(ctx, rm.ID, owner.ID, "@Claude please look at this", []uuid.UUID{from.ID}, nil)
+	if err != nil {
+		t.Fatalf("seed triggering message: %v", err)
+	}
+	orch.TriggerReply(from.ID, rm.OwnerID, triggering, 0, false)
+	// running -> reply -> available -> ACTION.PROPOSE, the same real
+	// sequence the isolated pending-proposal test already verifies in
+	// full detail; only the final state (not the message-by-message
+	// stream) matters for this comparison, but every message must still
+	// be drained or the next leg's own hub reads would see stale ones.
+	for range 4 {
+		rec.recv(t)
+	}
+
+	var asyncProposalCount, asyncHandoffCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_action_proposals WHERE room_id = $1 AND action_type = 'request_handoff'`, rm.ID).Scan(&asyncProposalCount); err != nil {
+		t.Fatalf("count async proposals: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM handoffs WHERE task_id = $1`, asyncTask.ID).Scan(&asyncHandoffCount); err != nil {
+		t.Fatalf("count async handoffs: %v", err)
+	}
+	if asyncProposalCount != 1 {
+		t.Fatalf("async leg: agent_action_proposals = %d, want 1 (still requires approval)", asyncProposalCount)
+	}
+	if asyncHandoffCount != 0 {
+		t.Fatalf("async leg: real handoffs for its task = %d, want 0 (nothing executes until a human approves)", asyncHandoffCount)
+	}
+
+	// --- Leg 2: ADR-011 batch B's in-loop exception, real and direct. ---
+	// This is the exact call internal/agentloop.dispatchRequestHandoff
+	// makes once a live session's own per-cycle presence check has
+	// already passed — called directly here since this test's whole
+	// point is comparing it against leg 1 in one place, not re-driving a
+	// full sustained session (internal/agentloop's own integration test
+	// already does that, through the real thing end to end).
+	if _, _, err := actionproposal.ExecuteHandoffDirect(
+		ctx, beginner, rec, rm.ID, from.ID, to.ID, directTask.ID,
+		"in-loop leg — must execute immediately", nil, nil, nil,
+	); err != nil {
+		t.Fatalf("ExecuteHandoffDirect: %v", err)
+	}
+
+	var directProposalCount, directHandoffCount int
+	var directHandoffStatus string
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_action_proposals WHERE room_id = $1 AND action_type = 'request_handoff' AND payload->>'task_id' = $2`, rm.ID, directTask.ID.String()).Scan(&directProposalCount); err != nil {
+		t.Fatalf("count direct proposals: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*), max(status) FROM handoffs WHERE task_id = $1`, directTask.ID).Scan(&directHandoffCount, &directHandoffStatus); err != nil {
+		t.Fatalf("count direct handoffs: %v", err)
+	}
+	if directProposalCount != 0 {
+		t.Fatalf("in-loop leg: agent_action_proposals for its task = %d, want 0 — no proposal, no approval step at all", directProposalCount)
+	}
+	if directHandoffCount != 1 {
+		t.Fatalf("in-loop leg: real handoffs for its task = %d, want exactly 1, immediate", directHandoffCount)
+	}
+	if directHandoffStatus != "ACCEPTED" {
+		t.Errorf("in-loop leg: handoff status = %q, want ACCEPTED (auto-accepted, same as an approved proposal's own execution)", directHandoffStatus)
+	}
+
+	// The real boundary, stated plainly: the same room, two real
+	// request_handoff outcomes, genuinely different — one still pending
+	// a human's click, the other already real and accepted.
+	if asyncProposalCount == directProposalCount || asyncHandoffCount == directHandoffCount {
+		t.Fatalf("async and in-loop legs produced indistinguishable results — the exception isn't real")
+	}
+}
+
 // TestIntegration_Orchestrator_RequestHandoffToolNotOfferedWithoutOpenTask
 // confirms requestHandoffTool's own gating: with no active task in the
 // room, the tool is never declared to the model at all — there being

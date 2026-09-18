@@ -1273,7 +1273,14 @@ export default function RoomViewPage() {
   });
 
   return (
-    <div className="flex h-full min-w-0 flex-1">
+    // min-h-0: this fills the shell outlet's real height exactly (h-full)
+    // rather than growing past it — the shell outlet itself no longer
+    // scrolls (see (shell)/layout.tsx), so without this a flex child's
+    // own default min-height (auto, never smaller than its content)
+    // would silently expand this whole page past the viewport instead
+    // of letting its own internal panels (the transcript below) be the
+    // only things that ever actually scroll.
+    <div className="flex h-full min-h-0 min-w-0 flex-1">
       <main className="relative flex min-w-0 flex-1 flex-col">
         {/* Row wraps below md rather than hiding anything behind an
             overflow menu: the name gets a full-width line of its own

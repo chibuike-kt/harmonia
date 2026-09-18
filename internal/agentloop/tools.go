@@ -7,11 +7,12 @@ import "github.com/chibuike-kt/harmonia/internal/provider"
 // through message.ExecuteCreateTask instead, reusing ADR-006 batch C's
 // own tool unchanged, per the ADR's "reused, unchanged" list.
 const (
-	toolReadFile   = "read_file"
-	toolWriteFile  = "write_file"
-	toolRunCommand = "run_command"
-	toolCreateTask = "create_task"
-	toolMarkDone   = "mark_done"
+	toolReadFile       = "read_file"
+	toolWriteFile      = "write_file"
+	toolRunCommand     = "run_command"
+	toolCreateTask     = "create_task"
+	toolRequestHandoff = "request_handoff"
+	toolMarkDone       = "mark_done"
 )
 
 // sessionTools is the fixed tool set offered every cycle of a sustained

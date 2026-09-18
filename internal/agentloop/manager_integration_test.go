@@ -15,6 +15,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/companionrelay"
 	"github.com/chibuike-kt/harmonia/internal/credentials"
 	"github.com/chibuike-kt/harmonia/internal/event"
+	"github.com/chibuike-kt/harmonia/internal/handoff"
 	"github.com/chibuike-kt/harmonia/internal/provider"
 	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/room"
@@ -548,5 +549,114 @@ func TestIntegration_Start_RejectsASecondConcurrentSessionInTheSameRoom(t *testi
 		MaxCycles: 10, DollarCapUSD: 5, WallClockSeconds: 30,
 	}); err != ErrSessionAlreadyRunning {
 		t.Fatalf("second Start error = %v, want ErrSessionAlreadyRunning", err)
+	}
+}
+
+// TestIntegration_InLoopHandoff_ExecutesImmediatelyWithNoProposal is
+// ADR-011 batch B's own central proof: a request_handoff tool call made
+// from inside a live, presence-gated session produces a real handoff
+// row, already accepted, with no pending proposal ever created and no
+// approval click required — the narrow exception the ADR describes,
+// exercised for real against a real database. See
+// internal/message.TestIntegration_RequestHandoff_LoopPathVsAsyncPath_AreGenuinelyDistinct
+// for this same session's own task/agents compared directly against the
+// existing, unchanged async approval path in one report.
+func TestIntegration_InLoopHandoff_ExecutesImmediatelyWithNoProposal(t *testing.T) {
+	pool, rdb := connectAgentLoopTestPool(t)
+	ctx := context.Background()
+
+	users := user.NewStore(pool)
+	rooms := room.NewStore(pool)
+	agents := agent.NewStore(pool)
+	tasks := task.NewStore(pool)
+
+	owner := seedAgentLoopTestUser(t, ctx, users, "agentloop-handoff-")
+	rm, err := rooms.Create(ctx, &owner.ID, "agentloop-handoff-room")
+	if err != nil {
+		t.Fatalf("create room: %v", err)
+	}
+	from, err := agents.Register(ctx, rm.ID, "Claude", agent.ProviderAnthropic, nil, "hash-agentloop-handoff-from")
+	if err != nil {
+		t.Fatalf("register from-agent: %v", err)
+	}
+	to, err := agents.Register(ctx, rm.ID, "GPT", agent.ProviderOpenAI, nil, "hash-agentloop-handoff-to")
+	if err != nil {
+		t.Fatalf("register to-agent: %v", err)
+	}
+	tk, err := tasks.Create(ctx, rm.ID, "write the release notes", nil)
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+
+	if err := realtime.SetHumanPresent(ctx, rdb, rm.ID, time.Minute); err != nil {
+		t.Fatalf("set presence: %v", err)
+	}
+	t.Cleanup(func() { _ = realtime.ClearHumanPresent(context.Background(), rdb, rm.ID) })
+
+	client := &sequencedAgent{responses: []provider.GenerateResponse{
+		toolCallResponse(toolRequestHandoff, map[string]any{
+			"task_id": tk.ID.String(), "to_agent_name": "GPT", "summary": "half done, handing off the rest",
+			"completed": []any{"drafted section 1"}, "remaining": []any{"section 2"}, "risks": []any{},
+		}),
+		toolCallResponse(toolMarkDone, map[string]any{"summary": "handed off to GPT"}),
+	}, blockOn: -1}
+
+	hub := realtime.NewHub()
+	relay := companionrelay.NewCoordinator()
+	sub, unsubscribe := hub.Subscribe(rm.ID)
+	defer unsubscribe()
+	sim := &companionSim{relay: relay, terminalID: "term-handoff"}
+	simCtx, cancelSim := context.WithCancel(ctx)
+	defer cancelSim()
+	go sim.run(simCtx, sub)
+
+	m := testManager(pool, rdb, hub, relay, client)
+
+	s, err := m.Start(ctx, StartParams{
+		RoomID: rm.ID, AgentID: from.ID, Task: "finish the release notes, delegate if needed",
+		MaxCycles: 10, DollarCapUSD: 5, WallClockSeconds: 30,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitForState(t, s, StateCompleted, 10*time.Second)
+
+	var handoffCount int
+	var handoffStatus, handoffToAgent string
+	if err := pool.QueryRow(ctx, `SELECT count(*), max(status), max(to_agent_id::text) FROM handoffs WHERE task_id = $1`, tk.ID).
+		Scan(&handoffCount, &handoffStatus, &handoffToAgent); err != nil {
+		t.Fatalf("query handoffs: %v", err)
+	}
+	if handoffCount != 1 {
+		t.Fatalf("real handoff rows for this task = %d, want exactly 1 (immediate, no approval)", handoffCount)
+	}
+	if handoffStatus != string(handoff.StatusAccepted) {
+		t.Errorf("handoff status = %q, want %q (auto-accepted, same as an approved proposal's own execution)", handoffStatus, handoff.StatusAccepted)
+	}
+	if handoffToAgent != to.ID.String() {
+		t.Errorf("handoff to_agent_id = %q, want %q (GPT, resolved from the model's own to_agent_name)", handoffToAgent, to.ID)
+	}
+
+	var proposalCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_action_proposals WHERE room_id = $1 AND action_type = 'request_handoff'`, rm.ID).Scan(&proposalCount); err != nil {
+		t.Fatalf("query agent_action_proposals: %v", err)
+	}
+	if proposalCount != 0 {
+		t.Fatalf("real agent_action_proposals rows = %d, want exactly 0 — this path must never create one", proposalCount)
+	}
+
+	var requestedCount, acceptedCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = $1 AND type = 'HANDOFF_REQUESTED'`, rm.ID).Scan(&requestedCount); err != nil {
+		t.Fatalf("query HANDOFF_REQUESTED events: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE room_id = $1 AND type = 'HANDOFF_ACCEPTED'`, rm.ID).Scan(&acceptedCount); err != nil {
+		t.Fatalf("query HANDOFF_ACCEPTED events: %v", err)
+	}
+	if requestedCount != 1 || acceptedCount != 1 {
+		t.Errorf("real recorded events: HANDOFF_REQUESTED=%d HANDOFF_ACCEPTED=%d, want 1/1", requestedCount, acceptedCount)
+	}
+
+	if got := sim.commandCount(); got != 0 {
+		t.Errorf("real run_command dispatches = %d, want 0 (this task never called it)", got)
 	}
 }

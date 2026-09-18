@@ -105,7 +105,7 @@ export default function DashboardPage() {
   }, [meLoaded, me]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Dashboard has no header at all on desktop — the persistent
           sidebar is the only navigation this page needs. Below md, the
           sidebar becomes an off-canvas drawer, so this bar's sole job is
@@ -115,7 +115,12 @@ export default function DashboardPage() {
         <MobileMenuButton />
       </div>
 
-      <main className="flex flex-1 flex-col items-center justify-center p-6 sm:p-10">
+      {/* overflow-y-auto here, not on the shell outlet above this page —
+          this page owns its own scrolling (a very short viewport plus a
+          real create-room error message is the one real case this
+          content can outgrow), rather than leaning on a parent that no
+          longer scrolls as a whole. */}
+      <main className="flex flex-1 flex-col items-center justify-center overflow-y-auto p-6 sm:p-10">
         <div className="max-w-[520px] text-center">
           <div className="mb-7 flex items-center justify-center gap-3.5">
             <ThinkingOrb

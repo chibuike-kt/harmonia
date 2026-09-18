@@ -9,6 +9,7 @@ import (
 	"github.com/chibuike-kt/harmonia/internal/event"
 	"github.com/chibuike-kt/harmonia/internal/handoff"
 	"github.com/chibuike-kt/harmonia/internal/protocol"
+	"github.com/chibuike-kt/harmonia/internal/realtime"
 	"github.com/chibuike-kt/harmonia/internal/store"
 )
 
@@ -92,6 +93,64 @@ func executeApprovedHandoff(ctx context.Context, tx store.Tx, roomID, proposingA
 	}
 
 	return requestedEnv, acceptedEnv, nil
+}
+
+// ExecuteHandoffDirect runs a real handoff immediately — a real handoff
+// row, a real auto-accept, both real HANDOFF_REQUESTED/HANDOFF_ACCEPTED
+// events, published exactly like an approved proposal's own execution —
+// but with no proposal and no approval step at all. This is ADR-011
+// batch B's narrow in-loop delegation exception: a sustained agent
+// loop's own per-cycle presence check is already the real safety gate
+// for everything else that loop does (ADR-010's reasoning, extended to a
+// whole session by ADR-011), so a handoff proposed while that gate is
+// active gets the same immediacy every other real tool call in that loop
+// already has, rather than routing through executeApprovedHandoff's own
+// pending-proposal path. Callers outside a live, presence-gated loop —
+// the ordinary chat orchestrator's own request_handoff tool — must keep
+// going through CreateFileEditProposal's sibling, the real
+// actionproposal.Store.Create pending-proposal flow (internal/message's
+// own executeRequestHandoff, untouched by this function) exactly as
+// before; this function has no caller there and must never gain one.
+func ExecuteHandoffDirect(ctx context.Context, beginner store.Beginner, hub realtime.Publisher, roomID, fromAgentID, toAgentID, taskID uuid.UUID, summary string, completed, remaining, risks []string) (requested, accepted protocol.Envelope, err error) {
+	tx, rollback, err := store.BeginTx(ctx, beginner)
+	if err != nil {
+		return protocol.Envelope{}, protocol.Envelope{}, fmt.Errorf("actionproposal: begin tx for direct handoff: %w", err)
+	}
+	defer rollback()
+
+	payload := map[string]any{
+		"task_id":     taskID.String(),
+		"to_agent_id": toAgentID.String(),
+		"summary":     summary,
+		"completed":   toAnySlice(completed),
+		"remaining":   toAnySlice(remaining),
+		"risks":       toAnySlice(risks),
+	}
+
+	requestedEnv, acceptedEnv, err := executeApprovedHandoff(ctx, tx, roomID, fromAgentID, payload)
+	if err != nil {
+		return protocol.Envelope{}, protocol.Envelope{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return protocol.Envelope{}, protocol.Envelope{}, fmt.Errorf("actionproposal: commit direct handoff: %w", err)
+	}
+	hub.Publish(roomID, realtime.NewEventMessage(requestedEnv))
+	hub.Publish(roomID, realtime.NewEventMessage(acceptedEnv))
+	return requestedEnv, acceptedEnv, nil
+}
+
+// toAnySlice widens a real []string into the []any shape
+// executeApprovedHandoff's own toStringSlice expects — that helper
+// exists to unwrap a jsonb-decoded value (pgx hands back []any for a
+// stored array), a shape this function's own real, typed slices don't
+// natively have but must still satisfy to go through the exact same
+// unchanged code path.
+func toAnySlice(s []string) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = v
+	}
+	return out
 }
 
 // toStringSlice converts a jsonb-decoded []any (pgx's own decoding of a

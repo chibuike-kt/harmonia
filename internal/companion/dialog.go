@@ -57,21 +57,40 @@ func (folderPickerUnsupportedError) Error() string {
 	return "native folder picker isn't implemented for " + runtime.GOOS + " yet"
 }
 
-// windowsFolderPicker shells out to a real System.Windows.Forms
-// FolderBrowserDialog via PowerShell — the same real-process pattern
-// shell.go already uses for the terminal itself, not a new mechanism.
-// Blocks until the human closes the dialog, which is the correct
-// behavior for a modal folder picker; the WebSocket read loop this runs
-// on is per-session and per-connection, so blocking it here just means
-// this one browser tab's other requests wait for the same real dialog a
-// human is already looking at.
+// windowsFolderPicker shells out to a real folder-selection dialog via
+// PowerShell — the same real-process pattern shell.go already uses for
+// the terminal itself, not a new mechanism. Blocks until the human
+// closes the dialog, which is the correct behavior for a modal folder
+// picker; the WebSocket read loop this runs on is per-session and
+// per-connection, so blocking it here just means this one browser tab's
+// other requests wait for the same real dialog a human is already
+// looking at.
+//
+// Deliberately System.Windows.Forms.OpenFileDialog, not
+// FolderBrowserDialog: FolderBrowserDialog is .NET Framework's original
+// SHBrowseForFolder dialog — a small tree view with none of a real File
+// Explorer window's UI (no address bar, no search, no Quick Access, no
+// right-click "New folder"). Found live: a human expecting "Open Folder"
+// to actually open something that looks like File Explorer, getting this
+// instead. OpenFileDialog, on the other hand, really is the modern
+// Explorer-style common item dialog — the same window Explorer itself
+// uses — just meant for picking a file; setting CheckFileExists false
+// and priming FileName with a placeholder is the standard, well-known
+// way to use that same real dialog to pick a folder instead: the human
+// navigates to the folder they want using the real Explorer UI and hits
+// Open without needing to type or select an actual file, and this reads
+// the folder back via the chosen path's own directory.
 func windowsFolderPicker() (string, error) {
 	script := `Add-Type -AssemblyName System.Windows.Forms
-$f = New-Object System.Windows.Forms.FolderBrowserDialog
-$f.Description = "Open a folder in Harmonia"
-$f.ShowNewFolderButton = $true
+$f = New-Object System.Windows.Forms.OpenFileDialog
+$f.Title = "Open a folder in Harmonia"
+$f.CheckFileExists = $false
+$f.CheckPathExists = $true
+$f.ValidateNames = $false
+$f.AddExtension = $false
+$f.FileName = "Select this folder"
 if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Out.Write($f.SelectedPath)
+  [Console]::Out.Write([System.IO.Path]::GetDirectoryName($f.FileName))
 }`
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()

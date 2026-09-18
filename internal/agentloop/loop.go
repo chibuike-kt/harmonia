@@ -8,6 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/chibuike-kt/harmonia/internal/actionproposal"
+	"github.com/chibuike-kt/harmonia/internal/agent"
 	"github.com/chibuike-kt/harmonia/internal/companionrelay"
 	"github.com/chibuike-kt/harmonia/internal/cost"
 	"github.com/chibuike-kt/harmonia/internal/message"
@@ -89,7 +93,7 @@ func (m *Manager) run(ctx context.Context, s *Session) {
 			return
 		}
 
-		allTools := append(append([]provider.ToolDef{}, tools...), m.createTaskTool(ctx, s)...)
+		allTools := append(append([]provider.ToolDef{}, tools...), m.perCycleTools(ctx, s)...)
 		resp, err := s.client.Generate(ctx, provider.GenerateRequest{
 			SystemPrompt:    systemPrompt(s),
 			Messages:        messages,
@@ -161,7 +165,10 @@ func systemPrompt(s *Session) string {
 	fmt.Fprintf(&b, "Task: %s\n\n", s.Task)
 	b.WriteString("You have real tools: read_file, write_file, and run_command (a real shell in your own dedicated terminal), " +
 		"plus create_task to track real follow-on work in this room. Work through this task step by step — read what you " +
-		"need, make real changes, run real commands to check your own work.\n\n")
+		"need, make real changes, run real commands to check your own work. If request_handoff is offered and part of " +
+		"this task is genuinely better suited to another real agent already in this room, call it — a human is actively " +
+		"watching this session right now, so unlike an ordinary handoff request it executes immediately, no approval " +
+		"needed.\n\n")
 	b.WriteString("Before you call mark_done, you must have actually run this project's real build, test, and/or lint " +
 		"commands via run_command in this same session and seen them pass. Do not declare the task done from assumption, " +
 		"and never just from re-reading your own changes — real verification only. If there is genuinely nothing to " +
@@ -173,17 +180,38 @@ func systemPrompt(s *Session) string {
 	return b.String()
 }
 
-// createTaskTool builds create_task's tool definition against this room's
-// real currently-open tasks — refetched every cycle (not cached at
-// session start) so the description a model sees always reflects real,
+// perCycleTools builds create_task's and (when real room state actually
+// warrants it) request_handoff's tool definitions against this room's
+// real current tasks/agents — refetched every cycle, not cached at
+// session start, so the description a model sees always reflects real,
 // current room state, the same freshness the ordinary chat orchestrator's
-// own per-turn call already gets.
-func (m *Manager) createTaskTool(ctx context.Context, s *Session) []provider.ToolDef {
+// own per-turn call already gets. request_handoff's own gating —
+// offered only when there's at least one real open task and at least one
+// other real agent to hand it to — is the exact same condition
+// internal/message's own orchestrator already applies before offering
+// it; duplicated here rather than shared only because it's a two-line
+// check, not because the two are allowed to drift.
+func (m *Manager) perCycleTools(ctx context.Context, s *Session) []provider.ToolDef {
 	active, err := m.tasks.ListActiveByRoom(ctx, s.RoomID)
 	if err != nil {
 		return nil
 	}
-	return []provider.ToolDef{message.CreateTaskTool(active)}
+	tools := []provider.ToolDef{message.CreateTaskTool(active)}
+
+	roomAgents, err := m.agents.ListByRoom(ctx, s.RoomID)
+	if err != nil {
+		return tools
+	}
+	otherAgents := make([]agent.Agent, 0, len(roomAgents))
+	for _, a := range roomAgents {
+		if a.ID != s.AgentID {
+			otherAgents = append(otherAgents, a)
+		}
+	}
+	if len(active) > 0 && len(otherAgents) > 0 {
+		tools = append(tools, message.RequestHandoffTool(active, otherAgents))
+	}
+	return tools
 }
 
 // dispatchTool runs one real tool call to completion — every case here is
@@ -241,9 +269,78 @@ func (m *Manager) dispatchTool(ctx context.Context, s *Session, call provider.To
 		objective, _ := call.Input["objective"].(string)
 		return "created task: " + objective, nil
 
+	case toolRequestHandoff:
+		return m.dispatchRequestHandoff(ctx, s, call)
+
 	default:
 		return "", fmt.Errorf("unknown tool %q", call.Name)
 	}
+}
+
+// dispatchRequestHandoff is ADR-011 batch B's whole real exception: a
+// handoff called from inside this loop executes immediately — a real
+// handoff row, a real auto-accept, no proposal, no approval card at
+// all — via actionproposal.ExecuteHandoffDirect, unlike
+// internal/message's own executeRequestHandoff (the ordinary chat
+// orchestrator's tool, still real, still untouched, still always
+// creating a pending proposal a human must approve). What makes the
+// immediate path safe here is exactly what makes every other tool this
+// loop dispatches safe: dispatchTool is only ever reached after this
+// cycle's own presence check already passed (see run's own loop, top of
+// each iteration) — the same real gate ADR-010 established for a live
+// file edit, extended by ADR-011 to a whole session, applies here with
+// no new mechanism of its own.
+func (m *Manager) dispatchRequestHandoff(ctx context.Context, s *Session, call provider.ToolCall) (string, error) {
+	taskIDStr, _ := call.Input["task_id"].(string)
+	taskID, err := uuid.Parse(strings.TrimSpace(taskIDStr))
+	if err != nil {
+		return "", fmt.Errorf("request_handoff: invalid task_id %q", taskIDStr)
+	}
+	toAgentName, _ := call.Input["to_agent_name"].(string)
+	summary, _ := call.Input["summary"].(string)
+	if summary == "" {
+		return "", errors.New("request_handoff: summary is required")
+	}
+
+	roomAgents, err := m.agents.ListByRoom(ctx, s.RoomID)
+	if err != nil {
+		return "", fmt.Errorf("request_handoff: load room agents: %w", err)
+	}
+	toAgentID, ok := message.ResolveAgentName(toAgentName, roomAgents)
+	if !ok {
+		return "", fmt.Errorf("request_handoff: no agent named %q in this room", toAgentName)
+	}
+
+	_, _, err = actionproposal.ExecuteHandoffDirect(
+		ctx, m.beginner, m.hub, s.RoomID, s.AgentID, toAgentID, taskID, summary,
+		stringSliceInput(call.Input["completed"]),
+		stringSliceInput(call.Input["remaining"]),
+		stringSliceInput(call.Input["risks"]),
+	)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("handed off to %s immediately — no approval needed inside this live session", toAgentName), nil
+}
+
+// stringSliceInput converts a tool call's optional string-array input
+// field (already []any of untyped values, per encoding/json's own
+// decoding of a JSON array into map[string]any) into []string, skipping
+// anything that isn't actually a string — the same tolerance
+// internal/message's own stringSlice helper applies to a model's
+// possibly-malformed input.
+func stringSliceInput(v any) []string {
+	items, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if str, ok := item.(string); ok {
+			out = append(out, str)
+		}
+	}
+	return out
 }
 
 // createSessionTerminal dispatches a real create_terminal companion

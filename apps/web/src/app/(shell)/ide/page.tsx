@@ -12,6 +12,7 @@ import {
   rememberRecentFolder,
   type RecentFolder,
 } from "@/lib/ideRecents";
+import { ReconnectingEventSource } from "@/lib/sseReconnect";
 import { MenuBar, type PresenceAgent } from "@/components/ide/MenuBar";
 import { CommandPalette } from "@/components/ide/CommandPalette";
 import { DiffView, type FileEditProposal } from "@/components/ide/DiffView";
@@ -356,118 +357,136 @@ export default function IdePage() {
   // non-fatal race with that timeout, not something this needs to retry.
   const postRelayResult = useCallback(
     (roomId: string, actionId: string, result: { output?: string; err?: string }) => {
-      void fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/rooms/${roomId}/companion_actions/${actionId}/result`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(result),
-      }).catch(() => {});
+      void fetch(
+        `${process.env.NEXT_PUBLIC_API_BASE_URL}/v1/rooms/${roomId}/companion_actions/${actionId}/result`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(result),
+        },
+      ).catch(() => {});
     },
     [],
   );
 
   // ---------- Companion WebSocket ----------
 
-  const handleServerMessage = useCallback((msg: ServerMessage) => {
-    switch (msg.type) {
-      case "folder_opened":
-        setFolderPath(msg.path ?? null);
-        setDirListings({});
-        setExpanded(new Set([""]));
-        send({ type: "list_dir", path: "" });
-        break;
-      case "dir_listing":
-        setDirListings((prev) => ({ ...prev, [msg.path ?? ""]: msg.entries ?? [] }));
-        break;
-      case "file_content": {
-        if (!msg.path) break;
-        // ADR-011's read_file relay tool answers here too — a companion
-        // read triggered by the agent loop, not a human opening a tab, so
-        // it resolves the pending relay action instead of opening an
-        // editor tab for a file the human never asked to see.
-        const pendingRead = pendingRelayAction.current;
-        if (pendingRead && pendingRead.type === "read_file" && pendingRead.path === msg.path) {
-          pendingRelayAction.current = null;
-          postRelayResult(pendingRead.roomId, pendingRead.id, { output: base64ToText(msg.content_base64 ?? "") });
+  const handleServerMessage = useCallback(
+    (msg: ServerMessage) => {
+      switch (msg.type) {
+        case "folder_opened":
+          setFolderPath(msg.path ?? null);
+          setDirListings({});
+          setExpanded(new Set([""]));
+          send({ type: "list_dir", path: "" });
           break;
-        }
-        setOpenFiles((prev) => ({
-          ...prev,
-          [msg.path as string]: {
-            path: msg.path as string,
-            content: base64ToText(msg.content_base64 ?? ""),
-            dirty: false,
-            loading: false,
-          },
-        }));
-        break;
-      }
-      case "file_written": {
-        if (!msg.path) break;
-        setOpenFiles((prev) => {
-          const existing = prev[msg.path as string];
-          if (!existing) return prev;
-          return { ...prev, [msg.path as string]: { ...existing, dirty: false } };
-        });
-        const pending = pendingRelayAction.current;
-        if (pending && pending.type === "write_file" && pending.path === msg.path) {
-          pendingRelayAction.current = null;
-          postRelayResult(pending.roomId, pending.id, { output: "written" });
-        }
-        break;
-      }
-      case "error": {
-        const message = msg.message ?? "Unknown companion error.";
-        setConnectionError(message);
-        // A companion error while a folder is open must land somewhere
-        // a human will actually see it — the empty-state screen (the
-        // only other place connectionError renders) is gone by then.
-        setTranscript((prev) => [...prev, { kind: "error", id: nextEntryId(), text: message }]);
-        const pending = pendingRelayAction.current;
-        if (pending) {
-          pendingRelayAction.current = null;
-          postRelayResult(pending.roomId, pending.id, { err: message });
-        }
-        break;
-      }
-      default: {
-        // ADR-011's create_terminal relay tool answers here — the loop's
-        // own dedicated terminal, adopted into TerminalPanel's own agent
-        // slot (never dispatch()'d as an ordinary terminal_created, which
-        // would otherwise hijack the human's own main/split shell pane).
-        if (msg.type === "terminal_created" && msg.terminal_id) {
-          const pendingCreate = pendingRelayAction.current;
-          if (pendingCreate && pendingCreate.type === "create_terminal") {
+        case "dir_listing":
+          setDirListings((prev) => ({
+            ...prev,
+            [msg.path ?? ""]: msg.entries ?? [],
+          }));
+          break;
+        case "file_content": {
+          if (!msg.path) break;
+          // ADR-011's read_file relay tool answers here too — a companion
+          // read triggered by the agent loop, not a human opening a tab, so
+          // it resolves the pending relay action instead of opening an
+          // editor tab for a file the human never asked to see.
+          const pendingRead = pendingRelayAction.current;
+          if (pendingRead && pendingRead.type === "read_file" && pendingRead.path === msg.path) {
             pendingRelayAction.current = null;
-            terminalPanelRef.current?.adoptAgentTerminal(msg.terminal_id);
-            postRelayResult(pendingCreate.roomId, pendingCreate.id, { output: msg.terminal_id });
+            postRelayResult(pendingRead.roomId, pendingRead.id, {
+              output: base64ToText(msg.content_base64 ?? ""),
+            });
             break;
           }
+          setOpenFiles((prev) => ({
+            ...prev,
+            [msg.path as string]: {
+              path: msg.path as string,
+              content: base64ToText(msg.content_base64 ?? ""),
+              dirty: false,
+              loading: false,
+            },
+          }));
+          break;
         }
-        // ADR-011's run_command relay tool captures its real output here
-        // — every terminal_output chunk for the pending command's own
-        // terminal is buffered until its unique marker echo appears, the
-        // same real output a human watching the terminal sees live.
-        if (msg.type === "terminal_output" && msg.terminal_id) {
-          const pendingRun = pendingRunCommand.current;
-          if (pendingRun && pendingRun.terminalId === msg.terminal_id) {
-            pendingRun.buffer += msg.data ?? "";
-            const markerIdx = pendingRun.buffer.indexOf(pendingRun.marker);
-            if (markerIdx !== -1) {
-              pendingRunCommand.current = null;
-              postRelayResult(pendingRun.roomId, pendingRun.actionId, { output: pendingRun.buffer.slice(0, markerIdx) });
+        case "file_written": {
+          if (!msg.path) break;
+          setOpenFiles((prev) => {
+            const existing = prev[msg.path as string];
+            if (!existing) return prev;
+            return {
+              ...prev,
+              [msg.path as string]: { ...existing, dirty: false },
+            };
+          });
+          const pending = pendingRelayAction.current;
+          if (pending && pending.type === "write_file" && pending.path === msg.path) {
+            pendingRelayAction.current = null;
+            postRelayResult(pending.roomId, pending.id, { output: "written" });
+          }
+          break;
+        }
+        case "error": {
+          const message = msg.message ?? "Unknown companion error.";
+          setConnectionError(message);
+          // A companion error while a folder is open must land somewhere
+          // a human will actually see it — the empty-state screen (the
+          // only other place connectionError renders) is gone by then.
+          setTranscript((prev) => [...prev, { kind: "error", id: nextEntryId(), text: message }]);
+          const pending = pendingRelayAction.current;
+          if (pending) {
+            pendingRelayAction.current = null;
+            postRelayResult(pending.roomId, pending.id, { err: message });
+          }
+          break;
+        }
+        default: {
+          // ADR-011's create_terminal relay tool answers here — the loop's
+          // own dedicated terminal, adopted into TerminalPanel's own agent
+          // slot (never dispatch()'d as an ordinary terminal_created, which
+          // would otherwise hijack the human's own main/split shell pane).
+          if (msg.type === "terminal_created" && msg.terminal_id) {
+            const pendingCreate = pendingRelayAction.current;
+            if (pendingCreate && pendingCreate.type === "create_terminal") {
+              pendingRelayAction.current = null;
+              terminalPanelRef.current?.adoptAgentTerminal(msg.terminal_id);
+              postRelayResult(pendingCreate.roomId, pendingCreate.id, {
+                output: msg.terminal_id,
+              });
+              break;
             }
           }
-        }
-        // Every real terminal_* message (terminal_created, terminal_output,
-        // terminal_cwd, terminal_exited) — TerminalPanel owns every real
-        // terminal instance's own lifecycle; this page only owns the wire.
-        if (msg.type.startsWith("terminal_")) {
-          terminalPanelRef.current?.dispatch(msg);
+          // ADR-011's run_command relay tool captures its real output here
+          // — every terminal_output chunk for the pending command's own
+          // terminal is buffered until its unique marker echo appears, the
+          // same real output a human watching the terminal sees live.
+          if (msg.type === "terminal_output" && msg.terminal_id) {
+            const pendingRun = pendingRunCommand.current;
+            if (pendingRun && pendingRun.terminalId === msg.terminal_id) {
+              pendingRun.buffer += msg.data ?? "";
+              const markerIdx = pendingRun.buffer.indexOf(pendingRun.marker);
+              if (markerIdx !== -1) {
+                pendingRunCommand.current = null;
+                postRelayResult(pendingRun.roomId, pendingRun.actionId, {
+                  output: pendingRun.buffer.slice(0, markerIdx),
+                });
+              }
+            }
+          }
+          // Every real terminal_* message (terminal_created, terminal_output,
+          // terminal_cwd, terminal_exited) — TerminalPanel owns every real
+          // terminal instance's own lifecycle; this page only owns the wire.
+          if (msg.type.startsWith("terminal_")) {
+            terminalPanelRef.current?.dispatch(msg);
+          }
         }
       }
-    }
-  }, [send, postRelayResult]);
+    },
+    [send, postRelayResult],
+  );
 
   const connect = useCallback(() => {
     if (!COMPANION_URL) return;
@@ -557,7 +576,9 @@ export default function IdePage() {
     if (!COMPANION_URL) return;
     setConsentState("granting");
     try {
-      const res = await fetch(`${companionHttpBase(COMPANION_URL)}/consent`, { method: "POST" });
+      const res = await fetch(`${companionHttpBase(COMPANION_URL)}/consent`, {
+        method: "POST",
+      });
       if (!res.ok) {
         setConsentState("unreachable");
         return;
@@ -613,7 +634,11 @@ export default function IdePage() {
         if (!cancelled) setRoomId(existing.roomId);
         return;
       }
-      const folderName = folderPath.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || folderPath;
+      const folderName =
+        folderPath
+          .replace(/[/\\]+$/, "")
+          .split(/[/\\]/)
+          .pop() || folderPath;
       try {
         const room = await apiFetch<{ id: string }>("/v1/rooms", {
           method: "POST",
@@ -688,195 +713,237 @@ export default function IdePage() {
     ) {
       return;
     }
-    const source = new EventSource(`${apiBase}/v1/rooms/${roomId}/stream`, {
-      withCredentials: true,
-    });
-    esRef.current = source;
-
-    source.addEventListener("snapshot", (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as Snapshot;
-      const initialStatus: Record<string, string> = {};
-      for (const p of data.presence ?? []) initialStatus[p.agent_id] = p.status;
-      setAgentStatus(initialStatus);
-      // EventSource reconnects on its own on any drop, and every
-      // reconnect delivers a fresh "snapshot" — unconditionally
-      // prepending its messages every time would duplicate the same
-      // real message ids (and, with them, React keys) on every
-      // reconnect. Found live: the same two chat lines rendering
-      // twice, and a real "duplicate key" React error firing on every
-      // render once they had.
-      setTranscript((prev) => {
-        const existingIds = new Set(prev.map((entry) => entry.id));
-        const newOnes = (data.messages ?? [])
-          .filter((m) => !existingIds.has(m.id))
-          .map((m) => chatEntryFromMessage(m));
-        return [...newOnes, ...prev];
+    // attachListeners is the real stream's fixed listener set, unchanged
+    // by ReconnectingEventSource below — every real reconnect gets a
+    // brand-new EventSource, and this re-attaches the exact same
+    // listeners to it each time.
+    const attachListeners = (source: EventSource) => {
+      source.addEventListener("snapshot", (e) => {
+        const data = JSON.parse((e as MessageEvent).data) as Snapshot;
+        const initialStatus: Record<string, string> = {};
+        for (const p of data.presence ?? []) initialStatus[p.agent_id] = p.status;
+        setAgentStatus(initialStatus);
+        // EventSource reconnects on its own on any drop, and every
+        // reconnect delivers a fresh "snapshot" — unconditionally
+        // prepending its messages every time would duplicate the same
+        // real message ids (and, with them, React keys) on every
+        // reconnect. Found live: the same two chat lines rendering
+        // twice, and a real "duplicate key" React error firing on every
+        // render once they had.
+        setTranscript((prev) => {
+          const existingIds = new Set(prev.map((entry) => entry.id));
+          const newOnes = (data.messages ?? [])
+            .filter((m) => !existingIds.has(m.id))
+            .map((m) => chatEntryFromMessage(m));
+          return [...newOnes, ...prev];
+        });
       });
-    });
 
-    source.addEventListener("message", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      if (msg.message) setTranscript((prev) => [...prev, chatEntryFromMessage(msg.message!)]);
-    });
+      source.addEventListener("message", (e) => {
+        const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+        if (msg.message) setTranscript((prev) => [...prev, chatEntryFromMessage(msg.message!)]);
+      });
 
-    source.addEventListener("presence", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      if (msg.presence) {
-        setAgentStatus((prev) => ({ ...prev, [msg.presence!.agent_id]: msg.presence!.status }));
-      }
-    });
+      source.addEventListener("presence", (e) => {
+        const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+        if (msg.presence) {
+          setAgentStatus((prev) => ({
+            ...prev,
+            [msg.presence!.agent_id]: msg.presence!.status,
+          }));
+        }
+      });
 
-    // The live-cursor signal driving points 8/9 of the design overhaul:
-    // active:true sets/updates the cursor, active:false — or this SSE
-    // connection itself dropping, handled by the presence-visibility
-    // effect below — removes it immediately, no fade.
-    source.addEventListener("agent_cursor", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      const c = msg.agent_cursor;
-      if (!c) return;
-      if (!c.active) {
-        setAgentCursors((prev) => {
-          const next = { ...prev };
-          delete next[c.agent_id];
-          return next;
-        });
-        return;
-      }
-      setAgentCursors((prev) => ({
-        ...prev,
-        [c.agent_id]: {
-          agentId: c.agent_id,
-          name: c.name,
-          provider: c.provider,
-          path: c.path,
-          line: c.line,
-          column: c.column,
-        },
-      }));
-    });
-
-    // ADR-010's relay protocol, frontend half: the backend dispatched
-    // this because an agent action (today, an approved file-edit
-    // proposal's real write) needs the browser's own already-open
-    // companion connection to actually reach the local filesystem — see
-    // internal/companionrelay's own package doc. write_file is the one
-    // real caller today; a future shell_input caller (Batch 2's agent
-    // shell-exec tool) would forward the same way, correlated the same
-    // way, through this same switch.
-    source.addEventListener("companion_action", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      const action = msg.companion_action;
-      if (!action || !roomId) return;
-      pendingRelayAction.current = {
-        id: action.id,
-        roomId,
-        type: action.type,
-        path: action.path,
-      };
-      if (action.type === "write_file" && action.path) {
-        send({ type: "write_file", path: action.path, content_base64: action.data });
-      } else if (action.type === "read_file" && action.path) {
-        // ADR-011's agent loop reading a real project file — resolved in
-        // handleServerMessage's own "file_content" case above.
-        send({ type: "read_file", path: action.path });
-      } else if (action.type === "create_terminal") {
-        // ADR-011's agent loop opening its own dedicated real terminal —
-        // resolved in handleServerMessage's own terminal_created handling.
-        send({ type: "create_terminal" });
-      } else if (action.type === "terminal_narrate" && action.path) {
-        // Fire-and-forget: narrateTerminal (internal/companion) sends no
-        // real acknowledgment back, so this relay action resolves the
-        // instant the real narration line is sent, not on any later
-        // companion response.
-        send({ type: "terminal_narrate", terminal_id: action.path, data: action.data });
-        pendingRelayAction.current = null;
-        postRelayResult(roomId, action.id, { output: "narrated" });
-      } else if (action.type === "run_command" && action.path) {
-        // ADR-011's agent loop running a real shell command in its own
-        // dedicated terminal. There's no dedicated "command finished"
-        // companion message, so a unique marker is echoed right after the
-        // real command and handleServerMessage's own terminal_output
-        // handling above captures everything up to it as the real result
-        // — the same real output a human watching this terminal sees live.
-        const marker = `HARMONIA_CMD_DONE_${action.id}`;
-        pendingRunCommand.current = { roomId, actionId: action.id, terminalId: action.path, marker, buffer: "" };
-        pendingRelayAction.current = null;
-        send({ type: "terminal_input", terminal_id: action.path, data: `${action.data}\r\necho ${marker}\r\n` });
-      } else {
-        // A real, honest failure for any action type this relay doesn't
-        // implement yet, rather than leaving the backend's Dispatch call
-        // hanging until its own timeout.
-        pendingRelayAction.current = null;
-        postRelayResult(roomId, action.id, {
-          err: `companion action type ${action.type} not implemented in this browser session`,
-        });
-      }
-    });
-
-    // ADR-011's sustained agent loop: a live status snapshot after every
-    // real cycle, published over this same room's existing live channel —
-    // Task is carried over from the session this tab itself started
-    // (POST .../agent_loop/start's own response), since the live payload
-    // itself only carries what changes cycle to cycle.
-    source.addEventListener("agent_loop_status", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      const status = msg.agent_loop_status;
-      if (!status) return;
-      setAgentSession((prev) =>
-        prev && prev.sessionId === status.session_id
-          ? {
-              ...prev,
-              cycle: status.cycle,
-              maxCycles: status.max_cycles,
-              spendUsd: status.spend_usd,
-              dollarCapUsd: status.dollar_cap_usd,
-              state: status.state,
-              message: status.message,
-            }
-          : prev,
-      );
-    });
-
-    // The pending-approval diff view's own real trigger: an
-    // ACTION.PROPOSE event for a propose_file_edit proposal. The event
-    // itself only ever carries a summary (proposal_id, path) — the real
-    // old/new content is fetched on demand via GET
-    // /v1/action_proposals/{id} (actionproposal.GetHandler), never
-    // pushed live, since it can be arbitrarily large. ACTION.RESOLVE for
-    // that same proposal clears the view — resolved by any tab watching
-    // this room, not just the one that resolved it.
-    source.addEventListener("event", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
-      const env = msg.event;
-      if (!env) return;
-      if (env.type === "ACTION.RESOLVE") {
-        const proposalId = env.payload.proposal_id as string | undefined;
-        setPendingFileEdit((prev) => (prev && prev.proposalId === proposalId ? null : prev));
-        return;
-      }
-      if (env.type !== "ACTION.PROPOSE" || env.payload.action_type !== "propose_file_edit") return;
-      const proposalId = env.payload.proposal_id as string;
-      const path = (env.payload.path as string) ?? "";
-      const agent = roomAgentsRef.current.find((a) => a.id === env.sender.agent_id);
-      apiFetch<{ payload: { old_content_base64?: string; new_content_base64?: string } }>(
-        `/v1/action_proposals/${proposalId}`,
-      )
-        .then((full) => {
-          setPendingFileEdit({
-            proposalId,
-            path,
-            agentName: agent?.name ?? "An agent",
-            provider: agent?.provider,
-            oldContent: base64ToText(full.payload.old_content_base64 ?? ""),
-            newContent: base64ToText(full.payload.new_content_base64 ?? ""),
+      // The live-cursor signal driving points 8/9 of the design overhaul:
+      // active:true sets/updates the cursor, active:false — or this SSE
+      // connection itself dropping, handled by the presence-visibility
+      // effect below — removes it immediately, no fade.
+      source.addEventListener("agent_cursor", (e) => {
+        const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+        const c = msg.agent_cursor;
+        if (!c) return;
+        if (!c.active) {
+          setAgentCursors((prev) => {
+            const next = { ...prev };
+            delete next[c.agent_id];
+            return next;
           });
-        })
-        .catch(() => {});
+          return;
+        }
+        setAgentCursors((prev) => ({
+          ...prev,
+          [c.agent_id]: {
+            agentId: c.agent_id,
+            name: c.name,
+            provider: c.provider,
+            path: c.path,
+            line: c.line,
+            column: c.column,
+          },
+        }));
+      });
+
+      // ADR-010's relay protocol, frontend half: the backend dispatched
+      // this because an agent action (today, an approved file-edit
+      // proposal's real write) needs the browser's own already-open
+      // companion connection to actually reach the local filesystem — see
+      // internal/companionrelay's own package doc. write_file is the one
+      // real caller today; a future shell_input caller (Batch 2's agent
+      // shell-exec tool) would forward the same way, correlated the same
+      // way, through this same switch.
+      source.addEventListener("companion_action", (e) => {
+        const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+        const action = msg.companion_action;
+        if (!action || !roomId) return;
+        pendingRelayAction.current = {
+          id: action.id,
+          roomId,
+          type: action.type,
+          path: action.path,
+        };
+        if (action.type === "write_file" && action.path) {
+          send({
+            type: "write_file",
+            path: action.path,
+            content_base64: action.data,
+          });
+        } else if (action.type === "read_file" && action.path) {
+          // ADR-011's agent loop reading a real project file — resolved in
+          // handleServerMessage's own "file_content" case above.
+          send({ type: "read_file", path: action.path });
+        } else if (action.type === "create_terminal") {
+          // ADR-011's agent loop opening its own dedicated real terminal —
+          // resolved in handleServerMessage's own terminal_created handling.
+          send({ type: "create_terminal" });
+        } else if (action.type === "terminal_narrate" && action.path) {
+          // Fire-and-forget: narrateTerminal (internal/companion) sends no
+          // real acknowledgment back, so this relay action resolves the
+          // instant the real narration line is sent, not on any later
+          // companion response.
+          send({
+            type: "terminal_narrate",
+            terminal_id: action.path,
+            data: action.data,
+          });
+          pendingRelayAction.current = null;
+          postRelayResult(roomId, action.id, { output: "narrated" });
+        } else if (action.type === "run_command" && action.path) {
+          // ADR-011's agent loop running a real shell command in its own
+          // dedicated terminal. There's no dedicated "command finished"
+          // companion message, so a unique marker is echoed right after the
+          // real command and handleServerMessage's own terminal_output
+          // handling above captures everything up to it as the real result
+          // — the same real output a human watching this terminal sees live.
+          const marker = `HARMONIA_CMD_DONE_${action.id}`;
+          pendingRunCommand.current = {
+            roomId,
+            actionId: action.id,
+            terminalId: action.path,
+            marker,
+            buffer: "",
+          };
+          pendingRelayAction.current = null;
+          send({
+            type: "terminal_input",
+            terminal_id: action.path,
+            data: `${action.data}\r\necho ${marker}\r\n`,
+          });
+        } else {
+          // A real, honest failure for any action type this relay doesn't
+          // implement yet, rather than leaving the backend's Dispatch call
+          // hanging until its own timeout.
+          pendingRelayAction.current = null;
+          postRelayResult(roomId, action.id, {
+            err: `companion action type ${action.type} not implemented in this browser session`,
+          });
+        }
+      });
+
+      // ADR-011's sustained agent loop: a live status snapshot after every
+      // real cycle, published over this same room's existing live channel —
+      // Task is carried over from the session this tab itself started
+      // (POST .../agent_loop/start's own response), since the live payload
+      // itself only carries what changes cycle to cycle.
+      source.addEventListener("agent_loop_status", (e) => {
+        const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+        const status = msg.agent_loop_status;
+        if (!status) return;
+        setAgentSession((prev) =>
+          prev && prev.sessionId === status.session_id
+            ? {
+                ...prev,
+                cycle: status.cycle,
+                maxCycles: status.max_cycles,
+                spendUsd: status.spend_usd,
+                dollarCapUsd: status.dollar_cap_usd,
+                state: status.state,
+                message: status.message,
+              }
+            : prev,
+        );
+      });
+
+      // The pending-approval diff view's own real trigger: an
+      // ACTION.PROPOSE event for a propose_file_edit proposal. The event
+      // itself only ever carries a summary (proposal_id, path) — the real
+      // old/new content is fetched on demand via GET
+      // /v1/action_proposals/{id} (actionproposal.GetHandler), never
+      // pushed live, since it can be arbitrarily large. ACTION.RESOLVE for
+      // that same proposal clears the view — resolved by any tab watching
+      // this room, not just the one that resolved it.
+      source.addEventListener("event", (e) => {
+        const msg = JSON.parse((e as MessageEvent).data) as RealtimeMessage;
+        const env = msg.event;
+        if (!env) return;
+        if (env.type === "ACTION.RESOLVE") {
+          const proposalId = env.payload.proposal_id as string | undefined;
+          setPendingFileEdit((prev) => (prev && prev.proposalId === proposalId ? null : prev));
+          return;
+        }
+        if (env.type !== "ACTION.PROPOSE" || env.payload.action_type !== "propose_file_edit")
+          return;
+        const proposalId = env.payload.proposal_id as string;
+        const path = (env.payload.path as string) ?? "";
+        const agent = roomAgentsRef.current.find((a) => a.id === env.sender.agent_id);
+        apiFetch<{
+          payload: { old_content_base64?: string; new_content_base64?: string };
+        }>(`/v1/action_proposals/${proposalId}`)
+          .then((full) => {
+            setPendingFileEdit({
+              proposalId,
+              path,
+              agentName: agent?.name ?? "An agent",
+              provider: agent?.provider,
+              oldContent: base64ToText(full.payload.old_content_base64 ?? ""),
+              newContent: base64ToText(full.payload.new_content_base64 ?? ""),
+            });
+          })
+          .catch(() => {});
+      });
+    };
+
+    // ReconnectingEventSource covers the one real gap EventSource itself
+    // leaves open: it already retries an ordinary mid-stream drop on its
+    // own, but permanently gives up — no further retry, ever — if even
+    // the very first response comes back non-2xx (a transient 500, the
+    // backend not warmed up yet). Found live: exactly that response once
+    // left this room's whole live channel dead for the rest of the tab's
+    // life. Every real reconnect creates a brand-new EventSource and
+    // re-attaches the exact same listeners via create() below.
+    const reconnecting = new ReconnectingEventSource({
+      create: () => {
+        const source = new EventSource(`${apiBase}/v1/rooms/${roomId}/stream`, {
+          withCredentials: true,
+        });
+        esRef.current = source;
+        attachListeners(source);
+        return source;
+      },
     });
 
     return () => {
-      source.close();
-      if (esRef.current === source) esRef.current = null;
+      reconnecting.close();
+      esRef.current = null;
     };
   }, [roomId, chatEntryFromMessage, send, postRelayResult]);
 
@@ -1054,7 +1121,10 @@ export default function IdePage() {
       setOpenTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
       setOpenFiles((prev) => {
         if (prev[path]) return prev;
-        return { ...prev, [path]: { path, content: "", dirty: false, loading: true } };
+        return {
+          ...prev,
+          [path]: { path, content: "", dirty: false, loading: true },
+        };
       });
       send({ type: "read_file", path });
     },
@@ -1076,9 +1146,7 @@ export default function IdePage() {
   // into its own state — an agent's cursor disappearing (presence lost,
   // or it simply finished) genuinely ends following the instant that
   // happens, with nothing to reset via an effect.
-  const followedCursor = followingAgentId
-    ? (agentCursors[followingAgentId] ?? null)
-    : null;
+  const followedCursor = followingAgentId ? (agentCursors[followingAgentId] ?? null) : null;
   const effectivelyFollowing = followingAgentId !== null && followedCursor !== null;
 
   useEffect(() => {
@@ -1117,7 +1185,11 @@ export default function IdePage() {
     if (!activePath) return;
     const file = openFiles[activePath];
     if (!file) return;
-    send({ type: "write_file", path: activePath, content_base64: textToBase64(file.content) });
+    send({
+      type: "write_file",
+      path: activePath,
+      content_base64: textToBase64(file.content),
+    });
   }, [activePath, openFiles, send]);
 
   // Auto Save: a real, working toggle — writes on every change once on,
@@ -1139,10 +1211,19 @@ export default function IdePage() {
     const file = openFiles[activePath];
     if (!file) return;
     const newPath = saveAsValue.trim();
-    send({ type: "write_file", path: newPath, content_base64: textToBase64(file.content) });
+    send({
+      type: "write_file",
+      path: newPath,
+      content_base64: textToBase64(file.content),
+    });
     setOpenFiles((prev) => ({
       ...prev,
-      [newPath]: { path: newPath, content: file.content, dirty: false, loading: false },
+      [newPath]: {
+        path: newPath,
+        content: file.content,
+        dirty: false,
+        loading: false,
+      },
     }));
     setOpenTabs((prev) => (prev.includes(newPath) ? prev : [...prev, newPath]));
     setActivePath(newPath);
@@ -1247,7 +1328,9 @@ export default function IdePage() {
 
   const stopAgentSession = useCallback(() => {
     if (!roomId || !agentSession) return;
-    void apiFetch(`/v1/rooms/${roomId}/agent_loop/${agentSession.sessionId}/stop`, { method: "POST" }).catch(() => {});
+    void apiFetch(`/v1/rooms/${roomId}/agent_loop/${agentSession.sessionId}/stop`, {
+      method: "POST",
+    }).catch(() => {});
   }, [roomId, agentSession]);
 
   const openTerminalTab = useCallback(() => {
@@ -1402,8 +1485,8 @@ export default function IdePage() {
         <main className="flex h-full items-center justify-center px-6 text-center">
           <div className="flex max-w-[420px] flex-col gap-3">
             <p className="text-[13px] text-[var(--ide-text-muted)]">
-              Couldn&apos;t reach the local companion process at{" "}
-              {companionHttpBase(COMPANION_URL)} — start it and try again.
+              Couldn&apos;t reach the local companion process at {companionHttpBase(COMPANION_URL)}{" "}
+              — start it and try again.
             </p>
             <button
               type="button"
@@ -1423,11 +1506,11 @@ export default function IdePage() {
             Before you connect: this enables real command execution
           </h1>
           <p className="text-[13.5px] leading-relaxed text-[var(--ide-text-secondary)]">
-            The Harmonia IDE talks to a small local process (the companion) running on this
-            machine. Once connected, it can read and write real files and run a real shell — on
-            your own request, or an agent&apos;s — in the folder you open. This is fundamentally
-            different from anything else in Harmonia: every other action here has a bounded,
-            well-understood effect; a real shell does not.
+            The Harmonia IDE talks to a small local process (the companion) running on this machine.
+            Once connected, it can read and write real files and run a real shell — on your own
+            request, or an agent&apos;s — in the folder you open. This is fundamentally different
+            from anything else in Harmonia: every other action here has a bounded, well-understood
+            effect; a real shell does not.
           </p>
           <p className="text-[13.5px] leading-relaxed text-[var(--ide-text-secondary)]">
             An agent can only act while you are actively watching this session — the moment you
@@ -1435,14 +1518,14 @@ export default function IdePage() {
             marked visibly in the terminal, distinct from anything you type yourself.
           </p>
           <p className="text-[13.5px] leading-relaxed text-[var(--ide-text-secondary)]">
-            There is no command blocklist — a real shell makes one trivially easy to bypass, and
-            a blocklist creates false confidence worse than having none. The real safety net is
-            git: damage to a git-tracked file is recoverable through its real history. Damage
-            outside a git repository&apos;s scope, or to files git isn&apos;t tracking, is not.
+            There is no command blocklist — a real shell makes one trivially easy to bypass, and a
+            blocklist creates false confidence worse than having none. The real safety net is git:
+            damage to a git-tracked file is recoverable through its real history. Damage outside a
+            git repository&apos;s scope, or to files git isn&apos;t tracking, is not.
           </p>
           <p className="text-[13.5px] leading-relaxed text-[var(--ide-text-secondary)]">
-            This consent is remembered on this machine, for this companion installation, until
-            you revoke it yourself.
+            This consent is remembered on this machine, for this companion installation, until you
+            revoke it yourself.
           </p>
           <button
             type="button"
@@ -1468,13 +1551,15 @@ export default function IdePage() {
   const singleAgent = roomAgents.length >= 1 ? roomAgents[0] : null;
 
   const cmdkFiles = Object.keys(dirListings).flatMap((dir) =>
-    (dirListings[dir] ?? [])
-      .filter((e) => !e.is_dir)
-      .map((e) => ({ path: e.path, name: e.name })),
+    (dirListings[dir] ?? []).filter((e) => !e.is_dir).map((e) => ({ path: e.path, name: e.name })),
   );
 
   return (
-    <div className="flex h-full min-w-0 flex-col bg-[var(--ide-bg)] text-[var(--ide-text)]">
+    // min-h-0, same reasoning as rooms/[id]'s own root: fills the shell
+    // outlet's exact height instead of growing past it now that the
+    // outlet itself no longer scrolls — the editor/terminal/file-tree
+    // panes below are the only things meant to ever scroll on this page.
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-[var(--ide-bg)] text-[var(--ide-text)]">
       <MenuBar
         folderOpen={!!folderPath}
         autoSave={autoSave}
@@ -1510,160 +1595,179 @@ export default function IdePage() {
 
       <div className="flex min-h-0 flex-1">
         {pendingFileEdit ? (
-          <DiffView
-            proposal={pendingFileEdit}
-            onResolved={() => setPendingFileEdit(null)}
-          />
+          <DiffView proposal={pendingFileEdit} onResolved={() => setPendingFileEdit(null)} />
         ) : (
           <>
-        {folderPath && explorerOpen && (
-          <div className="flex w-[250px] shrink-0 flex-col border-r border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)]">
-            <div className="px-4 pt-3 pb-2 font-[family-name:var(--login-font-mono)] text-[10.5px] tracking-wide text-[var(--ide-text-muted)] uppercase">
-              {folderPath.replace(/[/\\]+$/, "").split(/[/\\]/).pop()}
-            </div>
-            <div className="no-scrollbar flex-1 overflow-y-auto px-2 py-0.5">
-              {renderEntries("", 0)}
-            </div>
-          </div>
-        )}
-
-        {folderPath ? (
-          <div className="flex min-w-0 flex-1 flex-col bg-[var(--ide-bg-panel)]">
-            <div className="flex min-h-0 flex-1 flex-col">
-              {openTabs.length > 0 && (
-                <div className="no-scrollbar flex shrink-0 items-stretch overflow-x-auto border-b border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] pt-1.5">
-                  {openTabs.map((path) => {
-                    const f = openFiles[path];
-                    const isLive = Object.values(agentCursors).some((c) => c.path === path);
-                    return (
-                      <button
-                        key={path}
-                        type="button"
-                        onClick={() => setActivePath(path)}
-                        className={`group flex shrink-0 items-center gap-2 rounded-t-lg px-3 py-2 text-[12.5px] ${
-                          activePath === path
-                            ? "bg-[var(--ide-bg-panel)] text-[var(--ide-text)] shadow-[inset_0_2px_0_var(--login-accent)]"
-                            : "text-[var(--ide-text-secondary)] hover:text-[var(--ide-text-secondary)]"
-                        }`}
-                      >
-                        <FileGlyph isDir={false} name={path.split("/").pop() ?? path} />
-                        <span className="max-w-[160px] truncate">
-                          {path.split("/").pop()}
-                          {f?.dirty ? " ●" : ""}
-                        </span>
-                        {isLive && (
-                          <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_5px_rgba(76,211,194,.28)]" />
-                        )}
-                        <span
-                          role="button"
-                          tabIndex={-1}
-                          onClick={(e) => closeTab(path, e)}
-                          className="rounded text-[var(--ide-text-muted)] opacity-0 hover:bg-[var(--ide-border-strong)] hover:text-[var(--ide-text)] group-hover:opacity-100"
-                        >
-                          <CloseIcon />
-                        </span>
-                      </button>
-                    );
-                  })}
+            {folderPath && explorerOpen && (
+              <div className="flex w-[250px] shrink-0 flex-col border-r border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)]">
+                <div className="px-4 pt-3 pb-2 font-[family-name:var(--login-font-mono)] text-[10.5px] tracking-wide text-[var(--ide-text-muted)] uppercase">
+                  {folderPath
+                    .replace(/[/\\]+$/, "")
+                    .split(/[/\\]/)
+                    .pop()}
                 </div>
-              )}
-              <div ref={editorContainerRef} className="min-h-0 flex-1">
-                {!activePath && (
-                  <div className="flex h-full items-center justify-center text-[13px] text-[var(--ide-text-muted)]">
-                    Select a file to edit it.
+                <div className="no-scrollbar flex-1 overflow-y-auto px-2 py-0.5">
+                  {renderEntries("", 0)}
+                </div>
+              </div>
+            )}
+
+            {folderPath ? (
+              <div className="flex min-w-0 flex-1 flex-col bg-[var(--ide-bg-panel)]">
+                <div className="flex min-h-0 flex-1 flex-col">
+                  {openTabs.length > 0 && (
+                    <div className="no-scrollbar flex shrink-0 items-stretch overflow-x-auto border-b border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] pt-1.5">
+                      {openTabs.map((path) => {
+                        const f = openFiles[path];
+                        const isLive = Object.values(agentCursors).some((c) => c.path === path);
+                        return (
+                          <button
+                            key={path}
+                            type="button"
+                            onClick={() => setActivePath(path)}
+                            className={`group flex shrink-0 items-center gap-2 rounded-t-lg px-3 py-2 text-[12.5px] ${
+                              activePath === path
+                                ? "bg-[var(--ide-bg-panel)] text-[var(--ide-text)] shadow-[inset_0_2px_0_var(--login-accent)]"
+                                : "text-[var(--ide-text-secondary)] hover:text-[var(--ide-text-secondary)]"
+                            }`}
+                          >
+                            <FileGlyph isDir={false} name={path.split("/").pop() ?? path} />
+                            <span className="max-w-[160px] truncate">
+                              {path.split("/").pop()}
+                              {f?.dirty ? " ●" : ""}
+                            </span>
+                            {isLive && (
+                              <span className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--login-accent)] shadow-[0_0_5px_rgba(76,211,194,.28)]" />
+                            )}
+                            <span
+                              role="button"
+                              tabIndex={-1}
+                              onClick={(e) => closeTab(path, e)}
+                              className="rounded text-[var(--ide-text-muted)] opacity-0 hover:bg-[var(--ide-border-strong)] hover:text-[var(--ide-text)] group-hover:opacity-100"
+                            >
+                              <CloseIcon />
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div ref={editorContainerRef} className="min-h-0 flex-1">
+                    {!activePath && (
+                      <div className="flex h-full items-center justify-center text-[13px] text-[var(--ide-text-muted)]">
+                        Select a file to edit it.
+                      </div>
+                    )}
+                    {activeFile && !activeFile.loading && (
+                      <MonacoEditor
+                        path={activeFile.path}
+                        language={languageForPath(activeFile.path)}
+                        value={activeFile.content}
+                        theme="vs-dark"
+                        onMount={(editor, monacoNs) => {
+                          editorRef.current = editor;
+                          monacoNsRef.current = monacoNs as unknown as typeof monacoEditor;
+                        }}
+                        onChange={(value) =>
+                          setOpenFiles((prev) => ({
+                            ...prev,
+                            [activeFile.path]: {
+                              ...prev[activeFile.path],
+                              content: value ?? "",
+                              dirty: true,
+                            },
+                          }))
+                        }
+                        options={{
+                          minimap: { enabled: false },
+                          fontSize: 13,
+                          automaticLayout: true,
+                        }}
+                      />
+                    )}
                   </div>
-                )}
-                {activeFile && !activeFile.loading && (
-                  <MonacoEditor
-                    path={activeFile.path}
-                    language={languageForPath(activeFile.path)}
-                    value={activeFile.content}
-                    theme="vs-dark"
-                    onMount={(editor, monacoNs) => {
-                      editorRef.current = editor;
-                      monacoNsRef.current = monacoNs as unknown as typeof monacoEditor;
-                    }}
-                    onChange={(value) =>
-                      setOpenFiles((prev) => ({
-                        ...prev,
-                        [activeFile.path]: { ...prev[activeFile.path], content: value ?? "", dirty: true },
-                      }))
-                    }
-                    options={{ minimap: { enabled: false }, fontSize: 13, automaticLayout: true }}
+                </div>
+
+                <div
+                  style={{ height: panelOpen ? 320 : 0 }}
+                  className="shrink-0 overflow-hidden border-t border-[var(--ide-border)] bg-[var(--ide-bg-panel)] transition-[height] duration-[180ms] ease-[cubic-bezier(.4,0,.2,1)]"
+                >
+                  <TerminalPanel
+                    ref={terminalPanelRef}
+                    bottomTab={bottomTab}
+                    onBottomTabChange={setBottomTab}
+                    onClose={() => setPanelOpen(false)}
+                    transcript={transcript}
+                    mode={terminalMode}
+                    onModeChange={setTerminalMode}
+                    chatValue={chatValue}
+                    onChatChange={setChatValue}
+                    onChatSubmit={submitChat}
+                    send={send}
+                    folderOpen={!!folderPath}
+                    agentAgents={roomAgents.map((a) => ({
+                      id: a.id,
+                      name: a.name,
+                      provider: a.provider,
+                    }))}
+                    agentSession={agentSession}
+                    agentStartError={agentStartError}
+                    onStartAgentSession={startAgentSession}
+                    onStopAgentSession={stopAgentSession}
                   />
+                </div>
+                {!panelOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setPanelOpen(true)}
+                    className="flex h-6 shrink-0 items-center gap-1.5 border-t border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] px-3 text-[11px] text-[var(--ide-text-muted)] hover:text-[var(--ide-text-secondary)]"
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                    >
+                      <path d="M4 6l4 4 4-4" />
+                    </svg>
+                    Terminal (closed) — click or Ctrl+` to reopen
+                  </button>
                 )}
               </div>
-            </div>
-
-            <div
-              style={{ height: panelOpen ? 320 : 0 }}
-              className="shrink-0 overflow-hidden border-t border-[var(--ide-border)] bg-[var(--ide-bg-panel)] transition-[height] duration-[180ms] ease-[cubic-bezier(.4,0,.2,1)]"
-            >
-              <TerminalPanel
-                ref={terminalPanelRef}
-                bottomTab={bottomTab}
-                onBottomTabChange={setBottomTab}
-                onClose={() => setPanelOpen(false)}
-                transcript={transcript}
-                mode={terminalMode}
-                onModeChange={setTerminalMode}
-                chatValue={chatValue}
-                onChatChange={setChatValue}
-                onChatSubmit={submitChat}
-                send={send}
-                folderOpen={!!folderPath}
-                agentAgents={roomAgents.map((a) => ({ id: a.id, name: a.name, provider: a.provider }))}
-                agentSession={agentSession}
-                agentStartError={agentStartError}
-                onStartAgentSession={startAgentSession}
-                onStopAgentSession={stopAgentSession}
-              />
-            </div>
-            {!panelOpen && (
-              <button
-                type="button"
-                onClick={() => setPanelOpen(true)}
-                className="flex h-6 shrink-0 items-center gap-1.5 border-t border-[var(--ide-border)] bg-[var(--ide-bg-sidebar)] px-3 text-[11px] text-[var(--ide-text-muted)] hover:text-[var(--ide-text-secondary)]"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-                  <path d="M4 6l4 4 4-4" />
-                </svg>
-                Terminal (closed) — click or Ctrl+` to reopen
-              </button>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center gap-7">
+                <OrbMark size={120} dotCount={11} radius={42} dotSize={3.2} />
+                <div className="flex min-w-[280px] flex-col gap-0.5">
+                  <EmptyStateAction
+                    label="Open Folder"
+                    keys={["Ctrl", "O"]}
+                    onRun={() => send({ type: "pick_folder" })}
+                  />
+                  <EmptyStateAction
+                    label="Open Recent"
+                    keys={["Ctrl", "R"]}
+                    onRun={() => setRecentOpen(true)}
+                  />
+                  <EmptyStateAction
+                    label="Command Palette"
+                    keys={["Ctrl", "K"]}
+                    onRun={() => setCmdkOpen(true)}
+                  />
+                  <EmptyStateAction
+                    label="Switch to Rooms"
+                    keys={["Ctrl", "1"]}
+                    onRun={() => router.push("/dashboard")}
+                  />
+                </div>
+                {(connectionError || connectionState === "error") && (
+                  <p className="max-w-[360px] text-center text-[13px] text-[var(--room-warn)]">
+                    {connectionError ?? "Couldn't reach the companion process — is it running?"}
+                  </p>
+                )}
+              </div>
             )}
-          </div>
-        ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-7">
-            <OrbMark size={120} dotCount={11} radius={42} dotSize={3.2} />
-            <div className="flex min-w-[280px] flex-col gap-0.5">
-              <EmptyStateAction
-                label="Open Folder"
-                keys={["Ctrl", "O"]}
-                onRun={() => send({ type: "pick_folder" })}
-              />
-              <EmptyStateAction
-                label="Open Recent"
-                keys={["Ctrl", "R"]}
-                onRun={() => setRecentOpen(true)}
-              />
-              <EmptyStateAction
-                label="Command Palette"
-                keys={["Ctrl", "K"]}
-                onRun={() => setCmdkOpen(true)}
-              />
-              <EmptyStateAction
-                label="Switch to Rooms"
-                keys={["Ctrl", "1"]}
-                onRun={() => router.push("/dashboard")}
-              />
-            </div>
-            {(connectionError || connectionState === "error") && (
-              <p className="max-w-[360px] text-center text-[13px] text-[var(--room-warn)]">
-                {connectionError ?? "Couldn't reach the companion process — is it running?"}
-              </p>
-            )}
-          </div>
-        )}
           </>
         )}
       </div>
@@ -1704,7 +1808,12 @@ export default function IdePage() {
         }}
         onOpenFile={openFile}
         actions={[
-          { id: "new-terminal", label: "New Terminal", shortcut: "Ctrl+Shift+`", run: openTerminalTab },
+          {
+            id: "new-terminal",
+            label: "New Terminal",
+            shortcut: "Ctrl+Shift+`",
+            run: openTerminalTab,
+          },
         ]}
       />
 
@@ -1734,7 +1843,9 @@ export default function IdePage() {
                   className="flex w-full flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left hover:bg-[rgba(76,211,194,.1)]"
                 >
                   <span className="text-[13.5px] text-[var(--ide-text)]">{r.name}</span>
-                  <span className="truncate text-[11px] text-[var(--ide-text-muted)]">{r.path}</span>
+                  <span className="truncate text-[11px] text-[var(--ide-text-muted)]">
+                    {r.path}
+                  </span>
                 </button>
               ))}
             </div>
