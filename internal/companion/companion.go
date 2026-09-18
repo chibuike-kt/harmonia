@@ -278,6 +278,20 @@ func (s *session) openFolder(path string) {
 // verified-inside-root absolute path. Never trusts the client's own
 // claim of where a ".." might legitimately land.
 func (s *session) resolvePath(rel string) (string, error) {
+	// A NUL byte is never part of a real, legitimate path — no file
+	// explorer, no typed filename, no real OS path ever contains one —
+	// and Go's strings aren't NUL-terminated the way C's are, so
+	// nothing upstream of this rejects it on its own. Found live,
+	// adversarially (ADR-012 Batch B): filepath.Clean/Join still
+	// process a NUL-containing segment's own literal "..", producing a
+	// real, different, on-disk destination than the path's own visible
+	// (pre-NUL) portion claims — real path confusion, not merely a
+	// cosmetic oddity. Rejected outright, before any path processing,
+	// closes the whole class regardless of how far a crafted ".."
+	// combination could otherwise be pushed.
+	if strings.ContainsRune(rel, 0) {
+		return "", fmt.Errorf("path %q contains a NUL byte", rel)
+	}
 	s.mu.Lock()
 	root := s.rootDir
 	s.mu.Unlock()
